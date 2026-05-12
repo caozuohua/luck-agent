@@ -1,0 +1,45 @@
+[Unit]
+Description=Lark × Vertex AI Agent (Full Stack)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/opt/lark-agent
+
+ExecStart=/opt/lark-agent/venv/bin/python agent.py
+
+# ── 重启策略 ─────────────────────────────────────────────────
+Restart=always
+RestartSec=5
+StartLimitInterval=300
+StartLimitBurst=5
+
+# ── 环境变量 ─────────────────────────────────────────────────
+# 不含敏感值（由 Secret Manager 注入）
+Environment=GCP_PROJECT=your-gcp-project
+Environment=GCP_LOCATION=us-central1
+Environment=GITHUB_OWNER=your-github-username
+Environment=HUGO_REPO=your-github-username/your-blog-repo
+Environment=SHELL_WORK_DIR=/opt/workspace
+Environment=FILE_DIR=/opt/lark-agent/files
+Environment=DB_PATH=/opt/lark-agent/memory.db
+
+# ── e2-micro 内存保护 ────────────────────────────────────────
+MemoryMax=800M
+MemorySwapMax=0
+
+# ── 日志 → journald → Cloud Logging ─────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lark-agent
+
+# ── 安全加固 ─────────────────────────────────────────────────
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/lark-agent /opt/workspace
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

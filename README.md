@@ -2,11 +2,11 @@
 
 Luck Agent 是一款基于 Python 的 Lark 机器人智能代理系统。支持 WebSocket 实时通信，集成多种大模型路由、任务队列、GitHub 和 Shell 工具，可自动处理文本、指令文件，实现高效的企业自动化协作。
 
-# Thanks to (All Free):
+# Thanks to:
 
 - **GCP VPS(e2-micro, Free Tier)+Ubuntu**: for hosting.
 - **Lark**: for channel.
-- **Vertexai/Agent Platform**: for AI.
+- **Vertexai/Agent Platform(gemini-2.5-pro/flash/flash-lite)**: for AI.
 - **Claude(Free Tier)**: for code design & generation.
 
 ## 功能特性

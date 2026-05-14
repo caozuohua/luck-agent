@@ -38,7 +38,7 @@ pip install -r requirements.txt
 python agent.py
 ```
 
-如需以 Systemd 服务方式部署，可参考 `lark-agent.service` 配置模板。
+如需以 Systemd 服务方式部署，可参考 `luck-agent.service` 配置模板。
 
 ## 目录结构
 
@@ -47,7 +47,7 @@ luck-agent/
 ├── agent.py                # 主入口，WebSocket + 路由
 ├── config.py               # 配置中心
 ├── requirements.txt        # Python 依赖
-├── lark-agent.service      # Systemd 启动模板
+├── luck-agent.service      # Systemd 启动模板
 ├── core/                   # 核心功能模块
 │   ├── memory.py           # SQLite 持久化记忆
 │   ├── task_queue.py       # 异步任务队列 + 状态机

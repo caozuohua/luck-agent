@@ -1,0 +1,33 @@
+# ─── 敏感配置文件 (核心：绝对不能上传) ───
+.env
+*.json
+# 如果你还保留着之前的 credentials.json，确保它也被排除
+credentials.json
+*.service
+
+# ─── Python 环境与缓存 ───
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.python-version
+
+# ─── 数据库与本地存储 ───
+# 排除 SQLite 数据库文件
+*.db
+*.db-*
+
+# ─── 业务运行产生的临时文件 ───
+# 根据你的 config.py，排除文件上传目录和工作目录
+files/
+workspace/
+*.log
+
+# ─── 操作系统与编辑器 ───
+.DS_Store
+.idea/
+.vscode/
+*.swp

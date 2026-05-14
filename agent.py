@@ -150,7 +150,7 @@ class AgentApp:
         self._shell    = ShellExecutor(cfg.SHELL_WORK_DIR, cfg.SHELL_TIMEOUT, cfg.SHELL_MAX_OUTPUT)
         self._file_mgr = FileManager(cfg.FILE_UPLOAD_DIR)
         self._bridge   = FileBridge(cfg.LARK_APP_ID, cfg.LARK_APP_SECRET,
-                                    cfg.FILE_UPLOAD_DIR, cfg.FILE_MAX_SIZE_MB)
+                                    cfg.FILE_UPLOAD_DIR, cfg.FILE_MAX_SIZE_MB, domain=cfg.LARK_DOMAIN)
 
         # 任务完成通知回调
         async def task_notify(task):
@@ -267,7 +267,8 @@ class AgentApp:
         log.info("agent_starting")
 
         # 加载 secrets
-        self.cfg.load_secrets()
+        #self.cfg.load_secrets()
+        self.cfg.load()
 
         # 初始化组件
         self._init_components()
@@ -304,6 +305,7 @@ class AgentApp:
             self.cfg.LARK_APP_SECRET,
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
+            domain=self.cfg.LARK_DOMAIN,
         )
 
         # 优雅退出

@@ -17,7 +17,7 @@ import structlog
 
 log = structlog.get_logger()
 
-LARK_API = "https://open.feishu.cn/open-apis"
+
 
 
 class FileBridge:
@@ -29,13 +29,15 @@ class FileBridge:
         app_secret: str,
         storage_dir: str,
         max_size_mb: int = 50,
+        domain: str = "https://open.larksuite.com",
     ) -> None:
         self.app_id      = app_id
         self.app_secret  = app_secret
         self.storage     = Path(storage_dir)
         self.max_size_mb = max_size_mb
+        self.api_base    = domain.rstrip("/") + "/open-apis"
         self.storage.mkdir(parents=True, exist_ok=True)
-        self._token: str      = ""
+        self._token: str       = ""
         self._token_exp: float = 0
 
     # ── Lark Token ──────────────────────────────────────────────────
@@ -44,7 +46,7 @@ class FileBridge:
             return self._token
         async with httpx.AsyncClient() as c:
             resp = await c.post(
-                f"{LARK_API}/auth/v3/tenant_access_token/internal",
+                f"{self.api_base}/auth/v3/tenant_access_token/internal",
                 json={"app_id": self.app_id, "app_secret": self.app_secret},
             )
             data = resp.json()
@@ -70,9 +72,9 @@ class FileBridge:
 
         # 选择正确的 API endpoint
         if message_type == "image":
-            url = f"{LARK_API}/im/v1/images/{file_key}"
+            url = f"{self.api_base}/im/v1/images/{file_key}"
         else:
-            url = f"{LARK_API}/im/v1/files/{file_key}/content"
+            url = f"{self.api_base}/im/v1/files/{file_key}/content"
 
         async with httpx.AsyncClient(timeout=120) as c:
             resp = await c.get(url, headers=self._auth_headers(token))
@@ -127,7 +129,7 @@ class FileBridge:
         async with httpx.AsyncClient(timeout=120) as c:
             # Step 1: 上传文件获取 file_key
             if is_image:
-                upload_url = f"{LARK_API}/im/v1/images"
+                upload_url = f"{self.api_base}/im/v1/images"
                 files = {"image": (path.name, path.read_bytes(), mime_type)}
                 data  = {"image_type": "message"}
                 resp  = await c.post(upload_url, headers=self._auth_headers(token),
@@ -137,7 +139,7 @@ class FileBridge:
                 msg_type = "image"
                 content  = f'{{"image_key":"{file_key}"}}'
             else:
-                upload_url = f"{LARK_API}/im/v1/files"
+                upload_url = f"{self.api_base}/im/v1/files"
                 files = {"file": (path.name, path.read_bytes(), mime_type)}
                 data  = {"file_type": "stream", "file_name": path.name}
                 resp  = await c.post(upload_url, headers=self._auth_headers(token),
@@ -149,7 +151,7 @@ class FileBridge:
 
             # Step 2: 发送消息
             send_resp = await c.post(
-                f"{LARK_API}/im/v1/messages",
+                f"{self.api_base}/im/v1/messages",
                 headers={**self._auth_headers(token), "Content-Type": "application/json"},
                 json={
                     "receive_id":      chat_id,
@@ -168,7 +170,7 @@ class FileBridge:
             await asyncio.sleep(0.3)
             async with httpx.AsyncClient() as c2:
                 await c2.post(
-                    f"{LARK_API}/im/v1/messages",
+                    f"{self.api_base}/im/v1/messages",
                     headers={**self._auth_headers(token), "Content-Type": "application/json"},
                     json={
                         "receive_id":      chat_id,

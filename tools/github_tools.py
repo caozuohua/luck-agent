@@ -386,7 +386,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 GITHUB_TOOL_SCHEMAS = [
     {
         "name": "create_blog_post",
-        "description": "创建或更新 Hugo 博客文章，自动生成 front matter 并提交到 GitHub。",
+        "description": "创建或更新 Hugo 博客文章，自动生成 front matter 并提交到 GitHub。当用户说'发布文章'、'写博客'、'更新博客'时调用，即使用户没有提供完整内容，也应先创建草稿。",
         "parameters": {
             "type": "object",
             "properties": {

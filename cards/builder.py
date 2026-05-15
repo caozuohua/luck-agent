@@ -33,7 +33,8 @@ STATUS_EMOJI = {
 
 
 def _tag(text: str, color: str = "blue") -> dict:
-    return {"tag": "text", "text": text, "style": {"color": color}}
+    # Card 2.0 不支持 tag:text，统一用 markdown
+    return {"tag": "markdown", "content": text}
 
 
 def _md(text: str) -> dict:
@@ -79,14 +80,8 @@ class CardBuilder:
         if footer_parts:
             elements.append(_divider())
             elements.append({
-                "tag": "column_set",
-                "columns": [
-                    {
-                        "tag":      "column",
-                        "elements": [{"tag": "text", "text": " · ".join(footer_parts),
-                                      "style": {"color": "grey"}}],
-                    }
-                ],
+                "tag": "markdown",
+                "content": f"<font color='grey'>{' · '.join(footer_parts)}</font>",
             })
 
         return {
@@ -131,8 +126,7 @@ class CardBuilder:
                 "content": f"```\n{output_display}\n```",
             },
             _divider(),
-            {"tag": "text", "text": f"⏱ 耗时 {elapsed}s",
-             "style": {"color": "grey"}},
+            {"tag": "markdown", "content": f"<font color='grey'>⏱ 耗时 {elapsed}s</font>"},
         ]
 
         return {
@@ -174,9 +168,8 @@ class CardBuilder:
                         "width": "weighted",
                         "weight": 1,
                         "elements": [
-                            {"tag": "text",
-                             "text": f"{emoji} {status}",
-                             "style": {"color": color}},
+                            {"tag": "markdown",
+                             "content": f"{emoji} {status}"},
                         ],
                     },
                 ],

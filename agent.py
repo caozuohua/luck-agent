@@ -27,6 +27,10 @@ log = structlog.get_logger()
 class LarkSender:
     """封装 Lark 消息发送（文本 + 卡片），处理 reply 和主动发送。"""
 
+    # Lark 实际限制：文本消息 4096 字符，卡片 markdown 元素约 4000 字符
+    TEXT_CHUNK_SIZE = 3800   # 留 buffer，按自然段切割
+    CARD_CHUNK_SIZE = 3500
+
     def __init__(self, client: lark.Client) -> None:
         self._client = client
 
@@ -35,18 +39,108 @@ class LarkSender:
         chat_id: str,
         text: str | None = None,
         card: dict | None = None,
-        reply_to: str | None = None,   # message_id，非 None 则用 reply 接口
+        reply_to: str | None = None,
     ) -> None:
-        loop = asyncio.get_running_loop()
-
         if card:
-            msg_type = "interactive"
-            content  = json.dumps(card, ensure_ascii=False)
+            # 卡片：检查 markdown 元素是否超长，超长则拆分
+            await self._send_card_chunked(chat_id, card, reply_to)
         elif text:
-            msg_type = "text"
-            content  = json.dumps({"text": text}, ensure_ascii=False)
-        else:
-            return
+            # 文本：按 chunk size 分片发送
+            chunks = self._split_text(text, self.TEXT_CHUNK_SIZE)
+            for i, chunk in enumerate(chunks):
+                # 多片时在末尾标注页码
+                if len(chunks) > 1:
+                    chunk = f"{chunk}\n\n`{i+1}/{len(chunks)}`"
+                await self._send_raw(chat_id, "text",
+                                     json.dumps({"text": chunk}, ensure_ascii=False),
+                                     reply_to if i == 0 else None)
+                if len(chunks) > 1:
+                    await asyncio.sleep(0.3)   # 避免发送过快被限速
+
+    async def _send_card_chunked(self, chat_id: str, card: dict,
+                                  reply_to: str | None) -> None:
+        """检查卡片 body 中的 markdown 元素，超长时拆成多张卡片发送。"""
+        elements = card.get("body", {}).get("elements", [])
+        chunks   = self._split_card_elements(elements, self.CARD_CHUNK_SIZE)
+
+        for i, elem_chunk in enumerate(chunks):
+            chunk_card = dict(card)   # shallow copy
+            chunk_card["body"] = {"elements": elem_chunk}
+            # 多张时在 header title 加页码
+            if len(chunks) > 1:
+                header = dict(card.get("header", {}))
+                title_content = header.get("title", {}).get("content", "")
+                header["title"] = {"tag": "plain_text",
+                                   "content": f"{title_content} ({i+1}/{len(chunks)})"}
+                chunk_card["header"] = header
+
+            await self._send_raw(chat_id, "interactive",
+                                 json.dumps(chunk_card, ensure_ascii=False),
+                                 reply_to if i == 0 else None)
+            if len(chunks) > 1:
+                await asyncio.sleep(0.4)
+
+    def _split_text(self, text: str, chunk_size: int) -> list[str]:
+        """按段落边界切割长文本，尽量不在段落中间断开。"""
+        if len(text) <= chunk_size:
+            return [text]
+
+        chunks, current = [], []
+        current_len = 0
+
+        for para in text.split("\n"):
+            para_len = len(para) + 1  # +1 for newline
+            if current_len + para_len > chunk_size and current:
+                chunks.append("\n".join(current))
+                current, current_len = [], 0
+            # 单段超长时强制切
+            if para_len > chunk_size:
+                for j in range(0, len(para), chunk_size):
+                    chunks.append(para[j:j + chunk_size])
+            else:
+                current.append(para)
+                current_len += para_len
+
+        if current:
+            chunks.append("\n".join(current))
+        return chunks
+
+    def _split_card_elements(self, elements: list[dict],
+                              chunk_size: int) -> list[list[dict]]:
+        """
+        把卡片 elements 按 markdown content 总长度切割。
+        非 markdown 元素（hr、div 等）按原样保留在当前片。
+        """
+        chunks, current, current_len = [], [], 0
+
+        for elem in elements:
+            content = elem.get("content", "") if elem.get("tag") == "markdown" else ""
+            elem_len = len(content)
+
+            # markdown 元素本身超长 → 拆分这个元素
+            if elem.get("tag") == "markdown" and elem_len > chunk_size:
+                for text_chunk in self._split_text(content, chunk_size):
+                    if current:
+                        chunks.append(current)
+                    chunks.append([{"tag": "markdown", "content": text_chunk}])
+                    current, current_len = [], 0
+                continue
+
+            if current_len + elem_len > chunk_size and current:
+                chunks.append(current)
+                current, current_len = [], 0
+
+            current.append(elem)
+            current_len += elem_len
+
+        if current:
+            chunks.append(current)
+        return chunks if chunks else [elements]
+
+    async def _send_raw(self, chat_id: str, msg_type: str,
+                        content: str, reply_to: str | None) -> None:
+        """底层发送，不做分片。"""
+        loop = asyncio.get_running_loop()
 
         def _do() -> None:
             try:
@@ -119,6 +213,7 @@ class AgentApp:
         from core.memory       import Memory
         from core.model_router import ModelRouter
         from core.task_queue   import TaskQueue
+        from core.scheduler    import Scheduler, ScheduleStore
         from tools.github_tools import GitHubClient
         from tools.shell_tools  import ShellExecutor, FileManager
         from tools.file_bridge  import FileBridge
@@ -134,6 +229,7 @@ class AgentApp:
             lark.Client.builder()
             .app_id(cfg.LARK_APP_ID)
             .app_secret(cfg.LARK_APP_SECRET)
+            .domain(cfg.LARK_DOMAIN)
             .build()
         )
         self._sender = LarkSender(self._lark_client)
@@ -150,7 +246,8 @@ class AgentApp:
         self._shell    = ShellExecutor(cfg.SHELL_WORK_DIR, cfg.SHELL_TIMEOUT, cfg.SHELL_MAX_OUTPUT)
         self._file_mgr = FileManager(cfg.FILE_UPLOAD_DIR)
         self._bridge   = FileBridge(cfg.LARK_APP_ID, cfg.LARK_APP_SECRET,
-                                    cfg.FILE_UPLOAD_DIR, cfg.FILE_MAX_SIZE_MB, domain=cfg.LARK_DOMAIN)
+                                    cfg.FILE_UPLOAD_DIR, cfg.FILE_MAX_SIZE_MB,
+                                    domain=cfg.LARK_DOMAIN)
 
         # 任务完成通知回调
         async def task_notify(task):
@@ -192,6 +289,28 @@ class AgentApp:
             card=CardBuilder,
             lark_reply_fn=reply_fn,
         )
+
+        # 调度器：定时任务触发 → 注入 AgentMessageHandler
+        async def _schedule_trigger(task_id: str, user_id: str,
+                                    chat_id: str, prompt: str) -> None:
+            log.info("schedule_firing", task_id=task_id, user_id=user_id[:8])
+            # 在 prompt 前加时间戳和任务标识，让模型知道这是定时触发
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            full_prompt = f"[定时任务 #{task_id} · {ts}]\n{prompt}"
+            # 用 pro 模型执行定时任务，确保质量
+            await self._msg_handler.handle(
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id="",
+                text=full_prompt,
+                model_override=cfg.MODEL_PRO,
+            )
+
+        store = ScheduleStore(cfg.DB_PATH)
+        self._scheduler = Scheduler(store=store, trigger_fn=_schedule_trigger)
+        self._msg_handler.scheduler = self._scheduler
+        self._cmd_handler.scheduler = self._scheduler
 
         log.info("components_initialized")
 
@@ -249,14 +368,29 @@ class AgentApp:
             log.info("message_in", user_id=user_id[:8], type=msg_type,
                      chat_type=chat_type, length=len(text))
 
-            # 指令优先（大模型无关）
-            handled = await self._cmd_handler.handle(user_id, chat_id, message_id, text)
-            if handled:
-                return
+            # 模型前缀解析（/pro /flash /lite 开头，剥离后转 AI）
+            model_override = ""
+            model_prefixes = {
+                "/pro":   self.cfg.MODEL_PRO,
+                "/flash": self.cfg.MODEL_FLASH,
+                "/lite":  self.cfg.MODEL_LITE,
+            }
+            for prefix, model in model_prefixes.items():
+                if text.lower().startswith(prefix + " ") or text.lower() == prefix:
+                    model_override = model
+                    text = text[len(prefix):].strip()
+                    break
+
+            # 指令优先（大模型无关，且无模型前缀时才走）
+            if not model_override:
+                handled = await self._cmd_handler.handle(user_id, chat_id, message_id, text)
+                if handled:
+                    return
 
             # 转给 AI
             asyncio.create_task(
-                self._msg_handler.handle(user_id, chat_id, message_id, text)
+                self._msg_handler.handle(user_id, chat_id, message_id, text,
+                                         model_override=model_override)
             )
 
         except Exception as e:
@@ -266,15 +400,15 @@ class AgentApp:
     async def run(self) -> None:
         log.info("agent_starting")
 
-        # 加载 secrets
-        #self.cfg.load_secrets()
+        # 加载 .env 配置
         self.cfg.load()
 
         # 初始化组件
         self._init_components()
 
-        # 启动任务队列
+        # 启动任务队列 + 调度器
         await self._queue.start()
+        await self._scheduler.start()
 
         # 构建 WS 事件分发
         def _make_lark_handler():
@@ -325,6 +459,7 @@ class AgentApp:
 
         log.info("shutting_down")
         await self._queue.stop()
+        await self._scheduler.stop()
 
         # 等待进行中任务
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

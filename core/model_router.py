@@ -26,11 +26,14 @@ log = structlog.get_logger()
 # 系统 Prompt
 SYSTEM_PROMPT = """你是一个专业的技术助手，部署在 Google Cloud VPS 上，通过飞书（Lark）为用户提供服务。
 
-## 能力范围
-- **GitHub 运营**：Hugo 博客发布/管理、PR 审查、Issues 跟踪、GitHub Actions 触发、代码 Review
-- **Shell 执行**：在 VPS 上执行命令，管理文件、进程、系统状态
-- **文件管理**：接收/发送文件，在 Lark 和 VPS 之间传输
-- **信息检索**：联网搜索最新资讯
+## 核心行为准则
+1. 你有 run_shell 工具，可以在 VPS 上执行任意 bash 命令。
+2. 遇到任何不确定能否完成的任务，优先尝试用工具探索，而不是声明"无法完成"。
+3. 遇到不确定的任务，第一步永远是用 run_shell 探索当前状态：
+   - 不知道目录结构 → 先 ls
+   - 不知道 git 状态 → 先 git status  
+   - 不知道某个命令是否存在 → 先 which 或 --help
+4. 探索之后再决定能不能做，而不是凭记忆判断。
 
 ## 行为准则
 1. 优先使用工具完成任务，而非仅描述步骤
@@ -119,19 +122,22 @@ class ModelRouter:
         return self._parse_response(resp, model_name)
 
     def _parse_response(self, resp, model_name: str) -> dict:
-        text_parts  = []
-        tool_calls  = []
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
 
         for candidate in resp.candidates:
             for part in candidate.content.parts:
-                if part.text:
-                    text_parts.append(part.text)
-                if hasattr(part, "function_call") and part.function_call:
-                    fc = part.function_call
+                # 先用 getattr 安全取 function_call，再检查 name 是否非空
+                fc = getattr(part, "function_call", None)
+                if fc and getattr(fc, "name", None):
                     tool_calls.append({
                         "name": fc.name,
                         "args": dict(fc.args),
                     })
+                else:
+                    text = getattr(part, "text", None)
+                    if text:
+                        text_parts.append(text)
 
         tokens = 0
         if hasattr(resp, "usage_metadata"):

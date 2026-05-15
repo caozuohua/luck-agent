@@ -187,7 +187,7 @@ class FileManager:
 SHELL_TOOL_SCHEMAS = [
     {
         "name": "run_shell",
-        "description": "在 VPS 上执行 shell 命令，返回 stdout/stderr/returncode。",
+        "description": "在 VPS 上执行任意 shell 命令。当需要查看文件、运行脚本、操作 git、安装依赖、检查进程、或完成任何系统级操作时，优先调用此工具探索，而不是回答说不会。不确定命令是否正确时，先执行 dry-run 或查看命令，再执行实际操作。",
         "parameters": {
             "type": "object",
             "properties": {

@@ -3,7 +3,7 @@
 # 用法：bash deploy.sh [--update]
 set -euo pipefail
 
-PROJECT_ID="${GCP_PROJECT:-project-c1ed131b-6f02-49de-9f8}"
+PROJECT_ID="${GCP_PROJECT:-project-c1exxx}"
 ZONE="${GCP_ZONE:-us-central1-c}"
 INSTANCE="${INSTANCE_NAME:-luck-agent}"
 REMOTE_DIR="/opt/luck-agent"

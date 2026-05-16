@@ -24,23 +24,23 @@ from vertexai.generative_models import (
 log = structlog.get_logger()
 
 # 系统 Prompt
-SYSTEM_PROMPT = """你是一个专业的技术助手，部署在 Google Cloud VPS 上，通过飞书（Lark）为用户提供服务。
+SYSTEM_PROMPT = """你是一个部署在 GCP VPS 上的诚实可靠的技术智能体，通过 Lark 为用户提供服务。
 
-## 核心行为准则
-1. 你有 run_shell 工具，可以在 VPS 上执行任意 bash 命令。
-2. 遇到任何不确定能否完成的任务，优先尝试用工具探索，而不是声明"无法完成"。
-3. 遇到不确定的任务，第一步永远是用 run_shell 探索当前状态：
-   - 不知道目录结构 → 先 ls
-   - 不知道 git 状态 → 先 git status  
-   - 不知道某个命令是否存在 → 先 which 或 --help
-4. 探索之后再决定能不能做，而不是凭记忆判断。
+## 核心行为准则（最高优先级）
+1. **默认探索，不默认拒绝**：遇到不确定能否完成的任务，先用工具探索当前状态，再决定下一步。不要在没有尝试工具之前说"无法完成"。
+2. **先看再说**：不知道目录结构先 `ls`，不知道 git 状态先 `git status`，不知道命令是否存在先 `which`。用事实而非推断回答。
+3. **工具优先**：能用工具完成的事绝不只描述步骤。调用工具 → 看结果 → 汇报。
+4. **破坏性操作先确认**：删除、强制推送、覆盖等操作必须先告知用户再执行。
+5. **回复简洁**：结果用代码块，进度用卡片，不重复已知信息。
 
-## 行为准则
-1. 优先使用工具完成任务，而非仅描述步骤
-2. 执行破坏性操作（删除/强制推送）前必须确认
-3. Shell 命令执行后汇报结果和副作用
-4. 长任务提交后台队列，主动告知 task_id 和预计完成时间
-5. 回复简洁，技术细节用代码块，进度用卡片展示
+## 工具能力边界
+- `run_shell`：可执行 VPS 上任意 bash 命令，包括 git、pip、systemctl、文件操作等。**凡是系统级操作，直接用它。**
+- `create_blog_post`：当用户说"发文章/写博客/更新博客"时调用，内容不完整时先创建草稿。
+- `trigger_workflow`：当用户说"部署/发布/跑 CI"时调用。
+- GitHub 系列工具：直接操作远端仓库，无需本地 git 环境。
+
+## 已验证可行的操作
+{success_patterns}
 
 ## 用户偏好
 {user_profile}
@@ -170,18 +170,34 @@ class ModelRouter:
             ))
         return contents
 
-    def build_system_prompt(self, user_profile: dict, history: list[dict]) -> str:
-        """构建含用户画像和近期上下文的系统 prompt。"""
+    def build_system_prompt(self, user_profile: dict, history: list[dict],
+                            success_patterns: list[dict] | None = None) -> str:
+        """构建含用户画像、成功模式和近期上下文的系统 prompt。"""
         profile_str = "\n".join(
             f"- {k}: {v}" for k, v in user_profile.items()
+            if k != "default_chat_id"   # 过滤内部字段
         ) or "无特殊偏好"
 
+        # 成功模式：按工具分组，最多注入 12 条
+        if success_patterns:
+            pattern_lines = []
+            for p in success_patterns:
+                pattern_lines.append(
+                    f"- [{p['tool']}] {p['intent']} → `{p['command']}` ✅ {p['outcome']}"
+                    + (f"（已用{p['use_count']}次）" if p["use_count"] > 1 else "")
+                )
+            patterns_str = "\n".join(pattern_lines)
+        else:
+            patterns_str = "暂无记录，请大胆尝试工具调用积累经验。"
+
         context_str = ""
-        for h in history[-6:]:  # 最近 6 条做摘要
+        for h in history[-6:]:
             role = "用户" if h["role"] == "user" else "助手"
-            context_str += f"{role}: {h['content'][:100]}...\n" if len(h["content"]) > 100 else f"{role}: {h['content']}\n"
+            snippet = h["content"][:100] + "…" if len(h["content"]) > 100 else h["content"]
+            context_str += f"{role}: {snippet}\n"
 
         return SYSTEM_PROMPT.format(
+            success_patterns=patterns_str,
             user_profile=profile_str,
             recent_context=context_str or "无近期上下文",
         )

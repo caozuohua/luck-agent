@@ -61,9 +61,20 @@ HELP_TEXT = """
 `/task <id>` — 查看任务状态
 `/tasks` — 查看我的任务列表
 
+**记忆管理**
+`/mem` — 查看所有记忆（画像 + 成功模式 + 对话统计）
+`/mem profile` — 只看用户画像
+`/mem patterns` — 只看成功模式
+`/mem history` — 只看对话历史摘要
+`/mem del <key>` — 删除画像中的某个 key
+`/mem del profile` — 清空全部用户画像
+`/mem del patterns` — 清空全部成功模式
+`/mem del history` — 清空对话历史
+`/mem set <key> <value>` — 直接写入画像条目
+
 **系统**
 `/status` — 系统状态
-`/mem [clear]` — 查看/清除对话记忆
+`/logs [error|warning] [小时数]` — 查询错误日志回溯
 `/help` — 显示本帮助
 """.strip()
 
@@ -93,6 +104,7 @@ class CommandHandler:
         self.reply    = lark_reply_fn
         self.hugo_repo = hugo_repo
         self.scheduler = None   # 由 agent.py 启动后注入
+        self.db_log    = None   # 由 agent.py 启动后注入
 
         # 待确认的危险命令（防误删）
         self._pending_dangerous: dict[str, str] = {}  # user_id → command
@@ -161,6 +173,9 @@ class CommandHandler:
 
             elif cmd == "/status":
                 await self._handle_status(user_id, chat_id)
+
+            elif cmd == "/logs":
+                await self._handle_logs(chat_id, args)
 
             elif cmd in ("/mem", "/memory"):
                 await self._handle_memory(user_id, chat_id, args)
@@ -389,6 +404,59 @@ git push
             card=self.card.system_status(stats, tasks, disk),
         )
 
+    async def _handle_logs(self, chat_id: str, args: str) -> None:
+        """
+        /logs [level] [hours]
+        level: error | warning | (空=全部)
+        hours: 默认24，最多168（7天）
+        """
+        if not self.db_log:
+            await self.reply(chat_id, text="⚠️ 日志回溯未初始化。")
+            return
+
+        parts = args.split() if args else []
+        level = ""
+        hours = 24
+
+        for p in parts:
+            if p in ("error", "warning", "warn"):
+                level = "error" if p == "error" else "warning"
+            elif p.isdigit():
+                hours = min(int(p), 168)
+
+        logs  = self.db_log.query(level=level, hours=hours, limit=30)
+        stats = self.db_log.stats(hours=hours)
+
+        if not logs:
+            await self.reply(
+                chat_id,
+                text=f"✅ 最近 {hours}h 无{'错误' if level == 'error' else '警告' if level == 'warning' else '异常'}日志。"
+            )
+            return
+
+        # 标题行
+        lines = [
+            f"**📋 日志回溯（最近 {hours}h）**",
+            f"错误 {stats['errors']} · 警告 {stats['warnings']}",
+            "---",
+        ]
+
+        import time as _time
+        for entry in logs[:15]:
+            ts    = _time.strftime("%m-%d %H:%M", _time.localtime(entry["created_at"]))
+            icon  = "❌" if entry["level"] == "error" else "⚠️"
+            event = entry["event"][:60]
+            detail = entry["detail"][:80] if entry["detail"] else ""
+            line  = f"{icon} `{ts}` **{event}**"
+            if detail:
+                line += f"\n   _{detail}_"
+            lines.append(line)
+
+        if len(logs) > 15:
+            lines.append(f"\n_…共 {len(logs)} 条，只显示最新 15 条_")
+
+        await self.reply(chat_id, text="\n".join(lines))
+
     async def _handle_schedule(self, user_id: str, chat_id: str, args: str) -> None:
         if not self.scheduler:
             await self.reply(chat_id, text="⚠️ 调度器未初始化。")
@@ -432,15 +500,123 @@ git push
             await self.reply(chat_id, text="用法：`/schedule list|pause|resume|cancel [id]`")
 
     async def _handle_memory(self, user_id: str, chat_id: str, args: str) -> None:
-        if args.strip() == "clear":
-            count = self.memory.clear_history(user_id)
-            await self.reply(chat_id, text=f"✅ 已清除 {count} 条对话记忆。")
-        else:
-            history = self.memory.get_history(user_id, limit=5)
-            profile = self.memory.get_all_profile(user_id)
-            lines = [f"📋 近期 {len(history)} 条对话，用 `/mem clear` 清除。"]
-            if profile:
-                lines.append("\n**用户画像：**")
-                for k, v in profile.items():
-                    lines.append(f"- {k}: {v}")
-            await self.reply(chat_id, text="\n".join(lines))
+        """
+        /mem                   → 完整记忆总览
+        /mem profile           → 用户画像
+        /mem patterns          → 成功模式列表
+        /mem history           → 对话历史摘要
+        /mem del <key>         → 删除画像单条
+        /mem del profile       → 清空画像
+        /mem del patterns      → 清空成功模式
+        /mem del history       → 清空对话历史
+        /mem set <key> <value> → 写入画像
+        """
+        parts  = args.strip().split(None, 2) if args.strip() else []
+        subcmd = parts[0].lower() if parts else ""
+
+        # ── 删除 ──────────────────────────────────────────────────
+        if subcmd == "del":
+            target = parts[1].lower() if len(parts) > 1 else ""
+
+            if target == "history":
+                count = self.memory.clear_history(user_id)
+                await self.reply(chat_id, text=f"✅ 已清空对话历史（{count} 条）。")
+
+            elif target == "profile":
+                count = self.memory.clear_profile(user_id)
+                await self.reply(chat_id, text=f"✅ 已清空用户画像（{count} 条）。")
+
+            elif target == "patterns":
+                count = self.memory.clear_patterns()
+                await self.reply(chat_id, text=f"✅ 已清空成功模式（{count} 条）。")
+
+            elif target:
+                # 删除画像中的单个 key
+                ok = self.memory.delete_profile(user_id, target)
+                if ok:
+                    await self.reply(chat_id, text=f"✅ 已删除记忆条目：`{target}`")
+                else:
+                    await self.reply(chat_id, text=f"❌ 找不到记忆条目：`{target}`\n用 `/mem profile` 查看现有条目。")
+            else:
+                await self.reply(chat_id, text="用法：`/mem del <key|profile|patterns|history>`")
+            return
+
+        # ── 写入 ──────────────────────────────────────────────────
+        if subcmd == "set":
+            if len(parts) < 3:
+                await self.reply(chat_id, text="用法：`/mem set <key> <value>`")
+                return
+            key, value = parts[1], parts[2]
+            self.memory.set_profile(user_id, key, value)
+            await self.reply(chat_id, text=f"✅ 已写入：`{key}` = `{value}`")
+            return
+
+        # ── 查看 ──────────────────────────────────────────────────
+        if subcmd == "profile" or (not subcmd):
+            await self._show_profile(user_id, chat_id)
+
+        if subcmd == "patterns" or (not subcmd):
+            await self._show_patterns(chat_id)
+
+        if subcmd == "history" or (not subcmd):
+            await self._show_history(user_id, chat_id)
+
+        # 无 subcmd 时额外显示统计摘要
+        if not subcmd:
+            stats = self.memory.stats()
+            await self.reply(
+                chat_id,
+                text=(
+                    f"📊 **记忆统计**\n"
+                    f"对话消息 {stats['messages']} 条 · "
+                    f"任务记录 {stats['tasks']} 条 · "
+                    f"成功模式 {stats['patterns']} 条\n\n"
+                    f"💡 用 `/mem del history|profile|patterns` 清空对应记忆，"
+                    f"`/mem set <key> <value>` 直接写入画像。"
+                ),
+            )
+
+    async def _show_profile(self, user_id: str, chat_id: str) -> None:
+        profile = self.memory.get_all_profile(user_id)
+        # 过滤内部系统字段
+        INTERNAL = {"default_chat_id", "default_git_dir"}
+        visible  = {k: v for k, v in profile.items() if k not in INTERNAL}
+
+        if not visible:
+            await self.reply(chat_id, text="📋 **用户画像**\n_暂无内容，和智能体对话后会自动积累。_")
+            return
+
+        lines = ["📋 **用户画像**"]
+        for k, v in visible.items():
+            lines.append(f"- `{k}`: {v}")
+        lines.append(f"\n用 `/mem del <key>` 删除单条，`/mem del profile` 清空全部。")
+        await self.reply(chat_id, text="\n".join(lines))
+
+    async def _show_patterns(self, chat_id: str) -> None:
+        patterns = self.memory.get_success_patterns(limit=20)
+        if not patterns:
+            await self.reply(chat_id, text="🧠 **成功模式**\n_暂无记录，工具调用成功后自动积累。_")
+            return
+
+        lines = [f"🧠 **成功模式**（共 {len(patterns)} 条）"]
+        for p in patterns:
+            lines.append(
+                f"- `#{p['id']}` [{p['tool']}] {p['intent'][:40]}"
+                f"（用了{p['use_count']}次）"
+            )
+        lines.append(f"\n用 `/mem del patterns` 清空全部。")
+        await self.reply(chat_id, text="\n".join(lines))
+
+    async def _show_history(self, user_id: str, chat_id: str) -> None:
+        history = self.memory.get_history(user_id, limit=8)
+        if not history:
+            await self.reply(chat_id, text="💬 **对话历史**\n_暂无记录。_")
+            return
+
+        lines = [f"💬 **对话历史**（最近 {len(history)} 条）"]
+        for h in history:
+            role    = "你" if h["role"] == "user" else "Bot"
+            snippet = h["content"][:60] + "…" if len(h["content"]) > 60 else h["content"]
+            lines.append(f"- **{role}**：{snippet}")
+        lines.append(f"\n用 `/mem del history` 清空。")
+        await self.reply(chat_id, text="\n".join(lines))

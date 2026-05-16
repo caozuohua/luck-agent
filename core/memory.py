@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS github_history (
     result      TEXT,
     created_at  REAL DEFAULT (unixepoch('now', 'subsec'))
 );
+
+-- 成功工具调用模式（注入到系统 Prompt，提升模型探索意愿）
+CREATE TABLE IF NOT EXISTS success_patterns (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool        TEXT NOT NULL,           -- 工具名
+    intent      TEXT NOT NULL,           -- 用户意图摘要（≤50字）
+    command     TEXT NOT NULL,           -- 实际执行的关键参数摘要
+    outcome     TEXT NOT NULL,           -- 结果摘要（≤80字）
+    use_count   INTEGER DEFAULT 1,       -- 被引用次数，用于排序
+    last_used   REAL DEFAULT (unixepoch('now', 'subsec')),
+    created_at  REAL DEFAULT (unixepoch('now', 'subsec'))
+);
+CREATE INDEX IF NOT EXISTS idx_patterns_tool ON success_patterns(tool, use_count DESC);
 """
 
 
@@ -176,6 +189,23 @@ class Memory:
                 result[r["key"]] = r["value"]
         return result
 
+    def delete_profile(self, user_id: str, key: str) -> bool:
+        """删除用户画像中的单个 key，返回是否实际删除了。"""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_profile WHERE user_id=? AND key=?",
+                (user_id, key),
+            )
+        return cur.rowcount > 0
+
+    def clear_profile(self, user_id: str) -> int:
+        """清空用户的所有画像条目，返回删除数量。"""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_profile WHERE user_id=?", (user_id,)
+            )
+        return cur.rowcount
+
     # ── 任务记录 ──────────────────────────────────────────────────
     def create_task(self, task_id: str, user_id: str, task_type: str, payload: dict) -> None:
         with self._conn() as conn:
@@ -252,10 +282,72 @@ class Memory:
         except Exception:
             return row["value"]
 
+    # ── Success Patterns ──────────────────────────────────────────
+    def record_success(self, tool: str, intent: str,
+                       command: str, outcome: str) -> None:
+        """
+        记录一次成功的工具调用。
+        相同 tool+intent 组合已存在时，更新 outcome 并累加 use_count，
+        避免表无限增长。
+        """
+        intent  = intent[:50]
+        command = command[:120]
+        outcome = outcome[:80]
+
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM success_patterns WHERE tool=? AND intent=?",
+                (tool, intent),
+            ).fetchone()
+
+            if row:
+                conn.execute(
+                    """UPDATE success_patterns
+                       SET use_count=use_count+1, outcome=?, command=?, last_used=?
+                       WHERE id=?""",
+                    (outcome, command, time.time(), row["id"]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO success_patterns
+                       (tool, intent, command, outcome) VALUES (?,?,?,?)""",
+                    (tool, intent, command, outcome),
+                )
+
+    def get_success_patterns(self, limit: int = 12) -> list[dict]:
+        """
+        返回最常用的成功模式，按 use_count DESC 排序。
+        limit 控制注入到 prompt 的条数，避免占用太多 token。
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, tool, intent, command, outcome, use_count
+                   FROM success_patterns
+                   ORDER BY use_count DESC, last_used DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_pattern(self, pattern_id: int) -> bool:
+        """按 id 删除单条成功模式。"""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM success_patterns WHERE id=?", (pattern_id,)
+            )
+        return cur.rowcount > 0
+
+    def clear_patterns(self) -> int:
+        """清空所有成功模式，返回删除数量。"""
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM success_patterns")
+        return cur.rowcount
+
     # ── 统计 ──────────────────────────────────────────────────────
     def stats(self) -> dict:
         with self._conn() as conn:
-            msgs   = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            tasks  = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-            users  = conn.execute("SELECT COUNT(DISTINCT user_id) FROM messages").fetchone()[0]
-        return {"messages": msgs, "tasks": tasks, "users": users}
+            msgs     = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            tasks    = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            users    = conn.execute("SELECT COUNT(DISTINCT user_id) FROM messages").fetchone()[0]
+            patterns = conn.execute("SELECT COUNT(*) FROM success_patterns").fetchone()[0]
+        return {"messages": msgs, "tasks": tasks, "users": users, "patterns": patterns}

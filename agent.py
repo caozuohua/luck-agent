@@ -214,6 +214,7 @@ class AgentApp:
         from core.model_router import ModelRouter
         from core.task_queue   import TaskQueue
         from core.scheduler    import Scheduler, ScheduleStore
+        from core.health       import HealthMonitor, DBLogHandler
         from tools.github_tools import GitHubClient
         from tools.shell_tools  import ShellExecutor, FileManager
         from tools.file_bridge  import FileBridge
@@ -237,6 +238,20 @@ class AgentApp:
         # 快捷发送函数（绑定到 reply_fn 签名）
         async def reply_fn(chat_id: str, text: str | None = None, card: dict | None = None):
             await self._sender.send(chat_id, text=text, card=card)
+
+        # ── 日志回溯处理器（error/warning 写入 SQLite）──────────────
+        self._db_log = DBLogHandler(cfg.DB_PATH)
+
+        # 重新配置 structlog，追加 DB 写入处理器
+        import structlog as _sl
+        _sl.configure(
+            processors=[
+                _sl.processors.TimeStamper(fmt="iso"),
+                _sl.processors.add_log_level,
+                self._db_log,               # ← 写入 SQLite
+                _sl.processors.JSONRenderer(),
+            ]
+        )
 
         # 核心组件
         self._memory   = Memory(cfg.DB_PATH)
@@ -311,6 +326,30 @@ class AgentApp:
         self._scheduler = Scheduler(store=store, trigger_fn=_schedule_trigger)
         self._msg_handler.scheduler = self._scheduler
         self._cmd_handler.scheduler = self._scheduler
+        self._cmd_handler.db_log    = self._db_log
+
+        # 健康监控：WS 心跳 + DB 维护 + 资源预警
+        async def _health_notify(text: str) -> None:
+            # 向所有已知用户发送通知（取最近活跃用户）
+            with self._memory._conn() as conn:
+                rows = conn.execute(
+                    """SELECT DISTINCT user_id FROM messages
+                       ORDER BY created_at DESC LIMIT 3"""
+                ).fetchall()
+            for row in rows:
+                chat_id = self._memory.get_profile(
+                    row["user_id"], "default_chat_id", ""
+                )
+                if chat_id:
+                    await self._sender.send(chat_id, text=text)
+                    break   # 只发给最近活跃的一个用户
+
+        self._health = HealthMonitor(
+            db_path=cfg.DB_PATH,
+            db_log_handler=self._db_log,
+            task_queue=self._queue,
+            notify_fn=_health_notify,
+        )
 
         log.info("components_initialized")
 
@@ -330,6 +369,9 @@ class AgentApp:
 
             if not user_id or not chat_id:
                 return
+
+            # WS 心跳：收到消息说明连接正常
+            self._health.mark_ws_ok()
 
             # 记录用户默认 chat_id（用于任务完成通知）
             self._memory.set_profile(user_id, "default_chat_id", chat_id)
@@ -406,9 +448,10 @@ class AgentApp:
         # 初始化组件
         self._init_components()
 
-        # 启动任务队列 + 调度器
+        # 启动任务队列 + 调度器 + 健康监控
         await self._queue.start()
         await self._scheduler.start()
+        await self._health.start()
 
         # 构建 WS 事件分发
         def _make_lark_handler():
@@ -460,6 +503,7 @@ class AgentApp:
         log.info("shutting_down")
         await self._queue.stop()
         await self._scheduler.stop()
+        await self._health.stop()
 
         # 等待进行中任务
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

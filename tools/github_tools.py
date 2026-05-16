@@ -20,9 +20,11 @@ log = structlog.get_logger()
 
 
 class GitHubClient:
-    """GitHub REST API v3 + GraphQL 封装。"""
+    """GitHub REST API v3 封装，含连接池复用、429 重试、速率限制处理。"""
 
-    BASE = "https://api.github.com"
+    BASE    = "https://api.github.com"
+    # 连接池：整个进程共享一个 AsyncClient，复用 TCP 连接
+    _shared_client: httpx.AsyncClient | None = None
 
     def __init__(self, token: str, default_owner: str = "") -> None:
         self._token = token
@@ -33,8 +35,64 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    @property
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(headers=self._headers, timeout=30)
+        """返回全局共享连接池（首次调用时创建）。"""
+        if GitHubClient._shared_client is None or GitHubClient._shared_client.is_closed:
+            GitHubClient._shared_client = httpx.AsyncClient(
+                headers=self._headers,
+                timeout=httpx.Timeout(connect=5, read=30, write=10, pool=5),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                http2=False,
+            )
+        return GitHubClient._shared_client
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """
+        带重试的 HTTP 请求：
+          - 429 Too Many Requests → 按 Retry-After 等待后重试
+          - 5xx Server Error     → 指数退避重试，最多 3 次
+          - 401/403              → 直接抛出，不重试
+        """
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                resp = await self._client.request(method, url, **kwargs)
+            except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                if attempt == max_attempts - 1:
+                    raise
+                wait = 2 ** attempt
+                log.warning("github_network_retry", attempt=attempt+1,
+                            error=str(e), wait=wait)
+                await asyncio.sleep(wait)
+                continue
+
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "60"))
+                log.warning("github_rate_limited", retry_after=retry_after)
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(min(retry_after, 120))
+                    continue
+            resp.raise_for_status()
+
+            if resp.status_code >= 500 and attempt < max_attempts - 1:
+                wait = 2 ** attempt
+                log.warning("github_server_error", status=resp.status_code,
+                            attempt=attempt+1, wait=wait)
+                await asyncio.sleep(wait)
+                continue
+
+            # 检查次级速率限制（X-RateLimit-Remaining）
+            remaining = resp.headers.get("X-RateLimit-Remaining", "")
+            if remaining and int(remaining) < 10:
+                reset_ts = int(resp.headers.get("X-RateLimit-Reset", "0"))
+                wait = max(0, reset_ts - int(time.time()))
+                log.warning("github_rate_near_limit",
+                            remaining=remaining, reset_in=wait)
+
+            return resp
+
+        raise RuntimeError(f"GitHub API 请求失败（{max_attempts} 次重试后）：{url}")
 
     def _parse_repo(self, repo: str) -> tuple[str, str]:
         """'owner/repo' 或 'repo' → (owner, repo)"""
@@ -73,28 +131,28 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         path = f"{content_path}/{slug}.md"
         encoded = base64.b64encode(full_content.encode()).decode()
 
-        async with self._client() as c:
-            # 检查文件是否已存在（获取 sha）
-            sha = None
-            check = await c.get(f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
-                                 params={"ref": branch})
-            if check.status_code == 200:
-                sha = check.json().get("sha")
+        # 检查文件是否已存在（获取 sha）
+        sha = None
+        check = await self._request("GET",
+                    f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
+                    params={"ref": branch})
+        if check.status_code == 200:
+            sha = check.json().get("sha")
 
-            payload = {
-                "message": f"{'Update' if sha else 'Add'} post: {title}",
-                "content": encoded,
-                "branch":  branch,
-            }
-            if sha:
-                payload["sha"] = sha
+        payload = {
+            "message": f"{'Update' if sha else 'Add'} post: {title}",
+            "content": encoded,
+            "branch":  branch,
+        }
+        if sha:
+            payload["sha"] = sha
 
-            resp = await c.put(
-                f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await self._request("PUT",
+            f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         return {
             "action":  "update" if sha else "create",
@@ -108,15 +166,14 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
                               content_path: str = "content/posts") -> list[dict]:
         """列出博客文章。"""
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
-                f"{self.BASE}/repos/{owner}/{repo_name}/contents/{content_path}",
-                params={"ref": branch},
-            )
-            if resp.status_code == 404:
-                return []
-            resp.raise_for_status()
-            files = [
+        resp = await self._request("GET",
+            f"{self.BASE}/repos/{owner}/{repo_name}/contents/{content_path}",
+            params={"ref": branch},
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        files = [
                 {
                     "name":     f["name"],
                     "path":     f["path"],
@@ -131,13 +188,12 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     async def get_blog_post(self, repo: str, path: str, branch: str = "main") -> dict:
         """读取博文内容（解码 base64）。"""
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
+        resp = await self._request("GET",
                 f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
                 params={"ref": branch},
             )
-            resp.raise_for_status()
-            data = resp.json()
+        resp.raise_for_status()
+        data = resp.json()
         content = base64.b64decode(data["content"]).decode("utf-8")
         return {"path": path, "sha": data["sha"], "content": content}
 
@@ -152,12 +208,11 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     ) -> dict:
         """手动触发 workflow_dispatch。"""
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.post(
+        resp = await self._request("POST",
                 f"{self.BASE}/repos/{owner}/{repo_name}/actions/workflows/{workflow_id}/dispatches",
                 json={"ref": ref, "inputs": inputs or {}},
             )
-            resp.raise_for_status()
+        resp.raise_for_status()
         return {"triggered": True, "workflow": workflow_id, "ref": ref}
 
     async def list_workflow_runs(self, repo: str, workflow_id: str = "",
@@ -169,10 +224,9 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         if workflow_id:
             params["workflow_id"] = workflow_id
 
-        async with self._client() as c:
-            resp = await c.get(url, params=params)
-            resp.raise_for_status()
-            runs = resp.json().get("workflow_runs", [])
+        resp = await self._request("GET", url, params=params)
+        resp.raise_for_status()
+        runs = resp.json().get("workflow_runs", [])
 
         return [
             {
@@ -190,20 +244,18 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     async def get_workflow_run_logs_url(self, repo: str, run_id: int) -> str:
         """获取 workflow run 日志下载 URL。"""
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
-                f"{self.BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}/logs",
-                follow_redirects=False,
-            )
-            return resp.headers.get("location", "")
+        resp = await self._request("GET",
+            f"{self.BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}/logs",
+            follow_redirects=False,
+        )
+        return resp.headers.get("location", "")
 
     async def cancel_workflow_run(self, repo: str, run_id: int) -> dict:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.post(
+        resp = await self._request("POST",
                 f"{self.BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}/cancel"
             )
-            resp.raise_for_status()
+        resp.raise_for_status()
         return {"cancelled": True, "run_id": run_id}
 
     # ── Issues & PR ────────────────────────────────────────────────
@@ -212,24 +264,22 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
                            labels: list[str] | None = None,
                            assignees: list[str] | None = None) -> dict:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.post(
+        resp = await self._request("POST",
                 f"{self.BASE}/repos/{owner}/{repo_name}/issues",
                 json={"title": title, "body": body,
                       "labels": labels or [], "assignees": assignees or []},
             )
-            resp.raise_for_status()
-            data = resp.json()
+        resp.raise_for_status()
+        data = resp.json()
         return {"number": data["number"], "url": data["html_url"], "state": data["state"]}
 
     async def list_issues(self, repo: str, state: str = "open", limit: int = 10) -> list[dict]:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
+        resp = await self._request("GET",
                 f"{self.BASE}/repos/{owner}/{repo_name}/issues",
                 params={"state": state, "per_page": limit, "pulls": "false"},
             )
-            resp.raise_for_status()
+        resp.raise_for_status()
         return [
             {"number": i["number"], "title": i["title"],
              "state": i["state"], "url": i["html_url"]}
@@ -238,12 +288,11 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 
     async def list_prs(self, repo: str, state: str = "open", limit: int = 10) -> list[dict]:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
+        resp = await self._request("GET",
                 f"{self.BASE}/repos/{owner}/{repo_name}/pulls",
                 params={"state": state, "per_page": limit},
             )
-            resp.raise_for_status()
+        resp.raise_for_status()
         return [
             {"number": p["number"], "title": p["title"],
              "state": p["state"], "url": p["html_url"],
@@ -253,13 +302,12 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 
     async def comment_on_issue(self, repo: str, issue_number: int, body: str) -> dict:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.post(
+        resp = await self._request("POST",
                 f"{self.BASE}/repos/{owner}/{repo_name}/issues/{issue_number}/comments",
                 json={"body": body},
             )
-            resp.raise_for_status()
-            data = resp.json()
+        resp.raise_for_status()
+        data = resp.json()
         return {"comment_id": data["id"], "url": data["html_url"]}
 
     async def merge_pr(self, repo: str, pr_number: int,
@@ -268,13 +316,12 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         payload: dict = {"merge_method": method}
         if title:
             payload["commit_title"] = title
-        async with self._client() as c:
-            resp = await c.put(
+        resp = await self._request("PUT",
                 f"{self.BASE}/repos/{owner}/{repo_name}/pulls/{pr_number}/merge",
                 json=payload,
             )
-            resp.raise_for_status()
-            data = resp.json()
+        resp.raise_for_status()
+        data = resp.json()
         return {"merged": data.get("merged", False), "sha": data.get("sha", "")[:7]}
 
     # ── 代码管理 ────────────────────────────────────────────────────
@@ -282,13 +329,12 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     async def get_file(self, repo: str, path: str, branch: str = "main") -> str:
         """读取仓库文件内容。"""
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
+        resp = await self._request("GET",
                 f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
                 params={"ref": branch},
             )
-            resp.raise_for_status()
-            data = resp.json()
+        resp.raise_for_status()
+        data = resp.json()
         return base64.b64decode(data["content"]).decode("utf-8")
 
     async def update_file(self, repo: str, path: str, content: str,
@@ -296,34 +342,32 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         """更新文件（自动获取 sha）。"""
         owner, repo_name = self._parse_repo(repo)
         encoded = base64.b64encode(content.encode()).decode()
-        async with self._client() as c:
-            # 获取当前 sha
-            check = await c.get(
-                f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
-                params={"ref": branch},
-            )
-            sha = check.json().get("sha") if check.status_code == 200 else None
+        # 获取当前 sha
+        check = await self._request("GET",
+            f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
+            params={"ref": branch},
+        )
+        sha = check.json().get("sha") if check.status_code == 200 else None
 
-            payload = {"message": message, "content": encoded, "branch": branch}
-            if sha:
-                payload["sha"] = sha
+        payload = {"message": message, "content": encoded, "branch": branch}
+        if sha:
+            payload["sha"] = sha
 
-            resp = await c.put(
-                f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
-                json=payload,
-            )
-            resp.raise_for_status()
+        resp = await self._request("PUT",
+            f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
+            json=payload,
+        )
+        resp.raise_for_status()
         return {"path": path, "commit": resp.json()["commit"]["sha"][:7]}
 
     async def list_commits(self, repo: str, branch: str = "main",
                            limit: int = 10) -> list[dict]:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
+        resp = await self._request("GET",
                 f"{self.BASE}/repos/{owner}/{repo_name}/commits",
                 params={"sha": branch, "per_page": limit},
             )
-            resp.raise_for_status()
+        resp.raise_for_status()
         return [
             {
                 "sha":     c_["sha"][:7],
@@ -337,27 +381,25 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     async def create_branch(self, repo: str, branch: str,
                              from_branch: str = "main") -> dict:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            # 获取源分支 SHA
-            ref = await c.get(
-                f"{self.BASE}/repos/{owner}/{repo_name}/git/ref/heads/{from_branch}"
-            )
-            ref.raise_for_status()
-            sha = ref.json()["object"]["sha"]
+        # 获取源分支 SHA
+        ref = await self._request("GET",
+            f"{self.BASE}/repos/{owner}/{repo_name}/git/ref/heads/{from_branch}"
+        )
+        ref.raise_for_status()
+        sha = ref.json()["object"]["sha"]
 
-            resp = await c.post(
-                f"{self.BASE}/repos/{owner}/{repo_name}/git/refs",
-                json={"ref": f"refs/heads/{branch}", "sha": sha},
-            )
-            resp.raise_for_status()
+        resp = await self._request("POST",
+            f"{self.BASE}/repos/{owner}/{repo_name}/git/refs",
+            json={"ref": f"refs/heads/{branch}", "sha": sha},
+        )
+        resp.raise_for_status()
         return {"branch": branch, "sha": sha[:7]}
 
     async def get_repo_info(self, repo: str) -> dict:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(f"{self.BASE}/repos/{owner}/{repo_name}")
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await self._request("GET",f"{self.BASE}/repos/{owner}/{repo_name}")
+        resp.raise_for_status()
+        data = resp.json()
         return {
             "name":        data["name"],
             "description": data.get("description", ""),
@@ -370,12 +412,11 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 
     async def search_code(self, repo: str, query: str) -> list[dict]:
         owner, repo_name = self._parse_repo(repo)
-        async with self._client() as c:
-            resp = await c.get(
+        resp = await self._request("GET",
                 f"{self.BASE}/search/code",
                 params={"q": f"{query} repo:{owner}/{repo_name}", "per_page": 5},
             )
-            resp.raise_for_status()
+        resp.raise_for_status()
         return [
             {"path": i["path"], "url": i["html_url"]}
             for i in resp.json().get("items", [])
@@ -386,7 +427,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 GITHUB_TOOL_SCHEMAS = [
     {
         "name": "create_blog_post",
-        "description": "创建或更新 Hugo 博客文章，自动生成 front matter 并提交到 GitHub。当用户说'发布文章'、'写博客'、'更新博客'时调用，即使用户没有提供完整内容，也应先创建草稿。",
+        "description": "创建或更新 Hugo 博客文章，自动生成 front matter 并提交到 GitHub。",
         "parameters": {
             "type": "object",
             "properties": {

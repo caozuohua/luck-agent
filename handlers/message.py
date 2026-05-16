@@ -87,6 +87,32 @@ class AgentMessageHandler:
                 },
             },
             {
+                "name": "forget",
+                "description": (
+                    "删除用户画像中的某个记忆条目。"
+                    "当用户说'忘掉我的XXX'、'删除你记的XXX'、'不要记住XXX'时调用。"
+                    "key='*' 表示清空全部用户画像。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "要删除的记忆键，或 '*' 清空全部",
+                        },
+                    },
+                    "required": ["key"],
+                },
+            },
+            {
+                "name": "show_memory",
+                "description": (
+                    "展示智能体当前记忆的完整内容，包括用户画像、成功模式、对话历史摘要。"
+                    "当用户问'你记得什么'、'你的记忆里有什么'、'看看你的记忆'时调用。"
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
                 "name": "schedule_task",
                 "description": (
                     "设置定时任务，让智能体在指定时间自动执行并推送结果。"
@@ -360,6 +386,32 @@ class AgentMessageHandler:
             val = self.memory.get_profile(user_id, args["key"])
             return {"key": args["key"], "value": val}
 
+        elif name == "forget":
+            key = args.get("key", "")
+            if key == "*":
+                count = self.memory.clear_profile(user_id)
+                return {"deleted": True, "key": "*", "count": count}
+            ok = self.memory.delete_profile(user_id, key)
+            return {"deleted": ok, "key": key}
+
+        elif name == "show_memory":
+            profile  = self.memory.get_all_profile(user_id)
+            patterns = self.memory.get_success_patterns(limit=20)
+            history  = self.memory.get_history(user_id, limit=5)
+            return {
+                "profile":  profile,
+                "patterns": [
+                    {"id": p["id"], "tool": p["tool"], "intent": p["intent"],
+                     "use_count": p["use_count"]}
+                    for p in patterns
+                ],
+                "recent_messages": len(history),
+                "history_preview": [
+                    {"role": h["role"], "snippet": h["content"][:80]}
+                    for h in history
+                ],
+            }
+
         # ── 定时任务工具 ──
         elif name == "schedule_task":
             if not self.scheduler:
@@ -522,6 +574,29 @@ class AgentMessageHandler:
                 lines.append(f"✅ 文件已更新：`{res.get('path','')}` commit `{res.get('commit','')}`")
             elif tool == "merge_pr":
                 lines.append(f"✅ PR 已合并，commit `{res.get('sha','')}`")
+            elif tool == "forget":
+                key = res.get("key", "")
+                if key == "*":
+                    lines.append(f"✅ 已清空全部用户画像（{res.get('count', 0)} 条）。")
+                elif res.get("deleted"):
+                    lines.append(f"✅ 已删除记忆条目：`{key}`")
+                else:
+                    lines.append(f"❌ 找不到记忆条目：`{key}`")
+
+            elif tool == "show_memory":
+                profile  = res.get("profile", {})
+                patterns = res.get("patterns", [])
+                msgs     = res.get("recent_messages", 0)
+                lines.append(
+                    f"📋 当前记忆：画像 {len(profile)} 条 · "
+                    f"成功模式 {len(patterns)} 条 · 近期对话 {msgs} 条"
+                )
+                if profile:
+                    INTERNAL = {"default_chat_id", "default_git_dir"}
+                    for k, v in profile.items():
+                        if k not in INTERNAL:
+                            lines.append(f"  - `{k}`: {v}")
+
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

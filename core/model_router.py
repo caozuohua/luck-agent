@@ -67,12 +67,15 @@ class ModelRouter:
         self._max_tokens = int(os.environ.get("MAX_OUTPUT_TOKENS", "2048"))
         log.info("model_router_ready", project=project, location=location)
 
-    def _get_config(self) -> types.GenerateContentConfig:
-        """生成配置"""
-        return types.GenerateContentConfig(
+    def _get_config(self, system: str = "") -> types.GenerateContentConfig:
+        """生成配置（系统提示通过 config.system_instruction 字符串传递）"""
+        config = types.GenerateContentConfig(
             temperature=self._temperature,
             max_output_tokens=self._max_tokens,
         )
+        if system:
+            config.system_instruction = system
+        return config
 
     async def chat(
         self,
@@ -111,7 +114,7 @@ class ModelRouter:
         tools: types.Tool | None,
         system: str = "",
     ) -> dict:
-        config = self._get_config()
+        config = self._get_config(system)
         if tools:
             config.tools = [tools]
 
@@ -122,7 +125,6 @@ class ModelRouter:
                 model=model_name,
                 contents=contents,
                 config=config,
-                system_instruction=system if system else None,
             )
 
         resp = await loop.run_in_executor(None, _sync_call)

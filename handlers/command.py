@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from core.task_queue import TaskQueue
     from cards.builder import CardBuilder
 
-log = structlog.get_logger()
+log = get_logger()
 
 HELP_TEXT = """
 **⚡ 直接指令（大模型无关）**

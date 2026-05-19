@@ -1,8 +1,8 @@
 # requirements.txt
-# ─── GCP / Vertex AI ──────────────────────────────────────────
-# 去掉 [adk,agent_engines] extras：减少 langchain/cloudpickle 等重型依赖
-# 只需核心包即可使用 vertexai.generative_models（Gemini API）
-google-cloud-aiplatform>=1.87.0
+# ─── GCP / Gemini AI (google-genai) ────────────────────────────
+# 升级为官方推荐的 google-genai 库
+# google-genai 是独立的轻量库，比 google-cloud-aiplatform 更简洁
+google-genai>=2.0.0
 google-auth>=2.28.0
 
 # ─── Lark ─────────────────────────────────────────────────────

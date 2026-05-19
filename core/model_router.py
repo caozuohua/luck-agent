@@ -1,26 +1,22 @@
 """
-core/model_router.py — 多模型路由
+core/model_router.py — 多模型路由（google-genai 版）
 gemini-2.5-pro / flash / flash-lite 自动选择 + 故障切换
-支持工具调用、流式响应、对话历史注入。
+支持工具调用、对话历史注入。
+
+升级说明：
+- 原 vertexai 库升级为 google-genai
+- google-genai 是官方最新推荐库，API 更简洁
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import time
 from typing import Any
 
 from core.log import get_logger
-import vertexai
-from vertexai.generative_models import (
-    Content,
-    FunctionDeclaration,
-    GenerationConfig,
-    GenerativeModel,
-    Part,
-    Tool,
-)
+from google import genai
+from google.genai import types
 
 log = get_logger()
 
@@ -61,25 +57,21 @@ class ModelRouter:
     }
 
     def __init__(self, project: str, location: str) -> None:
-        vertexai.init(project=project, location=location)
-        # 只缓存 Tool 对象（schema 不变，构建有一定开销）
-        # GenerativeModel 本身不缓存：它很轻，且 system_prompt 每次对话都不同
-        self._tools_cache: dict[str, list[Tool]] = {}
-        self._gen_config = GenerationConfig(
-            temperature=0.2,
-            # flash-lite/flash 用 2048 够用；pro 场景需要长输出时模型会自动延伸
-            max_output_tokens=int(os.environ.get("MAX_OUTPUT_TOKENS", "2048")),
+        self._client = genai.Client(
+            vertexai=True,
+            project=project,
+            location=location,
         )
-        log.info("model_router_ready", project=project)
+        self._tools_cache: dict[str, types.Tool] = {}
+        self._temperature = 0.2
+        self._max_tokens = int(os.environ.get("MAX_OUTPUT_TOKENS", "2048"))
+        log.info("model_router_ready", project=project, location=location)
 
-    def _get_model(self, model_name: str, tools: list[Tool] | None = None,
-                   system: str = "") -> GenerativeModel:
-        """每次构造新实例，确保 system_prompt 是最新的。实例本身很轻。"""
-        return GenerativeModel(
-            model_name,
-            tools=tools or None,
-            system_instruction=system or None,
-            generation_config=self._gen_config,
+    def _get_config(self) -> types.GenerateContentConfig:
+        """生成配置"""
+        return types.GenerateContentConfig(
+            temperature=self._temperature,
+            max_output_tokens=self._max_tokens,
         )
 
     async def chat(
@@ -94,22 +86,14 @@ class ModelRouter:
         发送消息，返回 {"text": str, "tool_calls": list, "model": str, "tokens": int}
         自动故障切换。
         """
-        # Tool 对象缓存（schema 固定，避免重复构建）
-        if tools_schema:
-            cache_key = str(len(tools_schema))  # schema 条数作为 key，足够区分
-            if cache_key not in self._tools_cache:
-                self._tools_cache[cache_key] = self._build_tools(tools_schema)
-            tools = self._tools_cache[cache_key]
-        else:
-            tools = None
-
-        contents = self._build_contents(messages)
+        tools = self._build_tools(tools_schema) if tools_schema else None
+        contents = self._build_contents(messages, system)
 
         models_to_try = [model_name] + self.FALLBACK_CHAIN.get(model_name, [])
 
         for model in models_to_try:
             try:
-                result = await self._call(model, contents, tools, system)
+                result = await self._call(model, contents, tools)
                 log.info("model_called", model=model, user_id=user_id[:8] if user_id else "")
                 return result
             except Exception as e:
@@ -120,14 +104,24 @@ class ModelRouter:
 
         raise RuntimeError("All models failed")
 
-    async def _call(self, model_name: str, contents: list[Content],
-                    tools: list[Tool] | None, system: str) -> dict:
-        model = self._get_model(model_name, tools, system)
-        loop  = asyncio.get_running_loop()
+    async def _call(
+        self,
+        model_name: str,
+        contents: list[types.Content],
+        tools: types.Tool | None,
+    ) -> dict:
+        config = self._get_config()
+        if tools:
+            config.tools = [tools]
+
+        loop = asyncio.get_running_loop()
 
         def _sync_call():
-            resp = model.generate_content(contents)
-            return resp
+            return self._client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
 
         resp = await loop.run_in_executor(None, _sync_call)
         return self._parse_response(resp, model_name)
@@ -136,60 +130,108 @@ class ModelRouter:
         text_parts: list[str] = []
         tool_calls: list[dict] = []
 
+        if not resp.candidates:
+            return {
+                "text": "",
+                "tool_calls": [],
+                "model": model_name,
+                "tokens": 0,
+            }
+
         for candidate in resp.candidates:
-            for part in candidate.content.parts:
-                # 先用 getattr 安全取 function_call，再检查 name 是否非空
-                fc = getattr(part, "function_call", None)
-                if fc and getattr(fc, "name", None):
+            content = candidate.content
+            if not content or not content.parts:
+                continue
+
+            for part in content.parts:
+                # 检查函数调用
+                function_call = getattr(part, "function_call", None)
+                if function_call and hasattr(function_call, "name") and function_call.name:
                     tool_calls.append({
-                        "name": fc.name,
-                        "args": dict(fc.args),
+                        "name": function_call.name,
+                        "args": dict(function_call.args),
                     })
                 else:
+                    # 检查文本内容
                     text = getattr(part, "text", None)
                     if text:
                         text_parts.append(text)
 
         tokens = 0
-        if hasattr(resp, "usage_metadata"):
-            tokens = resp.usage_metadata.total_token_count
+        if hasattr(resp, "usage_metadata") and resp.usage_metadata:
+            tokens = resp.usage_metadata.total_token_count or 0
 
         return {
-            "text":       "".join(text_parts).strip(),
+            "text": "".join(text_parts).strip(),
             "tool_calls": tool_calls,
-            "model":      model_name,
-            "tokens":     tokens,
+            "model": model_name,
+            "tokens": tokens,
         }
 
-    def _build_tools(self, schemas: list[dict]) -> list[Tool]:
-        decls = []
-        for s in schemas:
-            decls.append(FunctionDeclaration(
-                name=s["name"],
-                description=s["description"],
-                parameters=s.get("parameters", {}),
-            ))
-        return [Tool(function_declarations=decls)]
+    def _build_tools(self, schemas: list[dict]) -> types.Tool | None:
+        """构建工具"""
+        if not schemas:
+            return None
 
-    def _build_contents(self, messages: list[dict]) -> list[Content]:
+        cache_key = str(len(schemas))
+        if cache_key in self._tools_cache:
+            return self._tools_cache[cache_key]
+
+        function_declarations = []
+        for s in schemas:
+            func = types.FunctionDeclaration(
+                name=s["name"],
+                description=s.get("description", ""),
+                parameters=s.get("parameters", {}),
+            )
+            function_declarations.append(func)
+
+        tool = types.Tool(function_declarations=function_declarations)
+        self._tools_cache[cache_key] = tool
+        return tool
+
+    def _build_contents(self, messages: list[dict], system: str = "") -> list[types.Content]:
+        """构建消息内容"""
         contents = []
+
+        if system:
+            contents.append(types.Content(
+                role="system",
+                parts=[types.Part.from_text(text=system)],
+            ))
+
         for m in messages:
             role = "user" if m["role"] == "user" else "model"
-            contents.append(Content(
-                role=role,
-                parts=[Part.from_text(m["content"])],
-            ))
+            content = m["content"]
+
+            # 处理函数调用结果
+            if m["role"] == "tool":
+                for tool_result in m.get("tool_results", []):
+                    parts = [types.Part.from_function_response(
+                        name=tool_result["name"],
+                        response={"result": tool_result["result"]},
+                    )]
+                    contents.append(types.Content(role="user", parts=parts))
+            else:
+                contents.append(types.Content(
+                    role=role,
+                    parts=[types.Part.from_text(text=content)],
+                ))
+
         return contents
 
-    def build_system_prompt(self, user_profile: dict, history: list[dict],
-                            success_patterns: list[dict] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        user_profile: dict,
+        history: list[dict],
+        success_patterns: list[dict] | None = None,
+    ) -> str:
         """构建含用户画像、成功模式和近期上下文的系统 prompt。"""
         profile_str = "\n".join(
             f"- {k}: {v}" for k, v in user_profile.items()
-            if k != "default_chat_id"   # 过滤内部字段
+            if k != "default_chat_id"
         ) or "无特殊偏好"
 
-        # 成功模式：按工具分组，最多注入 12 条
         if success_patterns:
             pattern_lines = []
             for p in success_patterns:

@@ -10,6 +10,7 @@ core/health.py — 健壮性监控中心
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sqlite3
 import time
@@ -18,9 +19,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
 
-import structlog
+from core.log import get_logger
 
-log = structlog.get_logger()
+log = get_logger()
 
 # ── 日志回溯 Schema ───────────────────────────────────────────────────────────
 
@@ -41,16 +42,16 @@ CREATE INDEX IF NOT EXISTS idx_errlog_level ON error_log(level, created_at DESC)
 
 # ── 结构化日志处理器（注入到 structlog pipeline）─────────────────────────────
 
-class DBLogHandler:
+class DBLogHandler(logging.Handler):
     """
-    structlog processor：把 error/warning 级别的日志同步写入 SQLite。
-    用于日志回溯查询，不影响主日志流（journald）。
+    标准 logging.Handler：把 warning/error 写入 SQLite error_log 表。
+    通过 logging.getLogger().addHandler(handler) 注入，无需 structlog。
     """
 
-    def __init__(self, db_path: str, min_level: str = "warning") -> None:
-        self.db_path   = db_path
-        self.min_level = min_level
-        self._local    = threading.local()
+    def __init__(self, db_path: str) -> None:
+        super().__init__(level=logging.WARNING)
+        self.db_path = db_path
+        self._local  = threading.local()
         self._init()
 
     @contextmanager
@@ -69,30 +70,28 @@ class DBLogHandler:
         with self._conn() as conn:
             conn.executescript(ERROR_LOG_SCHEMA)
 
-    def __call__(self, logger, method: str, event_dict: dict) -> dict:
-        """structlog processor 接口。"""
-        level = event_dict.get("level", "info")
-        if level not in ("warning", "error", "critical"):
-            return event_dict
-
+    def emit(self, record: logging.LogRecord) -> None:
+        """标准 logging.Handler 接口。"""
         try:
-            self._write(
-                level=level,
-                event=str(event_dict.get("event", "")),
-                detail=str(event_dict.get("error", event_dict.get("msg", ""))),
-                user_id=str(event_dict.get("user_id", "")),
-                source=str(event_dict.get("source", "")),
-            )
+            level  = record.levelname.lower()
+            event  = record.getMessage()[:200]
+            detail = ""
+            if record.exc_info:
+                import traceback
+                detail = traceback.format_exception(*record.exc_info)[-1][:500]
+            # 从 extra 字段提取 user_id 和 source
+            user_id = str(getattr(record, "user_id", ""))[:50]
+            source  = str(getattr(record, "source",  record.module))[:50]
+            self._write(level, event, detail, user_id, source)
         except Exception:
-            pass   # 日志写入失败不能影响主流程
-        return event_dict
+            pass   # 日志写入失败绝不影响主流程
 
     def _write(self, level: str, event: str, detail: str,
                user_id: str, source: str) -> None:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO error_log (level, event, detail, user_id, source) VALUES (?,?,?,?,?)",
-                (level, event[:200], detail[:500], user_id[:50], source[:50]),
+                (level, event, detail, user_id, source),
             )
         # 自动裁剪：保留最近 2000 条
         with self._conn() as conn:
@@ -161,7 +160,7 @@ class HealthMonitor:
     TICK_FAST   = 30        # WS 心跳
     TICK_MED    = 300       # 资源监控（5min）
     TICK_SLOW   = 600       # task 清理（10min）
-    TICK_HOURLY = 3600      # WAL checkpoint
+    TICK_HOURLY = 1800      # WAL checkpoint（30min，原来1h太长）
     TICK_WEEKLY = 604800    # SQLite VACUUM
 
     MEM_WARN_MB  = 700      # e2-micro 800MB 上限，700MB 预警
@@ -188,6 +187,10 @@ class HealthMonitor:
 
     async def start(self) -> None:
         self._running = True
+        # 启动时立即执行一次 WAL checkpoint，合并积压的 WAL 文件
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._wal_checkpoint)
         asyncio.create_task(self._loop(), name="health-monitor")
         log.info("health_monitor_started")
 

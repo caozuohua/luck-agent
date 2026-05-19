@@ -10,7 +10,7 @@ import json
 import time
 from typing import Any
 
-import structlog
+from core.log import get_logger
 import vertexai
 from vertexai.generative_models import (
     Content,
@@ -21,10 +21,10 @@ from vertexai.generative_models import (
     Tool,
 )
 
-log = structlog.get_logger()
+log = get_logger()
 
 # 系统 Prompt
-SYSTEM_PROMPT = """你是一个部署在 GCP VPS 上的诚实可靠的技术智能体，通过 Lark 为用户提供服务。
+SYSTEM_PROMPT = """你是一个部署在 GCP VPS 上的技术智能体，通过 Lark 为用户提供服务。
 
 ## 核心行为准则（最高优先级）
 1. **默认探索，不默认拒绝**：遇到不确定能否完成的任务，先用工具探索当前状态，再决定下一步。不要在没有尝试工具之前说"无法完成"。
@@ -61,28 +61,30 @@ class ModelRouter:
 
     def __init__(self, project: str, location: str) -> None:
         vertexai.init(project=project, location=location)
-        self._model_cache: dict[str, GenerativeModel] = {}
+        # 只缓存 Tool 对象（schema 不变，构建有一定开销）
+        # GenerativeModel 本身不缓存：它很轻，且 system_prompt 每次对话都不同
+        self._tools_cache: dict[str, list[Tool]] = {}
+        self._gen_config = GenerationConfig(
+            temperature=0.2,
+            # flash-lite/flash 用 2048 够用；pro 场景需要长输出时模型会自动延伸
+            max_output_tokens=int(os.environ.get("MAX_OUTPUT_TOKENS", "2048")),
+        )
         log.info("model_router_ready", project=project)
 
     def _get_model(self, model_name: str, tools: list[Tool] | None = None,
                    system: str = "") -> GenerativeModel:
-        key = f"{model_name}:{bool(tools)}"
-        if key not in self._model_cache:
-            self._model_cache[key] = GenerativeModel(
-                model_name,
-                tools=tools,
-                system_instruction=system or None,
-                generation_config=GenerationConfig(
-                    temperature=0.2,
-                    max_output_tokens=4096,
-                ),
-            )
-        return self._model_cache[key]
+        """每次构造新实例，确保 system_prompt 是最新的。实例本身很轻。"""
+        return GenerativeModel(
+            model_name,
+            tools=tools or None,
+            system_instruction=system or None,
+            generation_config=self._gen_config,
+        )
 
     async def chat(
         self,
         model_name: str,
-        messages: list[dict],        # [{"role": "user/assistant", "content": "..."}]
+        messages: list[dict],
         tools_schema: list[dict] | None = None,
         system: str = "",
         user_id: str = "",
@@ -91,7 +93,15 @@ class ModelRouter:
         发送消息，返回 {"text": str, "tool_calls": list, "model": str, "tokens": int}
         自动故障切换。
         """
-        tools = self._build_tools(tools_schema) if tools_schema else None
+        # Tool 对象缓存（schema 固定，避免重复构建）
+        if tools_schema:
+            cache_key = str(len(tools_schema))  # schema 条数作为 key，足够区分
+            if cache_key not in self._tools_cache:
+                self._tools_cache[cache_key] = self._build_tools(tools_schema)
+            tools = self._tools_cache[cache_key]
+        else:
+            tools = None
+
         contents = self._build_contents(messages)
 
         models_to_try = [model_name] + self.FALLBACK_CHAIN.get(model_name, [])

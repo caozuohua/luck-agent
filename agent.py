@@ -11,16 +11,9 @@ import time
 from typing import Any
 
 import lark_oapi as lark
-import structlog
+from core.log import get_logger
 
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.add_log_level,
-        structlog.processors.JSONRenderer(),
-    ]
-)
-log = structlog.get_logger()
+log = get_logger()
 
 
 # ─── Lark 发消息工具函数 ──────────────────────────────────────────────────────
@@ -242,16 +235,9 @@ class AgentApp:
         # ── 日志回溯处理器（error/warning 写入 SQLite）──────────────
         self._db_log = DBLogHandler(cfg.DB_PATH)
 
-        # 重新配置 structlog，追加 DB 写入处理器
-        import structlog as _sl
-        _sl.configure(
-            processors=[
-                _sl.processors.TimeStamper(fmt="iso"),
-                _sl.processors.add_log_level,
-                self._db_log,               # ← 写入 SQLite
-                _sl.processors.JSONRenderer(),
-            ]
-        )
+        # DBLogHandler 作为标准 logging handler 注入（不依赖 structlog）
+        import logging as _logging
+        _logging.getLogger().addHandler(self._db_log)
 
         # 核心组件
         self._memory   = Memory(cfg.DB_PATH)

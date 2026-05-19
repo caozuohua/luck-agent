@@ -127,9 +127,9 @@ class FileManager:
         self.base.mkdir(parents=True, exist_ok=True)
 
     def _safe_path(self, path: str) -> Path:
-        """确保路径在 base_dir 内（防止目录遍历）。"""
+        """确保路径在 base_dir 内（防止目录遍历攻击）。"""
         resolved = (self.base / path).resolve()
-        if not str(resolved).startswith(str(self.base.resolve())):
+        if not resolved.is_relative_to(self.base.resolve()):
             raise PermissionError(f"路径越界：{path}")
         return resolved
 

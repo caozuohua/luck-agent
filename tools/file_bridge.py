@@ -103,6 +103,13 @@ class FileBridge:
             "md5":        md5,
         }
 
+    def _safe_path(self, path: str) -> Path:
+        """确保路径在 storage_dir 内（防止目录遍历攻击）。"""
+        resolved = (self.storage / path).resolve()
+        if not resolved.is_relative_to(self.storage.resolve()):
+            raise PermissionError(f"路径越界：{path}")
+        return resolved
+
     # ── 从 VPS 发送文件到 Lark ───────────────────────────────────────
     async def upload_to_lark(
         self,
@@ -114,7 +121,7 @@ class FileBridge:
         上传 VPS 文件到 Lark 聊天。
         返回 {"message_id": str, "file_key": str}
         """
-        path = Path(local_path)
+        path = self._safe_path(local_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在：{local_path}")
 
@@ -138,7 +145,7 @@ class FileBridge:
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["image_key"]
                 msg_type = "image"
-                content  = f'{{"image_key":"{file_key}"}}'
+                content  = {"image_key": file_key}
             else:
                 upload_url = f"{self.api_base}/im/v1/files"
                 files = {"file": (path.name, path.read_bytes(), mime_type)}
@@ -148,7 +155,7 @@ class FileBridge:
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["file_key"]
                 msg_type = "file"
-                content  = f'{{"file_key":"{file_key}"}}'
+                content  = {"file_key": file_key}
 
             # Step 2: 发送消息
             send_resp = await c.post(

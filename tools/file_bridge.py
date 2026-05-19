@@ -7,18 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import mimetypes
 import os
 import time
 from pathlib import Path
 
 import httpx
-
 from core.log import get_logger
 
 log = get_logger()
-
-
 
 
 class FileBridge:
@@ -103,13 +101,6 @@ class FileBridge:
             "md5":        md5,
         }
 
-    def _safe_path(self, path: str) -> Path:
-        """确保路径在 storage_dir 内（防止目录遍历攻击）。"""
-        resolved = (self.storage / path).resolve()
-        if not resolved.is_relative_to(self.storage.resolve()):
-            raise PermissionError(f"路径越界：{path}")
-        return resolved
-
     # ── 从 VPS 发送文件到 Lark ───────────────────────────────────────
     async def upload_to_lark(
         self,
@@ -121,7 +112,7 @@ class FileBridge:
         上传 VPS 文件到 Lark 聊天。
         返回 {"message_id": str, "file_key": str}
         """
-        path = self._safe_path(local_path)
+        path = Path(local_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在：{local_path}")
 
@@ -145,7 +136,7 @@ class FileBridge:
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["image_key"]
                 msg_type = "image"
-                content  = {"image_key": file_key}
+                content  = f'{{"image_key":"{file_key}"}}'
             else:
                 upload_url = f"{self.api_base}/im/v1/files"
                 files = {"file": (path.name, path.read_bytes(), mime_type)}
@@ -155,20 +146,26 @@ class FileBridge:
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["file_key"]
                 msg_type = "file"
-                content  = {"file_key": file_key}
+                content  = f'{{"file_key":"{file_key}"}}'
 
             # Step 2: 发送消息
+            # receive_id_type 必须作为 query param 传递
+            # content 已是 JSON 字符串，用 data= 而非 json= 避免二次序列化
             send_resp = await c.post(
                 f"{self.api_base}/im/v1/messages",
+                params={"receive_id_type": "chat_id"},
                 headers={**self._auth_headers(token), "Content-Type": "application/json"},
-                json={
-                    "receive_id":      chat_id,
-                    "receive_id_type": "chat_id",
-                    "msg_type":        msg_type,
-                    "content":         content,
-                },
+                content=json.dumps({
+                    "receive_id": chat_id,
+                    "msg_type":   msg_type,
+                    "content":    content,
+                }).encode(),
             )
-            send_resp.raise_for_status()
+            if not send_resp.is_success:
+                raise RuntimeError(
+                    f"发送消息失败 {send_resp.status_code}: "
+                    f"{send_resp.json().get('msg', send_resp.text)}"
+                )
             msg_id = send_resp.json()["data"]["message_id"]
 
         log.info("file_sent", path=local_path, chat_id=chat_id, file_key=file_key)
@@ -179,13 +176,13 @@ class FileBridge:
             async with httpx.AsyncClient() as c2:
                 await c2.post(
                     f"{self.api_base}/im/v1/messages",
+                    params={"receive_id_type": "chat_id"},
                     headers={**self._auth_headers(token), "Content-Type": "application/json"},
-                    json={
-                        "receive_id":      chat_id,
-                        "receive_id_type": "chat_id",
-                        "msg_type":        "text",
-                        "content":         f'{{"text":"{caption}"}}',
-                    },
+                    content=json.dumps({
+                        "receive_id": chat_id,
+                        "msg_type":   "text",
+                        "content":    json.dumps({"text": caption}),
+                    }).encode(),
                 )
 
         return {"message_id": msg_id, "file_key": file_key, "file_name": path.name}

@@ -87,13 +87,13 @@ class ModelRouter:
         自动故障切换。
         """
         tools = self._build_tools(tools_schema) if tools_schema else None
-        contents = self._build_contents(messages, system)
+        contents = self._build_contents(messages)
 
         models_to_try = [model_name] + self.FALLBACK_CHAIN.get(model_name, [])
 
         for model in models_to_try:
             try:
-                result = await self._call(model, contents, tools)
+                result = await self._call(model, contents, tools, system)
                 log.info("model_called", model=model, user_id=user_id[:8] if user_id else "")
                 return result
             except Exception as e:
@@ -109,6 +109,7 @@ class ModelRouter:
         model_name: str,
         contents: list[types.Content],
         tools: types.Tool | None,
+        system: str = "",
     ) -> dict:
         config = self._get_config()
         if tools:
@@ -121,6 +122,7 @@ class ModelRouter:
                 model=model_name,
                 contents=contents,
                 config=config,
+                system_instruction=system if system else None,
             )
 
         resp = await loop.run_in_executor(None, _sync_call)
@@ -190,15 +192,9 @@ class ModelRouter:
         self._tools_cache[cache_key] = tool
         return tool
 
-    def _build_contents(self, messages: list[dict], system: str = "") -> list[types.Content]:
-        """构建消息内容"""
+    def _build_contents(self, messages: list[dict]) -> list[types.Content]:
+        """构建消息内容（系统提示通过 system_instruction 参数单独传递）"""
         contents = []
-
-        if system:
-            contents.append(types.Content(
-                role="system",
-                parts=[types.Part.from_text(text=system)],
-            ))
 
         for m in messages:
             role = "user" if m["role"] == "user" else "model"

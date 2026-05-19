@@ -13,9 +13,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from typing import Any
 
-import structlog
+from core.log import get_logger
 
-log = structlog.get_logger()
+log = get_logger()
 
 
 # ─── Schema ──────────────────────────────────────────────────────────────────

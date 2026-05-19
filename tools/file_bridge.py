@@ -13,9 +13,10 @@ import time
 from pathlib import Path
 
 import httpx
-import structlog
 
-log = structlog.get_logger()
+from core.log import get_logger
+
+log = get_logger()
 
 
 

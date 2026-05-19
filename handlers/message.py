@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
-import structlog
+from core.log import get_logger
 
 if TYPE_CHECKING:
     from core.memory import Memory, Message

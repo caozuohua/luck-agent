@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import structlog
+from core.log import get_logger
 
 if TYPE_CHECKING:
     from tools.shell_tools import ShellExecutor, FileManager

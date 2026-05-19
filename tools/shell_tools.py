@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-import structlog
+from core.log import get_logger
 
-log = structlog.get_logger()
+log = get_logger()
 
 # 危险命令黑名单（需要二次确认）
 DANGEROUS_PATTERNS = [

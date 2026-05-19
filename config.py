@@ -19,9 +19,10 @@ import os
 from pathlib import Path
 
 import google.auth
-import structlog
 
-log = structlog.get_logger()
+from core.log import get_logger
+
+log = get_logger()
 
 
 # ─── .env 解析（不依赖 python-dotenv，零额外依赖）────────────────────────────

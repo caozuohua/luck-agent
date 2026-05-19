@@ -14,9 +14,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import structlog
+from core.log import get_logger
 
-log = structlog.get_logger()
+log = get_logger()
 
 
 class TaskStatus(str, Enum):

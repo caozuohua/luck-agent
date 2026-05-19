@@ -9,13 +9,13 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-import structlog
+from core.log import get_logger
 
 if TYPE_CHECKING:
     from tools.file_bridge import FileBridge
     from cards.builder import CardBuilder
 
-log = structlog.get_logger()
+log = get_logger()
 
 
 class FileMessageHandler:

@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Coroutine
 
-import structlog
+from core.log import get_logger
 
-log = structlog.get_logger()
+log = get_logger()
 
 # ── cron 表达式解析（只实现分/时/日/月/周，够用）─────────────────────────────
 

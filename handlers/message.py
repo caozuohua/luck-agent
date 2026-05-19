@@ -62,7 +62,8 @@ class AgentMessageHandler:
         # 合并所有工具 schema
         from tools.github_tools import GITHUB_TOOL_SCHEMAS
         from tools.shell_tools  import SHELL_TOOL_SCHEMAS
-        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + [
+        from tools.search_tools import SEARCH_TOOL_SCHEMAS
+        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + [
             {
                 "name": "remember",
                 "description": "保存用户的偏好、习惯、重要信息到持久化记忆。",
@@ -300,6 +301,13 @@ class AgentMessageHandler:
         self, name: str, args: dict, user_id: str, chat_id: str
     ) -> Any:
         """将模型的工具调用路由到对应实现。"""
+
+        # ── 搜索工具 ──
+        if name == "web_search":
+            from tools.search_tools import SearchTools
+            search_tools = SearchTools()
+            result = await search_tools.search(args["query"])
+            return {"result": search_tools.format_result(result)}
 
         # ── GitHub 工具 ──
         if name == "create_blog_post":

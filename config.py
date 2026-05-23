@@ -126,8 +126,8 @@ class Config:
     GCP_KEY_FILE: str = ""
 
     # Models
-    MODEL_PRO:   str = "gemini-2.5-pro"
-    MODEL_FLASH: str = "gemini-2.5-flash"
+    MODEL_PRO:   str = "gemini-3.5-flash"
+    MODEL_FLASH: str = "gemini-3.1-flash-lite"
     MODEL_LITE:  str = "gemini-2.5-flash-lite"
     PRO_KEYWORDS: tuple = (
         "分析", "写作", "规划", "设计", "review", "重构", "总结报告",

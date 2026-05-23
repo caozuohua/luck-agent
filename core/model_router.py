@@ -1,11 +1,7 @@
 """
 core/model_router.py — 多模型路由（google-genai 版）
-gemini-2.5-pro / flash / flash-lite 自动选择 + 故障切换
-支持工具调用、对话历史注入。
-
-升级说明：
-- 原 vertexai 库升级为 google-genai
-- google-genai 是官方最新推荐库，API 更简洁
+gemini-3.5-flash / 3.1-flash-lite（us-east5）+ 2.5 系列（us-central1）自动选择 + 故障切换
+支持工具调用、对话历史注入、多区域客户端。
 """
 from __future__ import annotations
 
@@ -51,21 +47,35 @@ class ModelRouter:
     """多模型路由器，支持工具调用和故障切换。"""
 
     FALLBACK_CHAIN = {
-        "gemini-2.5-pro":       ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
-        "gemini-2.5-flash":     ["gemini-2.5-flash-lite"],
+        "gemini-3.5-flash":      ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        "gemini-3.1-flash-lite": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        "gemini-2.5-pro":        ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        "gemini-2.5-flash":      ["gemini-2.5-flash-lite"],
         "gemini-2.5-flash-lite": [],
     }
 
+    # 模型 → 区域映射（不在映射中的使用默认区域）
+    MODEL_REGION = {
+        "gemini-3.5-flash":      "us-east5",
+        "gemini-3.1-flash-lite": "us-east5",
+    }
+
     def __init__(self, project: str, location: str) -> None:
-        self._client = genai.Client(
-            vertexai=True,
-            project=project,
-            location=location,
-        )
+        self._project = project
+        self._default_location = location
+        self._clients: dict[str, genai.Client] = {}
+        self._ensure_client(location)
         self._tools_cache: dict[str, types.Tool] = {}
         self._temperature = 0.2
         self._max_tokens = int(os.environ.get("MAX_OUTPUT_TOKENS", "2048"))
         log.info("model_router_ready", project=project, location=location)
+
+    def _ensure_client(self, location: str) -> genai.Client:
+        if location not in self._clients:
+            self._clients[location] = genai.Client(
+                vertexai=True, project=self._project, location=location,
+            )
+        return self._clients[location]
 
     def _get_config(self, system: str = "") -> types.GenerateContentConfig:
         """生成配置（系统提示通过 config.system_instruction 字符串传递）"""
@@ -114,6 +124,8 @@ class ModelRouter:
         tools: types.Tool | None,
         system: str = "",
     ) -> dict:
+        location = self.MODEL_REGION.get(model_name, self._default_location)
+        client = self._ensure_client(location)
         config = self._get_config(system)
         if tools:
             config.tools = [tools]
@@ -121,7 +133,7 @@ class ModelRouter:
         loop = asyncio.get_running_loop()
 
         def _sync_call():
-            return self._client.models.generate_content(
+            return client.models.generate_content(
                 model=model_name,
                 contents=contents,
                 config=config,

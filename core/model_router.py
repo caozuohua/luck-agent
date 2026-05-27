@@ -56,8 +56,8 @@ class ModelRouter:
 
     # 模型 → 区域映射（不在映射中的使用默认区域）
     MODEL_REGION = {
-        "gemini-3.5-flash":      "us-east5",
-        "gemini-3.1-flash-lite": "us-east5",
+        "gemini-3.5-flash":      "",
+        "gemini-3.1-flash-lite": "",
     }
 
     def __init__(self, project: str, location: str) -> None:

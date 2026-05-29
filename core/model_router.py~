@@ -1,6 +1,6 @@
 """
 core/model_router.py — 多模型路由（google-genai 版）
-gemini-3.5-flash / 3.1-flash-lite（地区为空）+ 2.5 系列（us-central1）自动选择 + 故障切换
+gemini-3.5-flash / 3.1-flash-lite（us-east5）+ 2.5 系列（us-central1）自动选择 + 故障切换
 支持工具调用、对话历史注入、多区域客户端。
 """
 from __future__ import annotations

@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from core.log import get_logger
+from core.intent_router import route as intent_route, Intent
+
+log = get_logger()
 
 if TYPE_CHECKING:
     from core.memory import Memory, Message
@@ -20,7 +23,7 @@ if TYPE_CHECKING:
     from cards.builder import CardBuilder
     from config import Config
 
-log = get_logger()
+log = structlog.get_logger()
 
 MAX_TOOL_ROUNDS = 6   # 防止无限工具循环
 
@@ -57,13 +60,11 @@ class AgentMessageHandler:
         self.file_mgr = file_mgr
         self.card     = card
         self.reply    = lark_reply_fn
-        self.scheduler = None   # 由 agent.py 启动后注入
 
         # 合并所有工具 schema
         from tools.github_tools import GITHUB_TOOL_SCHEMAS
         from tools.shell_tools  import SHELL_TOOL_SCHEMAS
-        from tools.search_tools import SEARCH_TOOL_SCHEMAS
-        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + [
+        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + [
             {
                 "name": "remember",
                 "description": "保存用户的偏好、习惯、重要信息到持久化记忆。",
@@ -87,90 +88,6 @@ class AgentMessageHandler:
                     "required": ["key"],
                 },
             },
-            {
-                "name": "forget",
-                "description": (
-                    "删除用户画像中的某个记忆条目。"
-                    "当用户说'忘掉我的XXX'、'删除你记的XXX'、'不要记住XXX'时调用。"
-                    "key='*' 表示清空全部用户画像。"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "key": {
-                            "type": "string",
-                            "description": "要删除的记忆键，或 '*' 清空全部",
-                        },
-                    },
-                    "required": ["key"],
-                },
-            },
-            {
-                "name": "show_memory",
-                "description": (
-                    "展示智能体当前记忆的完整内容，包括用户画像、成功模式、对话历史摘要。"
-                    "当用户问'你记得什么'、'你的记忆里有什么'、'看看你的记忆'时调用。"
-                ),
-                "parameters": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "schedule_task",
-                "description": (
-                    "设置定时任务，让智能体在指定时间自动执行并推送结果。"
-                    "当用户说'每天早上提醒我'、'每周一检查'、'每隔X小时执行'时调用。"
-                    "mode=cron 时 schedule 为标准 5 字段 cron 表达式（分 时 日 月 周）；"
-                    "mode=interval 时 schedule 为间隔秒数字符串，如 '3600' 表示每小时。"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name":     {"type": "string", "description": "任务名称，如'每日博客检查'"},
-                        "prompt":   {"type": "string", "description": "到时间后智能体要执行的指令，用自然语言描述"},
-                        "mode":     {"type": "string", "enum": ["cron", "interval"]},
-                        "schedule": {"type": "string",
-                                     "description": "cron: '0 9 * * 1-5'（周一至周五9点）；interval: '3600'（每小时）"},
-                    },
-                    "required": ["name", "prompt", "mode", "schedule"],
-                },
-            },
-            {
-                "name": "list_schedules",
-                "description": "查看当前用户的所有定时任务列表。",
-                "parameters": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "cancel_schedule",
-                "description": "取消（删除）一个定时任务。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string", "description": "任务ID，从 list_schedules 获取"},
-                    },
-                    "required": ["task_id"],
-                },
-            },
-            {
-                "name": "pause_schedule",
-                "description": "暂停一个定时任务（不删除，可恢复）。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string"},
-                    },
-                    "required": ["task_id"],
-                },
-            },
-            {
-                "name": "resume_schedule",
-                "description": "恢复一个已暂停的定时任务。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string"},
-                    },
-                    "required": ["task_id"],
-                },
-            },
         ]
 
     async def handle(
@@ -183,29 +100,56 @@ class AgentMessageHandler:
     ) -> None:
         t0 = time.monotonic()
 
-        # 1. 选择模型（override 优先）
-        model = model_override or self.cfg.pick_model(text)
+        # 1. 意图路由（零 AI，纯规则）→ 确定工具子集和任务 hint
+        route = intent_route(text)
+        log.info("intent_routed",
+                 intent=route.intent.value,
+                 confidence=round(route.confidence, 2),
+                 tools=len(route.tool_names),
+                 user_id=user_id[:8])
 
-        # 2. 构建对话历史
-        history  = self.memory.get_history(user_id, limit=self.cfg.MEMORY_MAX_CONTEXT)
+        # 2. 选择模型（override > 路由建议 > 自动）
+        if not model_override:
+            if route.model_hint == "pro":
+                model = self.cfg.MODEL_PRO
+            elif route.model_hint == "flash":
+                model = self.cfg.MODEL_FLASH
+            else:
+                model = self.cfg.pick_model(text)
+        else:
+            model = model_override
+
+        # 3. 构建系统 Prompt（注入任务 hint，减少 token）
         profile  = self.memory.get_all_profile(user_id)
-        patterns = self.memory.get_success_patterns(limit=12)
-        system   = self.router.build_system_prompt(profile, history, patterns)
+        patterns = self.memory.get_success_patterns(limit=8)
+        history  = self.memory.get_history(user_id, limit=10)  # 减少历史条数
+        system   = self.router.build_system_prompt(
+            profile, history, patterns,
+            task_hint=route.prompt_hint,
+        )
 
-        # 拼接消息（历史 + 当前）
-        messages = history + [{"role": "user", "content": text}]
+        # 4. 按意图选择工具子集（GENERAL = 全量）
+        if route.tool_names:
+            active_tools = [t for t in self.all_tools
+                            if t["name"] in route.tool_names]
+        else:
+            active_tools = self.all_tools
 
-        # 3. 工具调用循环
+        # 5. 拼接消息（只带最近 6 条历史，减少混淆）
+        recent_history = history[-6:] if len(history) > 6 else history
+        messages = recent_history + [{"role": "user", "content": text}]
+
+        # 6. 工具调用循环
         final_text   = ""
         tool_rounds  = 0
-        all_tool_results: list[dict] = []   # 累积所有工具结果，用于兜底摘要
+        all_tool_results: list[dict] = []
 
         while tool_rounds < MAX_TOOL_ROUNDS:
             try:
                 result = await self.router.chat(
                     model_name=model,
                     messages=messages,
-                    tools_schema=self.all_tools,
+                    tools_schema=active_tools,   # ← 最小工具子集
                     system=system,
                     user_id=user_id,
                 )
@@ -232,11 +176,6 @@ class AgentMessageHandler:
                         tool_output = await self._dispatch_tool(
                             tool_name, tool_args, user_id, chat_id
                         )
-                        # 工具成功 → 记录模式（失败不记录）
-                        if not (isinstance(tool_output, dict)
-                                and tool_output.get("error")):
-                            self._record_pattern(tool_name, tool_args,
-                                                 tool_output, text)
                     except Exception as e:
                         tool_output = {"error": str(e)}
 
@@ -301,13 +240,6 @@ class AgentMessageHandler:
         self, name: str, args: dict, user_id: str, chat_id: str
     ) -> Any:
         """将模型的工具调用路由到对应实现。"""
-
-        # ── 搜索工具 ──
-        if name == "web_search":
-            from tools.search_tools import SearchTools
-            search_tools = SearchTools()
-            result = await search_tools.search(args["query"])
-            return {"result": search_tools.format_result(result)}
 
         # ── GitHub 工具 ──
         if name == "create_blog_post":
@@ -394,159 +326,8 @@ class AgentMessageHandler:
             val = self.memory.get_profile(user_id, args["key"])
             return {"key": args["key"], "value": val}
 
-        elif name == "forget":
-            key = args.get("key", "")
-            if key == "*":
-                count = self.memory.clear_profile(user_id)
-                return {"deleted": True, "key": "*", "count": count}
-            ok = self.memory.delete_profile(user_id, key)
-            return {"deleted": ok, "key": key}
-
-        elif name == "show_memory":
-            profile  = self.memory.get_all_profile(user_id)
-            patterns = self.memory.get_success_patterns(limit=20)
-            history  = self.memory.get_history(user_id, limit=5)
-            return {
-                "profile":  profile,
-                "patterns": [
-                    {"id": p["id"], "tool": p["tool"], "intent": p["intent"],
-                     "use_count": p["use_count"]}
-                    for p in patterns
-                ],
-                "recent_messages": len(history),
-                "history_preview": [
-                    {"role": h["role"], "snippet": h["content"][:80]}
-                    for h in history
-                ],
-            }
-
-        # ── 定时任务工具 ──
-        elif name == "schedule_task":
-            if not self.scheduler:
-                return {"error": "调度器未初始化"}
-            from core.scheduler import next_cron_desc, _cron_matches
-            mode     = args.get("mode", "cron")
-            schedule = args.get("schedule", "")
-            task_name = args.get("name", "定时任务")
-            prompt   = args.get("prompt", "")
-
-            # 验证 cron 格式
-            if mode == "cron":
-                test_dt = datetime.now(timezone.utc)
-                try:
-                    _cron_matches(schedule, test_dt)
-                except Exception:
-                    return {"error": f"cron 表达式格式错误：{schedule}，示例：'0 9 * * 1-5'"}
-                task = self.scheduler.add_cron(
-                    user_id, chat_id, task_name, prompt, schedule
-                )
-                desc = next_cron_desc(schedule)
-            else:
-                try:
-                    seconds = int(schedule)
-                    if seconds < 60:
-                        return {"error": "interval 最小 60 秒"}
-                except ValueError:
-                    return {"error": f"interval 应为秒数，如 '3600'，收到：{schedule}"}
-                task = self.scheduler.add_interval(
-                    user_id, chat_id, task_name, prompt, seconds
-                )
-                h, m = divmod(seconds // 60, 60)
-                desc = f"每{h}小时{m}分钟" if h else f"每{m}分钟"
-
-            return {
-                "task_id":  task.id,
-                "name":     task.name,
-                "mode":     mode,
-                "schedule": desc,
-                "status":   "已创建",
-            }
-
-        elif name == "list_schedules":
-            if not self.scheduler:
-                return {"schedules": []}
-            from core.scheduler import next_cron_desc
-            tasks = self.scheduler.list_user(user_id)
-            return {
-                "schedules": [
-                    {
-                        "id":       t.id,
-                        "name":     t.name,
-                        "mode":     t.mode,
-                        "schedule": next_cron_desc(t.schedule) if t.mode == "cron"
-                                    else f"每{int(t.schedule)//60}分钟",
-                        "enabled":  t.enabled,
-                        "run_count": t.run_count,
-                        "prompt":   t.prompt[:60] + "…" if len(t.prompt) > 60 else t.prompt,
-                    }
-                    for t in tasks
-                ]
-            }
-
-        elif name == "cancel_schedule":
-            if not self.scheduler:
-                return {"error": "调度器未初始化"}
-            ok = self.scheduler.cancel(args.get("task_id", ""))
-            return {"cancelled": ok}
-
-        elif name == "pause_schedule":
-            if not self.scheduler:
-                return {"error": "调度器未初始化"}
-            ok = self.scheduler.pause(args.get("task_id", ""))
-            return {"paused": ok}
-
-        elif name == "resume_schedule":
-            if not self.scheduler:
-                return {"error": "调度器未初始化"}
-            ok = self.scheduler.resume(args.get("task_id", ""))
-            return {"resumed": ok}
-
         else:
             return {"error": f"未知工具：{name}"}
-
-    # ── 成功模式记录 ─────────────────────────────────────────────────
-    def _record_pattern(self, tool: str, args: dict,
-                        output: Any, user_text: str) -> None:
-        """从工具调用结果提取关键信息，写入 success_patterns。"""
-        try:
-            # intent：取用户原始输入前 50 字作为意图描述
-            intent = user_text[:50].replace("\n", " ")
-
-            # command：从 args 提取最有代表性的参数
-            if tool == "run_shell":
-                command = args.get("command", "")[:80]
-            elif tool == "create_blog_post":
-                command = f"repo={args.get('repo','')} title={args.get('title','')[:30]}"
-            elif tool == "trigger_workflow":
-                command = f"repo={args.get('repo','')} wf={args.get('workflow_id','')}"
-            elif tool in ("get_file", "update_file", "read_file", "write_file"):
-                command = f"path={args.get('path', '')}"
-            else:
-                command = str(args)[:80]
-
-            # outcome：从输出提取结果摘要
-            if isinstance(output, dict):
-                if tool == "run_shell":
-                    rc = output.get("returncode", 0)
-                    out_preview = (output.get("stdout") or "").strip()[:60]
-                    outcome = f"rc={rc} {out_preview}"
-                elif tool == "create_blog_post":
-                    outcome = (f"{output.get('action','done')} "
-                               f"commit={output.get('commit','')} "
-                               f"deploy={output.get('deploy_triggered','?')}")
-                else:
-                    # 取第一个有意义的字符串值
-                    outcome = next(
-                        (str(v)[:60] for v in output.values()
-                         if v and isinstance(v, (str, int, bool))),
-                        "success"
-                    )
-            else:
-                outcome = str(output)[:60]
-
-            self.memory.record_success(tool, intent, command, outcome)
-        except Exception as e:
-            log.debug("pattern_record_failed", error=str(e))
 
     # ── 兜底摘要 ──────────────────────────────────────────────────────
     def _summarize_tool_results(self, tool_results: list[dict]) -> str:
@@ -582,29 +363,6 @@ class AgentMessageHandler:
                 lines.append(f"✅ 文件已更新：`{res.get('path','')}` commit `{res.get('commit','')}`")
             elif tool == "merge_pr":
                 lines.append(f"✅ PR 已合并，commit `{res.get('sha','')}`")
-            elif tool == "forget":
-                key = res.get("key", "")
-                if key == "*":
-                    lines.append(f"✅ 已清空全部用户画像（{res.get('count', 0)} 条）。")
-                elif res.get("deleted"):
-                    lines.append(f"✅ 已删除记忆条目：`{key}`")
-                else:
-                    lines.append(f"❌ 找不到记忆条目：`{key}`")
-
-            elif tool == "show_memory":
-                profile  = res.get("profile", {})
-                patterns = res.get("patterns", [])
-                msgs     = res.get("recent_messages", 0)
-                lines.append(
-                    f"📋 当前记忆：画像 {len(profile)} 条 · "
-                    f"成功模式 {len(patterns)} 条 · 近期对话 {msgs} 条"
-                )
-                if profile:
-                    INTERNAL = {"default_chat_id", "default_git_dir"}
-                    for k, v in profile.items():
-                        if k not in INTERNAL:
-                            lines.append(f"  - `{k}`: {v}")
-
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

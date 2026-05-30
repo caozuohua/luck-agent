@@ -319,7 +319,7 @@ class AgentMessageHandler:
         elif name == "search_web":
             from tools.search_tools import SearchTools
             searcher = SearchTools()
-            result = await searcher.search_web(args.get("query", ""))
+            result = await searcher.search(args.get("query", ""))
             return result
 
         # ── 记忆工具 ──

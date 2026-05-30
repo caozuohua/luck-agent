@@ -55,11 +55,12 @@ class SearchTools:
     async def _tavily_search(self, query: str, url: str, api_key: str) -> dict:
         """Tavily 搜索（通过 Vercel 代理）"""
         params = {"q": query}
+        headers = {}
         if api_key:
-            params["api_key"] = api_key
-        
+            headers["Authorization"] = f"Bearer {api_key}"
+
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=headers or None)
             resp.raise_for_status()
             return self._format_tavily_result(resp.json())
     

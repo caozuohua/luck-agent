@@ -2,15 +2,17 @@
 from __future__ import annotations
 import asyncio
 import httpx
+import os
 from core.log import get_logger
 
 log = get_logger()
 
 
 class SearchTools:
-    """多后端搜索工具，支持 DuckDuckGo、SearXNG、Qwant"""
+    """多后端搜索工具，支持 Tavily、DuckDuckGo、SearXNG、Qwant"""
     
     BACKENDS = [
+        {"name": "tavily", "url": "https://egg-search-gamma.vercel.app/search", "key": os.getenv("TAVILY_API_KEY", "")},
         {"name": "duckduckgo", "url": "https://api.duckduckgo.com/"},
         {"name": "searxng", "url": "https://searx.be/api/search"},
         {"name": "qwant", "url": "https://api.qwant.com/v3/search/web"},
@@ -37,8 +39,11 @@ class SearchTools:
     async def _search_with_backend(self, backend: dict, query: str) -> dict:
         name = backend["name"]
         url = backend["url"]
+        key = backend.get("key", "")
         
-        if name == "duckduckgo":
+        if name == "tavily":
+            return await self._tavily_search(query, url, key)
+        elif name == "duckduckgo":
             return await self._duckduckgo_search(query, url)
         elif name == "searxng":
             return await self._searxng_search(query, url)
@@ -46,6 +51,34 @@ class SearchTools:
             return await self._qwant_search(query, url)
         
         raise ValueError(f"未知后端: {name}")
+    
+    async def _tavily_search(self, query: str, url: str, api_key: str) -> dict:
+        """Tavily 搜索（通过 Vercel 代理）"""
+        params = {"q": query}
+        if api_key:
+            params["api_key"] = api_key
+        
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            return self._format_tavily_result(resp.json())
+    
+    def _format_tavily_result(self, data: dict) -> dict:
+        """格式化 Tavily API 返回结果"""
+        result = {"results": [], "summary": ""}
+        
+        items = data.get("results", [])
+        for item in items[:5]:
+            result["results"].append({
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "description": item.get("content", ""),
+            })
+        
+        if data.get("response"):
+            result["summary"] = data["response"]
+        
+        return result
     
     async def _duckduckgo_search(self, query: str, url: str) -> dict:
         params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
@@ -131,8 +164,8 @@ class SearchTools:
 # ── Tool Schema（供 ModelRouter 工具调用注册）─────────────────────────────────
 SEARCH_TOOL_SCHEMAS = [
     {
-        "name": "web_search",
-        "description": "在互联网上搜索最新信息，支持多个免费搜索引擎（DuckDuckGo、SearXNG、Qwant）。用于获取新闻、技术文档、最新资讯等。当你不知道答案或需要最新信息时调用此工具。",
+        "name": "search_web",
+        "description": "在互联网上搜索最新信息，优先使用 Tavily 搜索引擎（通过 Vercel），失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant。用于获取新闻、技术文档、最新资讯等。当你不知道答案或需要最新信息时调用此工具。",
         "parameters": {
             "type": "object",
             "properties": {

@@ -5,7 +5,7 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
   不让模型从 18 个工具里自选，而是先用正则/关键词识别意图，
   再给模型注入：① 专用 prompt（带具体示例）② 最小工具子集（3-5个）
   模型只需"填空"，不需要做工具选择决策，准确率大幅提升。
-
+"""
 意图分类：
   BLOG_WRITE     写/发/更新博客文章
   BLOG_LIST      列出博客文章
@@ -17,6 +17,7 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
   MEMORY_OP      记忆读写
   SCHEDULE_OP    定时任务
   GIT_PUSH       推送代码
+  SEARCH         搜索（Vercel Tavily 优先）
   GENERAL        兜底，给全量工具
 """
 from __future__ import annotations
@@ -37,6 +38,7 @@ class Intent(str, Enum):
     MEMORY_OP      = "memory_op"
     SCHEDULE_OP    = "schedule_op"
     GIT_PUSH       = "git_push"
+    SEARCH         = "search"
     GENERAL        = "general"
 
 

@@ -63,8 +63,9 @@ class AgentMessageHandler:
 
         # 合并所有工具 schema
         from tools.github_tools import GITHUB_TOOL_SCHEMAS
-        from tools.shell_tools  import SHELL_TOOL_SCHEMAS
-        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + [
+        from tools.shell_tools import SHELL_TOOL_SCHEMAS
+        from tools.search_tools import SEARCH_TOOL_SCHEMAS
+        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + [
             {
                 "name": "remember",
                 "description": "保存用户的偏好、习惯、重要信息到持久化记忆。",
@@ -316,6 +317,13 @@ class AgentMessageHandler:
 
         elif name == "disk_usage":
             return self.file_mgr.disk_usage()
+
+        # ── 搜索工具 ──
+        elif name == "search_web":
+            from tools.search_tools import SearchTools
+            searcher = SearchTools()
+            result = await searcher.search_web(args.get("query", ""))
+            return result
 
         # ── 记忆工具 ──
         elif name == "remember":

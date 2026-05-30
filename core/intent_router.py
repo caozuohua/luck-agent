@@ -6,20 +6,19 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
   再给模型注入：① 专用 prompt（带具体示例）② 最小工具子集（3-5个）
   模型只需"填空"，不需要做工具选择决策，准确率大幅提升。
 """
-意图分类:
-  BLOG_WRITE     写/发/更新博客文章
-  BLOG_LIST      列出博客文章
-  GITHUB_ACTION  触发/查看 CI/Actions
-  GITHUB_ISSUE   Issues / PR 管理
-  GITHUB_CODE    读取/更新仓库文件
-  SHELL_RUN      在 VPS 执行命令/脚本
-  FILE_OP        VPS 文件读写操作
-  MEMORY_OP      记忆读写
-  SCHEDULE_OP    定时任务
-  GIT_PUSH       推送代码
-  SEARCH         搜索(Vercel Tavily 优先)
-  GENERAL        兜底, 给全量工具
-"""
+# 意图分类:
+#   BLOG_WRITE     写/发/更新博客文章
+#   BLOG_LIST      列出博客文章
+#   GITHUB_ACTION  触发/查看 CI/Actions
+#   GITHUB_ISSUE   Issues / PR 管理
+#   GITHUB_CODE    读取/更新仓库文件
+#   SHELL_RUN      在 VPS 执行命令/脚本
+#   FILE_OP        VPS 文件读写操作
+#   MEMORY_OP      记忆读写
+#   SCHEDULE_OP    定时任务
+#   GIT_PUSH       推送代码
+#   SEARCH         搜索(Vercel Tavily 优先)
+#   GENERAL        兜底, 给全量工具
 from __future__ import annotations
 
 import re

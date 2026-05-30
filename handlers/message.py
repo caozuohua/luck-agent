@@ -23,10 +23,7 @@ if TYPE_CHECKING:
     from cards.builder import CardBuilder
     from config import Config
 
-log = structlog.get_logger()
-
 MAX_TOOL_ROUNDS = 6   # 防止无限工具循环
-
 
 class AgentMessageHandler:
     """

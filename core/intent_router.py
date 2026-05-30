@@ -6,7 +6,7 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
   再给模型注入：① 专用 prompt（带具体示例）② 最小工具子集（3-5个）
   模型只需"填空"，不需要做工具选择决策，准确率大幅提升。
 """
-意图分类：
+意图分类:
   BLOG_WRITE     写/发/更新博客文章
   BLOG_LIST      列出博客文章
   GITHUB_ACTION  触发/查看 CI/Actions
@@ -17,8 +17,8 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
   MEMORY_OP      记忆读写
   SCHEDULE_OP    定时任务
   GIT_PUSH       推送代码
-  SEARCH         搜索（Vercel Tavily 优先）
-  GENERAL        兜底，给全量工具
+  SEARCH         搜索(Vercel Tavily 优先)
+  GENERAL        兜底, 给全量工具
 """
 from __future__ import annotations
 
@@ -215,9 +215,9 @@ PROMPT_HINTS: dict[Intent, str] = {
 
     Intent.BLOG_WRITE: """
 ## 当前任务：发布 Hugo 博客文章
-**唯一正确路径：调用 create_blog_post，通过 GitHub API 写入文件，绝对不要用 run_shell 写本地文件。**
+**唯一正确路径: 调用 create_blog_post, 通过 GitHub API 写入文件, 绝对不要用 run_shell 写本地文件. **
 
-示例调用：
+示例调用:
 create_blog_post(
   repo="owner/blog-repo",
   title="Python 异步编程实战",
@@ -226,74 +226,74 @@ create_blog_post(
   categories=["技术"],
   draft=false
 )
-调用成功后，函数会自动触发 deploy.yml，无需额外操作。
-最后用一句话告诉用户文章已发布，附上文件路径和 commit hash。
+调用成功后, 函数会自动触发 deploy.yml, 无需额外操作.
+最后用一句话告诉用户文章已发布, 附上文件路径和 commit hash.
 """,
 
     Intent.BLOG_LIST: """
-## 当前任务：查看博客文章列表
-调用 list_blog_posts(repo="...") 获取列表，用清单格式回复文章名称和数量。
+## 当前任务: 查看博客文章列表
+调用 list_blog_posts(repo="...") 获取列表, 用清单格式回复文章名称和数量.
 """,
 
     Intent.GITHUB_ACTION: """
-## 当前任务：GitHub Actions 操作
-- 触发部署 → trigger_workflow(repo="...", workflow_id="deploy.yml")
-- 查看状态 → list_workflow_runs(repo="...", limit=5)
-直接调用，结果以表格形式汇报 status 和 conclusion。
+## 当前任务: GitHub Actions 操作
+- 触发部署 : trigger_workflow(repo="...", workflow_id="deploy.yml")
+- 查看状态 : list_workflow_runs(repo="...", limit=5)
+直接调用, 结果以表格形式汇报 status 和 conclusion.
 """,
 
     Intent.GITHUB_ISSUE: """
 ## 当前任务：Issues / PR 管理
-- 查看 issues → list_issues(repo="...", state="open")
-- 创建 issue → create_issue(repo="...", title="...", body="...")
-- 查看 PR → list_prs(repo="...", state="open")
-调用后简洁汇报结果，包含编号和链接。
+- 查看 issues : list_issues(repo="...", state="open")
+- 创建 issue : create_issue(repo="...", title="...", body="...")
+- 查看 PR : list_prs(repo="...", state="open")
+调用后简洁汇报结果, 包含编号和链接.
 """,
 
     Intent.GITHUB_CODE: """
 ## 当前任务：读取或更新 GitHub 仓库文件
-- 读文件 → get_file(repo="...", path="README.md")
-- 改文件 → update_file(repo="...", path="...", content="...", message="...")
-路径是仓库内相对路径，不是 VPS 本地路径。
+- 读文件 : get_file(repo="...", path="README.md")
+- 改文件 : update_file(repo="...", path="...", content="...", message="...")
+路径是仓库内相对路径, 不是 VPS 本地路径.
 """,
 
     Intent.SHELL_RUN: """
 ## 当前任务：在 VPS 上执行命令
-调用 run_shell(command="...") 执行，汇报 returncode 和关键输出。
-多行脚本用 run_script(script="...\\n...")。
+调用 run_shell(command="...") 执行, 汇报 returncode 和关键输出.
+多行脚本用 run_script(script="...\\n...").
 """,
 
     Intent.FILE_OP: """
 ## 当前任务：VPS 文件操作
-读文件用 run_shell(command="cat /path/to/file") 或 read_file(path="...")。
-写文件用 write_file(path="...", content="...")。
-注意：这是 VPS 本地路径，不是 GitHub 仓库路径。
+读文件用 run_shell(command="cat /path/to/file") 或 read_file(path="...").
+写文件用 write_file(path="...", content="...").
+注意: 这是 VPS 本地路径, 不是 GitHub 仓库路径.
 """,
 
     Intent.MEMORY_OP: """
 ## 当前任务：记忆操作
-- 保存信息 → remember(key="...", value="...")
-- 查询信息 → recall(key="...")
-- 删除信息 → forget(key="...")
-- 查看全部 → show_memory()
-操作完成后简洁确认。
+- 保存信息 : remember(key="...", value="...")
+- 查询信息 : recall(key="...")
+- 删除信息 : forget(key="...")
+- 查看全部 : show_memory()
+操作完成后简洁确认.
 """,
 
     Intent.SCHEDULE_OP: """
 ## 当前任务：定时任务管理
-- 创建 cron 任务 → schedule_task(name="...", prompt="...", mode="cron", schedule="0 9 * * 1-5")
-- 创建间隔任务 → schedule_task(name="...", prompt="...", mode="interval", schedule="3600")
-- 查看任务 → list_schedules()
-cron 格式：分 时 日 月 周（如 "0 9 * * 1-5" = 工作日早9点）。
+- 创建 cron 任务 : schedule_task(name="...", prompt="...", mode="cron", schedule="0 9 * * 1-5")
+- 创建间隔任务 : schedule_task(name="...", prompt="...", mode="interval", schedule="3600")
+- 查看任务 : list_schedules()
+cron 格式  : 分 时 日 月 周 (如 "0 9 * * 1-5" = 工作日早9点).
 """,
 
     Intent.GIT_PUSH: """
 ## 当前任务：推送代码到 GitHub
-调用 run_shell 依次执行：
+调用 run_shell 依次执行:
 1. run_shell(command="git -C /path add -A")
 2. run_shell(command='git -C /path commit -m "message"')
 3. run_shell(command="git -C /path push")
-每步检查 returncode，失败立即停止并报告错误原因。
+每步检查 returncode, 失败立即停止并报告错误原因.
 """,
 
     Intent.GENERAL: "",
@@ -303,8 +303,8 @@ cron 格式：分 时 日 月 周（如 "0 9 * * 1-5" = 工作日早9点）。
 # ── 路由函数 ──────────────────────────────────────────────────────────────────
 def route(text: str) -> RouteResult:
     """
-    输入用户消息，返回 RouteResult。
-    调用方根据 intent 决定给模型的工具子集和 prompt hint。
+    输入用户消息, 返回 RouteResult.
+    调用方根据 intent 决定给模型的工具子集和 prompt hint.
     """
     text_lower = text.lower()
     best_intent    = Intent.GENERAL

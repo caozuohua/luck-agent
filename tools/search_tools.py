@@ -89,39 +89,71 @@ class SearchTools:
         return result
     
     async def _duckduckgo_search(self, query: str, url: str) -> dict:
-        params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
+        params = {"q": query, "format": "json", "no_html": "1", "no_redirect": "1"}
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             return self._format_duckduckgo_result(resp.json())
-    
+
     async def _searxng_search(self, query: str, url: str) -> dict:
         params = {"q": query, "format": "json", "language": "zh"}
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             return self._format_searxng_result(resp.json())
-    
+
     async def _qwant_search(self, query: str, url: str) -> dict:
         params = {"q": query, "t": "web", "locale": "zh"}
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             return self._format_qwant_result(resp.json())
-    
+
     def _format_duckduckgo_result(self, data: dict) -> dict:
-        result = {"results": [], "summary": ""}
-        if data.get("AbstractText"):
-            result["summary"] = data["AbstractText"]
-            if data.get("AbstractURL"):
-                result["source"] = data["AbstractURL"]
-        if data.get("RelatedTopics"):
-            for topic in data["RelatedTopics"][:5]:
-                if topic.get("Text") and topic.get("FirstURL"):
-                    result["results"].append({
-                        "title": topic["Text"],
-                        "url": topic["FirstURL"],
-                    })
+        """解析 DuckDuckGo Instant Answer API 返回。
+
+        优先级：Answer（直接回答）> AbstractText（摘要）> RelatedTopics（相关条目）
+        """
+        result = {"results": [], "summary": "", "source": ""}
+
+        # 1. 直接回答（计算器、定义等）
+        answer = data.get("Answer", "").strip()
+        if answer:
+            result["summary"] = answer
+            return result
+
+        # 2. 摘要
+        abstract = data.get("AbstractText", "").strip()
+        if abstract:
+            result["summary"] = abstract
+            url = data.get("AbstractURL", "")
+            if url:
+                result["source"] = url
+            # 摘要也算一条结果
+            result["results"].append({
+                "title": data.get("Heading", abstract[:60]),
+                "url": url,
+                "description": abstract,
+            })
+            return result
+
+        # 3. 相关条目
+        topics = data.get("RelatedTopics", [])
+        for topic in topics[:5]:
+            # RelatedTopics 可能是直接条目，也可能是子分类（含 "Topics" 键）
+            if "Text" in topic and "FirstURL" in topic:
+                result["results"].append({
+                    "title": topic["Text"],
+                    "url": topic["FirstURL"],
+                })
+            elif "Topics" in topic:
+                for sub in topic["Topics"][:3]:
+                    if "Text" in sub and "FirstURL" in sub:
+                        result["results"].append({
+                            "title": sub["Text"],
+                            "url": sub["FirstURL"],
+                        })
+
         return result
     
     def _format_searxng_result(self, data: dict) -> dict:

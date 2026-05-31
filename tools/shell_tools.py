@@ -111,59 +111,69 @@ class ShellExecutor:
 
 
 class FileManager:
-    """VPS 文件管理（读写删移动列表）。"""
+    """VPS 文件管理。所有路径相对于 base_dir，返回给模型的路径也用相对路径。"""
 
     def __init__(self, base_dir: str) -> None:
         self.base = Path(base_dir)
         self.base.mkdir(parents=True, exist_ok=True)
 
     def _safe_path(self, path: str) -> Path:
-        """确保路径在 base_dir 内（防止目录遍历）。"""
+        """确保路径在 base_dir 内，不存在时创建父目录。"""
         resolved = (self.base / path).resolve()
         if not str(resolved).startswith(str(self.base.resolve())):
             raise PermissionError(f"路径越界：{path}")
         return resolved
 
-    def list_dir(self, path: str = "") -> list[dict]:
+    def _rel(self, p: Path) -> str:
+        """返回相对于 base_dir 的路径，给模型看更友好。"""
+        try:
+            return str(p.relative_to(self.base))
+        except ValueError:
+            return str(p)
+
+    def list_dir(self, path: str = ".") -> list[dict]:
         target = self._safe_path(path)
         if not target.exists():
             return []
         items = []
         for p in sorted(target.iterdir()):
+            stat = p.stat()
             items.append({
-                "name":    p.name,
-                "type":    "dir" if p.is_dir() else "file",
-                "size":    p.stat().st_size if p.is_file() else 0,
-                "modified": p.stat().st_mtime,
+                "name":     p.name,
+                "type":     "dir" if p.is_dir() else "file",
+                "size":     stat.st_size if p.is_file() else 0,
+                "modified": int(stat.st_mtime),
             })
         return items
 
-    def read_file(self, path: str, max_chars: int = 8000) -> str:
+    def read_file(self, path: str, max_chars: int = 8000) -> dict:
         p = self._safe_path(path)
+        if not p.exists():
+            return {"error": f"文件不存在：{path}", "path": path}
         content = p.read_text(errors="replace")
-        if len(content) > max_chars:
-            return content[:max_chars] + f"\n…（文件共 {len(content)} 字符，已截断）"
-        return content
+        truncated = len(content) > max_chars
+        return {
+            "path":      path,
+            "content":   content[:max_chars] + ("\n…（已截断）" if truncated else ""),
+            "size":      len(content),
+            "truncated": truncated,
+        }
 
     def write_file(self, path: str, content: str) -> dict:
         p = self._safe_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
-        return {"path": str(p), "size": p.stat().st_size}
+        return {"path": path, "size": p.stat().st_size}
 
     def delete(self, path: str) -> dict:
         p = self._safe_path(path)
+        if not p.exists():
+            return {"error": f"不存在：{path}"}
         if p.is_dir():
             shutil.rmtree(p)
         else:
             p.unlink()
-        return {"deleted": str(p)}
-
-    def move(self, src: str, dst: str) -> dict:
-        s = self._safe_path(src)
-        d = self._safe_path(dst)
-        shutil.move(str(s), str(d))
-        return {"moved": str(d)}
+        return {"deleted": path}
 
 
 # ── Tool Schemas ────────────────────────────────────────────────────────────

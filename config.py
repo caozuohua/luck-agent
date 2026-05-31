@@ -181,11 +181,12 @@ class Config:
         self.GCP_KEY_FILE         = _opt("GOOGLE_APPLICATION_CREDENTIALS")
         self.GITHUB_DEFAULT_OWNER = _opt("GITHUB_OWNER")
         self.LARK_DOMAIN          = _opt("LARK_DOMAIN", "https://open.larksuite.com")
-        self.HUGO_REPO            = _opt("HUGO_REPO")
+        self.HUGO_REPO            = _opt("HUGO_REPO",           "caozuohua/caozuohua.github.io")
         self.HUGO_BRANCH          = _opt("HUGO_BRANCH",         "main")
         self.HUGO_CONTENT_PATH    = _opt("HUGO_CONTENT_PATH",   "content/posts")
-        self.SHELL_WORK_DIR       = _opt("SHELL_WORK_DIR",      "/opt/workspace")
-        self.FILE_UPLOAD_DIR      = _opt("FILE_DIR",            "/opt/luck-agent/files")
+        self.SHELL_WORK_DIR       = _opt("SHELL_WORK_DIR",      str(Path(__file__).parent))
+        self.FILE_UPLOAD_DIR      = _opt("FILE_DIR",            str(Path(__file__).parent / "files"))
+        self.BLOG_LOCAL_PATH      = _opt("BLOG_LOCAL_PATH",     str(Path(__file__).parent / "blog"))
         self.DB_PATH              = _opt("DB_PATH",             "/opt/luck-agent/memory.db")
 
         # 数值型

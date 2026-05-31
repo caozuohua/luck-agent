@@ -31,7 +31,7 @@ class SearchTools:
                 self._current_backend = (self._current_backend + 1) % len(backends)
                 return result
             except Exception as e:
-                log.warning("search_backend_failed", backend=backend["name"], error=str(e))
+                log.warning("search_backend_failed", backend=backend["name"], error=str(e)[:200])
                 await asyncio.sleep(0.5)
         
         return {"error": "所有搜索后端都不可用"}

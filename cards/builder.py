@@ -315,7 +315,9 @@ class CardBuilder:
     # ── 系统状态卡片 ──────────────────────────────────────────────────
     @staticmethod
     def system_status(memory_stats: dict, task_summary: list[dict],
-                      disk: dict | None = None) -> dict:
+                      disk: dict | None = None,
+                      mem: dict | None = None,
+                      procs: str = "") -> dict:
         elements = [
             {"tag": "div", "fields": [
                 {"is_short": True, "text": {"tag": "lark_md",
@@ -327,17 +329,28 @@ class CardBuilder:
             ]},
         ]
 
+        if mem:
+            elements.append(_divider())
+            elements.append({"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md",
+                                            "content": f"**内存总量**\n{mem.get('total', '?')}"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                                            "content": f"**已用**\n{mem.get('used', '?')}"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                                            "content": f"**剩余**\n{mem.get('free', '?')}"}},
+            ]})
+            if procs:
+                elements.append({"tag": "plain_text",
+                                 "content": f"进程数: {procs}"})
+
         if disk:
             elements.append(_divider())
-            elements.append({
-                "tag": "div",
-                "fields": [
-                    {"is_short": True, "text": {"tag": "lark_md",
-                                                "content": f"**已用**\n{disk.get('used', '?')}"}},
-                    {"is_short": True, "text": {"tag": "lark_md",
-                                                "content": f"**剩余**\n{disk.get('free', '?')}"}},
-                ],
-            })
+            elements.append({"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md",
+                                            "content": f"**磁盘已用**\n{disk.get('used', '?')}"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                                            "content": f"**磁盘剩余**\n{disk.get('free', '?')}"}},
+            ]})
 
         if task_summary:
             elements.append(_divider())

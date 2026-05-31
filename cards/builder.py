@@ -333,11 +333,9 @@ class CardBuilder:
                 "tag": "div",
                 "fields": [
                     {"is_short": True, "text": {"tag": "lark_md",
-                                                "content": f"**磁盘总量**\n{disk['total_gb']} GB"}},
+                                                "content": f"**已用**\n{disk.get('used', '?')}"}},
                     {"is_short": True, "text": {"tag": "lark_md",
-                                                "content": f"**已用**\n{disk['used_gb']} GB"}},
-                    {"is_short": True, "text": {"tag": "lark_md",
-                                                "content": f"**剩余**\n{disk['free_gb']} GB"}},
+                                                "content": f"**剩余**\n{disk.get('free', '?')}"}},
                 ],
             })
 

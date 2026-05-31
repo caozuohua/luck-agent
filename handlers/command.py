@@ -398,10 +398,26 @@ git push
     async def _handle_status(self, user_id: str, chat_id: str) -> None:
         stats  = self.memory.stats()
         tasks  = self.memory.get_recent_tasks(user_id, limit=5)
-        disk   = self.files.disk_usage()
+        # 磁盘
+        disk_result = await self.shell.run("df -h / | tail -1")
+        disk = {"used": "?", "free": "?"}
+        if disk_result["returncode"] == 0:
+            parts = disk_result["stdout"].split()
+            if len(parts) >= 4:
+                disk = {"used": parts[2], "free": parts[3]}
+        # 内存
+        mem_result = await self.shell.run("free -h | awk '/^Mem:/{print $2,$3,$4}'")
+        mem = {"total": "?", "used": "?", "free": "?"}
+        if mem_result["returncode"] == 0:
+            parts = mem_result["stdout"].split()
+            if len(parts) >= 3:
+                mem = {"total": parts[0], "used": parts[1], "free": parts[2]}
+        # 进程数
+        ps_result = await self.shell.run("ps aux | wc -l")
+        procs = ps_result["stdout"].strip() if ps_result["returncode"] == 0 else "?"
         await self.reply(
             chat_id,
-            card=self.card.system_status(stats, tasks, disk),
+            card=self.card.system_status(stats, tasks, disk, mem, procs),
         )
 
     async def _handle_logs(self, chat_id: str, args: str) -> None:

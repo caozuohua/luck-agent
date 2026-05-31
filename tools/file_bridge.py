@@ -140,17 +140,16 @@ class FileBridge:
             else:
                 upload_url = f"{self.api_base}/im/v1/files"
                 files = {"file": (path.name, path.read_bytes(), mime_type)}
-                data  = {"file_type": "stream", "file_name": path.name}
+                data  = {"file_type": "file", "file_name": path.name}
                 resp  = await c.post(upload_url, headers=self._auth_headers(token),
                                      files=files, data=data)
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["file_key"]
                 msg_type = "file"
-                content  = f'{{"file_key":"{file_key}"}}'
+                content  = json.dumps({"file_key": file_key})
 
             # Step 2: 发送消息
             # receive_id_type 必须作为 query param 传递
-            # content 已是 JSON 字符串，用 data= 而非 json= 避免二次序列化
             send_resp = await c.post(
                 f"{self.api_base}/im/v1/messages",
                 params={"receive_id_type": "chat_id"},

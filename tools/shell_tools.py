@@ -18,12 +18,21 @@ log = get_logger()
 # 危险命令黑名单（需要二次确认）
 DANGEROUS_PATTERNS = [
     "rm -rf /",
+    "rm -rf ~",
+    "rm -rf *",
+    "rm -rf .",
     "mkfs",
     "dd if=",
     "> /dev/",
     "shutdown",
     "reboot",
+    "poweroff",
+    "halt",
     ":(){ :|:& };:",  # fork bomb
+    "chmod -R 777 /",
+    "chmod -R 777 ~",
+    "find / -delete",
+    "find ~ -delete",
 ]
 
 

@@ -1,5 +1,5 @@
 """
-handlers/command.py — 直接指令处理器（大模型无关）
+handlers/command.py — 直接指令处理器(大模型无关)
 /cmd, /sh, /file, /git, /task, /status 等指令
 即使 Gemini 不可用，这些指令仍然正常工作。
 """
@@ -24,58 +24,50 @@ if TYPE_CHECKING:
 log = get_logger()
 
 HELP_TEXT = """
-**⚡ 直接指令（大模型无关）**
+[直接指令(大模型无关)]
 
-**Shell 执行**
-`/sh <命令>` — 执行 shell 命令
-`/sh! <命令>` — 确认执行危险命令
+Shell 执行
+/sh <命令> — 执行 shell 命令(危险命令需 /yes 确认)
+/sh! <命令> — 跳过确认直接执行
 
-**文件操作**
-`/ls [路径]` — 列出文件
-`/cat <路径>` — 读取文件内容
-`/rm <路径>` — 删除文件（需确认）
-`/files` — 列出已上传文件
-`/send <路径>` — 发送 VPS 文件到 Lark
+文件操作
+/ls [路径] — 列出文件(运维友好，支持任意路径)
+/cat <路径> — 读取文件内容
+/rm <路径> — 删除文件(危险路径直接拦截，其他需确认)
+/files — 列出已上传文件
+/send <路径> — 发送 VPS 文件到 Lark
 
-**Git 快捷**
-`/git <路径> [message]` — add + commit + push 指定目录
-`/git` — 推送默认项目目录
+Git & GitHub
+/git [路径] [message] — add + commit + push
+/deploy [repo] — 触发 deploy.yml
+/runs [repo] — 查看 Actions 运行
+/posts [repo] — 列出博文
 
-**GitHub 快捷**
-`/deploy [repo]` — 触发 deploy.yml
-`/runs [repo]` — 查看 Actions 运行
-`/posts [repo]` — 列出博文
+系统
+/status — 系统状态(内存/磁盘/进程)
+/logs [error|warning] [小时数] — 查询错误日志
+/search <关键词> — 搜索(Tavily优先,自动fallback到DuckDuckGo/SearXNG/Qwant)
 
-**定时任务**
-`/schedule list` — 查看所有定时任务
-`/schedule pause <id>` — 暂停任务
-`/schedule resume <id>` — 恢复任务
-`/schedule cancel <id>` — 删除任务
+记忆管理
+/mem — 记忆总览(画像+成功模式+对话，一条消息)
+/mem profile|patterns|history — 查看单项
+/mem set <key> <value> — 写入画像
+/mem del <key|profile|patterns|history> — 删除
 
-**模型切换（对话前缀）**
-`/pro <消息>` — 强制用 gemini-2.5-pro
-`/flash <消息>` — 强制用 gemini-2.5-flash
-`/lite <消息>` — 强制用 gemini-2.5-flash-lite
+定时任务
+/schedule list — 查看任务
+/schedule pause|resume|cancel <id> — 管理任务
 
-**任务管理**
-`/task <id>` — 查看任务状态
-`/tasks` — 查看我的任务列表
+模型切换(对话前缀)
+/pro <消息> — 强制 pro
+/flash <消息> — 强制 flash
+/lite <消息> — 强制 lite
 
-**记忆管理**
-`/mem` — 查看所有记忆（画像 + 成功模式 + 对话统计）
-`/mem profile` — 只看用户画像
-`/mem patterns` — 只看成功模式
-`/mem history` — 只看对话历史摘要
-`/mem del <key>` — 删除画像中的某个 key
-`/mem del profile` — 清空全部用户画像
-`/mem del patterns` — 清空全部成功模式
-`/mem del history` — 清空对话历史
-`/mem set <key> <value>` — 直接写入画像条目
-
-**系统**
-`/status` — 系统状态
-`/logs [error|warning] [小时数]` — 查询错误日志回溯
-`/help` — 显示本帮助
+其他
+/task <id> — 查看任务状态
+/tasks — 任务列表
+/yes — 确认待执行的危险操作
+/help — 显示本帮助
 """.strip()
 
 
@@ -106,7 +98,7 @@ class CommandHandler:
         self.scheduler = None   # 由 agent.py 启动后注入
         self.db_log    = None   # 由 agent.py 启动后注入
 
-        # 待确认的危险命令（防误删）
+        # 待确认的危险命令(防误删)
         self._pending_dangerous: dict[str, str] = {}  # user_id → command
 
     def is_command(self, text: str) -> bool:
@@ -119,7 +111,7 @@ class CommandHandler:
         message_id: str,
         text: str,
     ) -> bool:
-        """处理指令，返回 True 表示已处理（无需转给 AI）。"""
+        """处理指令，返回 True 表示已处理(无需转给 AI)。"""
         text = text.strip()
         if not text.startswith("/"):
             return False
@@ -162,6 +154,9 @@ class CommandHandler:
             elif cmd == "/posts":
                 await self._handle_posts(chat_id, args)
 
+            elif cmd == "/search":
+                await self._handle_search(user_id, chat_id, args)
+
             elif cmd == "/git":
                 await self._handle_git(user_id, chat_id, args)
 
@@ -201,11 +196,11 @@ class CommandHandler:
             await self.reply(chat_id, text="用法：`/sh <命令>`")
             return
 
-        if self.shell.is_dangerous(cmd) and not force:
+        if not force and self.shell.is_dangerous(cmd):
             self._pending_dangerous[user_id] = cmd
             await self.reply(
                 chat_id,
-                text=f"⚠️ 该命令可能有风险：\n```\n{cmd}\n```\n回复 `/yes` 确认执行，或忽略取消。"
+                text=f"⚠️ 该命令可能有风险：\n```\n{cmd}\n```\n回复 `/yes` 确认执行，或忽略取消。",
             )
             return
 
@@ -226,6 +221,16 @@ class CommandHandler:
         if not cmd:
             await self.reply(chat_id, text="没有待确认的命令。")
             return
+        # 文件删除走 FileManager(安全路径检查)
+        if cmd.startswith("__rm__:"):
+            path = cmd[7:]
+            result = self.files.delete(path)
+            if "error" in result:
+                await self.reply(chat_id, text=f"❌ {result['error']}")
+            else:
+                await self.reply(chat_id, text=f"✅ 已删除：`{path}`")
+            return
+        # 其他命令走 shell
         result = await self.shell.run(cmd)
         await self.reply(
             chat_id,
@@ -235,14 +240,11 @@ class CommandHandler:
 
     # ── 文件 ──────────────────────────────────────────────────────────
     async def _handle_ls(self, chat_id: str, path: str) -> None:
-        # 直接走 shell，不受 FileManager 沙箱限制
+        # 直接走 shell，运维方便，不受 FileManager 沙箱限制
         target = path or "."
         result = await self.shell.run(f"ls -lah {target}")
         if result["returncode"] != 0:
-            await self.reply(chat_id, card=self.card.shell_output(
-                f"ls -lah {target}", result["stdout"] or result["stderr"],
-                result["returncode"], result["elapsed"]
-            ))
+            await self.reply(chat_id, text=f"❌ `{target}` 不存在或无法访问。")
         else:
             await self.reply(chat_id, text=f"**`{target}`**\n```\n{result['stdout']}\n```")
 
@@ -252,9 +254,7 @@ class CommandHandler:
             return
         result = await self.shell.run(f"cat {path}")
         if result["returncode"] != 0:
-            await self.reply(chat_id, card=self.card.error(
-                f"无法读取文件：{path}", result["stderr"]
-            ))
+            await self.reply(chat_id, text=f"❌ 无法读取 `{path}`：{result['stderr']}")
         else:
             await self.reply(chat_id, text=f"```\n{result['stdout']}\n```")
 
@@ -262,16 +262,26 @@ class CommandHandler:
         if not path:
             await self.reply(chat_id, text="用法：`/rm <路径>`")
             return
-        self._pending_dangerous[user_id] = f"rm -rf {path}"
+        # 危险路径直接拦截
+        if path in (".", "/", "~", "..", "*"):
+            await self.reply(chat_id, text=f"❌ 拒绝删除危险路径：`{path}`")
+            return
+        self._pending_dangerous[user_id] = f"__rm__:{path}"
         await self.reply(chat_id, text=f"确认删除 `{path}`？\n回复 `/yes` 确认。")
 
     async def _handle_files(self, chat_id: str) -> None:
+        if not self.bridge:
+            await self.reply(chat_id, text="⚠️ 文件桥接未初始化。")
+            return
         files = self.bridge.list_stored_files()
         await self.reply(chat_id, card=self.card.file_list(files))
 
     async def _handle_send(self, chat_id: str, path: str) -> None:
         if not path:
             await self.reply(chat_id, text="用法：`/send <文件路径>`")
+            return
+        if not self.bridge:
+            await self.reply(chat_id, text="⚠️ 文件桥接未初始化。")
             return
         result = await self.bridge.upload_to_lark(path, chat_id)
         await self.reply(chat_id, text=f"✅ 已发送：`{result['file_name']}`")
@@ -294,7 +304,7 @@ class CommandHandler:
             message  = args  # 整段作为 message
 
         if not message:
-            # 自动生成 commit message（时间戳）
+            # 自动生成 commit message(时间戳)
             from datetime import datetime
             message = f"update {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC"
 
@@ -313,14 +323,9 @@ class CommandHandler:
             await self.reply(chat_id, text=f"✅ `{work_dir}` 没有需要提交的改动。")
             return
 
-        # add → commit → push
-        script = f"""
-cd {work_dir}
-git add -A
-git commit -m "{message}"
-git push
-"""
-        result = await self.shell.run_script(script)
+        # add → commit → push(用 run_shell 多行命令，run_script 已删除)
+        script = f"cd {work_dir} && git add -A && git commit -m \"{message}\" && git push"
+        result = await self.shell.run(script)
         if result["returncode"] == 0:
             # 记录常用 git 目录到 memory
             self.memory.set_profile(user_id, "default_git_dir", work_dir)
@@ -354,6 +359,24 @@ git push
             return
         runs = await self.github.list_workflow_runs(repo, limit=8)
         await self.reply(chat_id, card=self.card.workflow_runs(repo, runs))
+
+    async def _handle_search(self, user_id: str, chat_id: str, query: str) -> None:
+        """大模型无关的搜索指令。"""
+        if not query:
+            await self.reply(chat_id, text="用法：`/search <关键词>`")
+            return
+        await self.reply(chat_id, text=f"⏳ 搜索中：`{query}`…")
+        try:
+            from tools.search_tools import SearchTools
+            searcher = SearchTools()
+            result = await searcher.search(query)
+            if "error" in result:
+                await self.reply(chat_id, text=f"❌ 搜索失败：{result['error']}")
+            else:
+                formatted = searcher.format_result(result)
+                await self.reply(chat_id, text=formatted)
+        except Exception as e:
+            await self.reply(chat_id, text=f"❌ 搜索出错：{e}")
 
     async def _handle_posts(self, chat_id: str, repo: str) -> None:
         repo = repo or self.hugo_repo
@@ -424,7 +447,7 @@ git push
         """
         /logs [level] [hours]
         level: error | warning | (空=全部)
-        hours: 默认24，最多168（7天）
+        hours: 默认24，最多168(7天)
         """
         if not self.db_log:
             await self.reply(chat_id, text="⚠️ 日志回溯未初始化。")
@@ -452,7 +475,7 @@ git push
 
         # 标题行
         lines = [
-            f"**📋 日志回溯（最近 {hours}h）**",
+            f"**📋 日志回溯(最近 {hours}h)**",
             f"错误 {stats['errors']} · 警告 {stats['warnings']}",
             "---",
         ]
@@ -501,14 +524,23 @@ git push
             await self.reply(chat_id, text="\n\n".join(lines))
 
         elif subcmd == "pause":
+            if not sid:
+                await self.reply(chat_id, text="用法：`/schedule pause <id>`")
+                return
             ok = self.scheduler.pause(sid)
             await self.reply(chat_id, text=f"{'⏸ 已暂停' if ok else '❌ 找不到任务'} #{sid}")
 
         elif subcmd == "resume":
+            if not sid:
+                await self.reply(chat_id, text="用法：`/schedule resume <id>`")
+                return
             ok = self.scheduler.resume(sid)
             await self.reply(chat_id, text=f"{'▶️ 已恢复' if ok else '❌ 找不到任务'} #{sid}")
 
         elif subcmd == "cancel":
+            if not sid:
+                await self.reply(chat_id, text="用法：`/schedule cancel <id>`")
+                return
             ok = self.scheduler.cancel(sid)
             await self.reply(chat_id, text=f"{'🗑 已删除' if ok else '❌ 找不到任务'} #{sid}")
 
@@ -536,15 +568,15 @@ git push
 
             if target == "history":
                 count = self.memory.clear_history(user_id)
-                await self.reply(chat_id, text=f"✅ 已清空对话历史（{count} 条）。")
+                await self.reply(chat_id, text=f"✅ 已清空对话历史({count} 条)。")
 
             elif target == "profile":
                 count = self.memory.clear_profile(user_id)
-                await self.reply(chat_id, text=f"✅ 已清空用户画像（{count} 条）。")
+                await self.reply(chat_id, text=f"✅ 已清空用户画像({count} 条)。")
 
             elif target == "patterns":
                 count = self.memory.clear_patterns()
-                await self.reply(chat_id, text=f"✅ 已清空成功模式（{count} 条）。")
+                await self.reply(chat_id, text=f"✅ 已清空成功模式({count} 条)。")
 
             elif target:
                 # 删除画像中的单个 key
@@ -568,29 +600,62 @@ git push
             return
 
         # ── 查看 ──────────────────────────────────────────────────
-        if subcmd == "profile" or (not subcmd):
+        if subcmd == "profile":
             await self._show_profile(user_id, chat_id)
-
-        if subcmd == "patterns" or (not subcmd):
+        elif subcmd == "patterns":
             await self._show_patterns(chat_id)
-
-        if subcmd == "history" or (not subcmd):
+        elif subcmd == "history":
             await self._show_history(user_id, chat_id)
+        elif not subcmd:
+            # 合并成一条消息
+            await self._show_mem_summary(user_id, chat_id)
+        else:
+            await self.reply(chat_id, text="用法：`/mem [profile|patterns|history|set|del]`")
 
-        # 无 subcmd 时额外显示统计摘要
-        if not subcmd:
-            stats = self.memory.stats()
-            await self.reply(
-                chat_id,
-                text=(
-                    f"📊 **记忆统计**\n"
-                    f"对话消息 {stats['messages']} 条 · "
-                    f"任务记录 {stats['tasks']} 条 · "
-                    f"成功模式 {stats['patterns']} 条\n\n"
-                    f"💡 用 `/mem del history|profile|patterns` 清空对应记忆，"
-                    f"`/mem set <key> <value>` 直接写入画像。"
-                ),
-            )
+    async def _show_mem_summary(self, user_id: str, chat_id: str) -> None:
+        """无子命令时，合并显示所有记忆摘要。"""
+        stats = self.memory.stats()
+        profile = self.memory.get_all_profile(user_id)
+        INTERNAL = {"default_chat_id", "default_git_dir"}
+        visible = {k: v for k, v in profile.items() if k not in INTERNAL}
+        patterns = self.memory.get_success_patterns(limit=5)
+        history = self.memory.get_history(user_id, limit=3)
+
+        lines = [
+            "📊 **记忆统计**",
+            f"对话消息 {stats['messages']} 条 · 任务 {stats['tasks']} 条 · 成功模式 {stats['patterns']} 条",
+            "",
+        ]
+
+        # 画像
+        if visible:
+            lines.append("📋 **用户画像**")
+            for k, v in visible.items():
+                lines.append(f"- `{k}`: {v}")
+        else:
+            lines.append("📋 用户画像：暂无(对话后自动积累)")
+        lines.append("")
+
+        # 成功模式
+        if patterns:
+            lines.append(f"🧠 **成功模式**(前 {len(patterns)} 条)")
+            for p in patterns:
+                lines.append(f"- `#{p['id']}` [{p['tool']}] {p['intent'][:40]}({p['use_count']}次)")
+        else:
+            lines.append("🧠 成功模式：暂无")
+        lines.append("")
+
+        # 最近对话
+        if history:
+            lines.append(f"💬 **最近对话**({len(history)} 条)")
+            for h in history:
+                role = "你" if h["role"] == "user" else "Bot"
+                snippet = h["content"][:50] + "…" if len(h["content"]) > 50 else h["content"]
+                lines.append(f"- **{role}**：{snippet}")
+        lines.append("")
+        lines.append("💡 `/mem profile|patterns|history` 查看详情，`/mem set <k> <v>` 写入，`/mem del <key>` 删除。")
+
+        await self.reply(chat_id, text="\n".join(lines))
 
     async def _show_profile(self, user_id: str, chat_id: str) -> None:
         profile = self.memory.get_all_profile(user_id)
@@ -614,11 +679,11 @@ git push
             await self.reply(chat_id, text="🧠 **成功模式**\n_暂无记录，工具调用成功后自动积累。_")
             return
 
-        lines = [f"🧠 **成功模式**（共 {len(patterns)} 条）"]
+        lines = [f"🧠 **成功模式**(共 {len(patterns)} 条)"]
         for p in patterns:
             lines.append(
                 f"- `#{p['id']}` [{p['tool']}] {p['intent'][:40]}"
-                f"（用了{p['use_count']}次）"
+                f"(用了{p['use_count']}次)"
             )
         lines.append(f"\n用 `/mem del patterns` 清空全部。")
         await self.reply(chat_id, text="\n".join(lines))
@@ -629,7 +694,7 @@ git push
             await self.reply(chat_id, text="💬 **对话历史**\n_暂无记录。_")
             return
 
-        lines = [f"💬 **对话历史**（最近 {len(history)} 条）"]
+        lines = [f"💬 **对话历史**(最近 {len(history)} 条)"]
         for h in history:
             role    = "你" if h["role"] == "user" else "Bot"
             snippet = h["content"][:60] + "…" if len(h["content"]) > 60 else h["content"]

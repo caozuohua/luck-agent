@@ -143,6 +143,8 @@ class FileBridge:
                 data  = {"file_type": "file", "file_name": path.name}
                 resp  = await c.post(upload_url, headers=self._auth_headers(token),
                                      files=files, data=data)
+                if resp.status_code >= 400:
+                    log.error("lark_upload_fail", status=resp.status_code, body=resp.text[:500])
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["file_key"]
                 msg_type = "file"

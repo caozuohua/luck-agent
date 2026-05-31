@@ -283,8 +283,12 @@ class CommandHandler:
         if not self.bridge:
             await self.reply(chat_id, text="⚠️ 文件桥接未初始化。")
             return
-        result = await self.bridge.upload_to_lark(path, chat_id)
-        await self.reply(chat_id, text=f"✅ 已发送：`{result['file_name']}`")
+        try:
+            result = await self.bridge.upload_to_lark(path, chat_id)
+            await self.reply(chat_id, text=f"✅ 已发送：`{result['file_name']}`")
+        except Exception as e:
+            log.error("send_failed", path=path, chat_id=chat_id, error=str(e)[:300])
+            await self.reply(chat_id, text=f"❌ 发送失败：{e}")
 
     # ── GitHub 快捷 ───────────────────────────────────────────────────
     async def _handle_git(self, user_id: str, chat_id: str, args: str) -> None:

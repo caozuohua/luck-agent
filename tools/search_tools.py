@@ -65,9 +65,10 @@ class SearchTools:
             return self._format_tavily_result(resp.json())
     
     def _format_tavily_result(self, data: dict) -> dict:
-        """格式化 Tavily API 返回结果"""
+        """格式化 Tavily API 返回结果（兼容官方格式和 Vercel 代理格式）"""
         result = {"results": [], "summary": ""}
-        
+
+        # 标准 Tavily 格式：results 数组 + answer 摘要
         items = data.get("results", [])
         for item in items[:5]:
             result["results"].append({
@@ -75,10 +76,16 @@ class SearchTools:
                 "url": item.get("url", ""),
                 "description": item.get("content", ""),
             })
-        
-        if data.get("response"):
-            result["summary"] = data["response"]
-        
+
+        if data.get("answer"):
+            result["summary"] = data["answer"]
+
+        # Vercel 代理格式：所有结果拼在 result 字符串里，results 数组为空
+        if not result["results"] and not result["summary"]:
+            proxy_result = data.get("result", "")
+            if proxy_result:
+                result["summary"] = proxy_result
+
         return result
     
     async def _duckduckgo_search(self, query: str, url: str) -> dict:

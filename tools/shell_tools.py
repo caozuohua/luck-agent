@@ -109,15 +109,6 @@ class ShellExecutor:
                 "truncated":  False,
             }
 
-    async def run_script(self, script: str, suffix: str = ".sh") -> dict:
-        """将多行脚本写入临时文件后执行。"""
-        tmp = self.work_dir / f"_script_{int(time.time())}{suffix}"
-        tmp.write_text(script)
-        tmp.chmod(0o755)
-        result = await self.run(f"bash {tmp}")
-        tmp.unlink(missing_ok=True)
-        return result
-
 
 class FileManager:
     """VPS 文件管理（读写删移动列表）。"""
@@ -174,54 +165,36 @@ class FileManager:
         shutil.move(str(s), str(d))
         return {"moved": str(d)}
 
-    def disk_usage(self) -> dict:
-        total, used, free = shutil.disk_usage(self.base)
-        return {
-            "total_gb": round(total / 1e9, 2),
-            "used_gb":  round(used  / 1e9, 2),
-            "free_gb":  round(free  / 1e9, 2),
-        }
-
 
 # ── Tool Schemas ────────────────────────────────────────────────────────────
 SHELL_TOOL_SCHEMAS = [
     {
         "name": "run_shell",
-        "description": "在 VPS 上执行任意 shell 命令。当需要查看文件、运行脚本、操作 git、安装依赖、检查进程、或完成任何系统级操作时，优先调用此工具探索，而不是回答说不会。不确定命令是否正确时，先执行 dry-run 或查看命令，再执行实际操作。",
+        "description": "在 VPS 上执行 shell 命令。需要运行命令、操作 git、安装软件、查看进程、执行脚本时使用。",
         "parameters": {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "要执行的 shell 命令"},
-                "cwd":     {"type": "string", "description": "工作目录（可选）"},
-                "timeout": {"type": "integer", "description": "超时秒数，默认 60"},
+                "command": {"type": "string", "description": "shell 命令，多行脚本可直接换行"},
+                "cwd":     {"type": "string", "description": "工作目录（可选，默认项目目录）"},
+                "timeout": {"type": "integer", "description": "超时秒数（可选，默认 60）"},
             },
             "required": ["command"],
         },
     },
     {
-        "name": "run_script",
-        "description": "执行多行 bash 脚本。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "script": {"type": "string", "description": "多行 bash 脚本内容"},
-            },
-            "required": ["script"],
-        },
-    },
-    {
         "name": "list_files",
-        "description": "列出 VPS 工作目录中的文件和文件夹。",
+        "description": "列出 VPS 某目录下的文件和文件夹。",
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "相对于工作目录的路径"},
+                "path": {"type": "string", "description": "目录路径（相对于工作目录，默认根目录）"},
             },
+            "required": ["path"],
         },
     },
     {
         "name": "read_file",
-        "description": "读取 VPS 上的文件内容。",
+        "description": "读取 VPS 上某个文件的内容。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -232,19 +205,25 @@ SHELL_TOOL_SCHEMAS = [
     },
     {
         "name": "write_file",
-        "description": "在 VPS 上写入文件（覆盖）。",
+        "description": "在 VPS 上写入文件，自动创建父目录。",
         "parameters": {
             "type": "object",
             "properties": {
-                "path":    {"type": "string"},
-                "content": {"type": "string"},
+                "path":    {"type": "string", "description": "文件路径"},
+                "content": {"type": "string", "description": "文件内容"},
             },
             "required": ["path", "content"],
         },
     },
     {
-        "name": "disk_usage",
-        "description": "查看 VPS 磁盘使用情况。",
-        "parameters": {"type": "object", "properties": {}},
+        "name": "delete_file",
+        "description": "删除 VPS 上的文件或空目录。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件或目录路径"},
+            },
+            "required": ["path"],
+        },
     },
 ]

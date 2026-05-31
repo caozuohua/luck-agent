@@ -159,34 +159,26 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
     ],
     Intent.BLOG_LIST: [
         "list_blog_posts",
-        "get_repo_info",
     ],
     Intent.GITHUB_ACTION: [
         "trigger_workflow",
         "list_workflow_runs",
     ],
     Intent.GITHUB_ISSUE: [
-        "list_issues",
+        "list_items",
         "create_issue",
-        "list_prs",
-        "comment_on_issue",
     ],
     Intent.GITHUB_CODE: [
         "get_file",
         "update_file",
-        "list_commits",
-        "get_repo_info",
     ],
     Intent.SHELL_RUN: [
         "run_shell",
-        "run_script",
-        "disk_usage",
     ],
     Intent.FILE_OP: [
         "run_shell",      # ls / cat / tail 等
         "read_file",
         "write_file",
-        "disk_usage",
     ],
     Intent.MEMORY_OP: [
         "remember",
@@ -243,9 +235,9 @@ create_blog_post(
 
     Intent.GITHUB_ISSUE: """
 ## 当前任务：Issues / PR 管理
-- 查看 issues : list_issues(repo="...", state="open")
+- 查看 issues : list_items(repo="...", type="issues", state="open")
+- 查看 PRs : list_items(repo="...", type="prs", state="open")
 - 创建 issue : create_issue(repo="...", title="...", body="...")
-- 查看 PR : list_prs(repo="...", state="open")
 调用后简洁汇报结果, 包含编号和链接.
 """,
 
@@ -259,7 +251,7 @@ create_blog_post(
     Intent.SHELL_RUN: """
 ## 当前任务：在 VPS 上执行命令
 调用 run_shell(command="...") 执行, 汇报 returncode 和关键输出.
-多行脚本用 run_script(script="...\\n...").
+多行脚本用 run_shell(command="...\\n...").
 """,
 
     Intent.FILE_OP: """

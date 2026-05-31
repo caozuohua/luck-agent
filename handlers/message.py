@@ -266,26 +266,20 @@ class AgentMessageHandler:
             runs = await self.github.list_workflow_runs(**args)
             return runs
 
-        elif name == "list_issues":
-            return await self.github.list_issues(**args)
+        elif name == "list_items":
+            return await self.github.list_items(**args)
 
         elif name == "create_issue":
             return await self.github.create_issue(**args)
 
-        elif name == "list_prs":
-            return await self.github.list_prs(**args)
+        elif name == "get_blog_post":
+            return await self.github.get_blog_post(**args)
 
         elif name == "get_file":
             return await self.github.get_file(**args)
 
         elif name == "update_file":
             return await self.github.update_file(**args)
-
-        elif name == "list_commits":
-            return await self.github.list_commits(**args)
-
-        elif name == "get_repo_info":
-            return await self.github.get_repo_info(**args)
 
         # ── Shell 工具 ──
         elif name == "run_shell":
@@ -299,10 +293,6 @@ class AgentMessageHandler:
             )
             return result
 
-        elif name == "run_script":
-            result = await self.shell.run_script(args.get("script", ""))
-            return result
-
         elif name == "list_files":
             return self.file_mgr.list_dir(args.get("path", ""))
 
@@ -312,8 +302,8 @@ class AgentMessageHandler:
         elif name == "write_file":
             return self.file_mgr.write_file(args.get("path",""), args.get("content",""))
 
-        elif name == "disk_usage":
-            return self.file_mgr.disk_usage()
+        elif name == "delete_file":
+            return self.file_mgr.delete(args.get("path",""))
 
         # ── 搜索工具 ──
         elif name == "search_web":
@@ -366,8 +356,9 @@ class AgentMessageHandler:
                 lines.append(f"✅ Issue #{res.get('number','')} 已创建：{res.get('url','')}")
             elif tool == "update_file":
                 lines.append(f"✅ 文件已更新：`{res.get('path','')}` commit `{res.get('commit','')}`")
-            elif tool == "merge_pr":
-                lines.append(f"✅ PR 已合并，commit `{res.get('sha','')}`")
+            elif tool == "get_blog_post":
+                content = (res.get("content") or "")[:150]
+                lines.append(f"📄 已读取博文 `{res.get('path','')}`：\n{content}…")
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

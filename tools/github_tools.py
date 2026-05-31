@@ -274,56 +274,26 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         data = resp.json()
         return {"number": data["number"], "url": data["html_url"], "state": data["state"]}
 
-    async def list_issues(self, repo: str, state: str = "open", limit: int = 10) -> list[dict]:
+    async def list_items(self, repo: str, type: str = "issues",
+                         state: str = "open", limit: int = 10) -> list[dict]:
+        """列出 Issues 或 PRs（type='issues' 或 'prs'）。"""
         owner, repo_name = self._parse_repo(repo)
-        resp = await self._request("GET",
-                f"{self.BASE}/repos/{owner}/{repo_name}/issues",
-                params={"state": state, "per_page": limit, "pulls": "false"},
-            )
+        if type == "prs":
+            resp = await self._request("GET",
+                    f"{self.BASE}/repos/{owner}/{repo_name}/pulls",
+                    params={"state": state, "per_page": limit},
+                )
+        else:
+            resp = await self._request("GET",
+                    f"{self.BASE}/repos/{owner}/{repo_name}/issues",
+                    params={"state": state, "per_page": limit, "pulls": "false"},
+                )
         resp.raise_for_status()
         return [
             {"number": i["number"], "title": i["title"],
              "state": i["state"], "url": i["html_url"]}
-            for i in resp.json() if not i.get("pull_request")
+            for i in resp.json() if type != "issues" or not i.get("pull_request")
         ]
-
-    async def list_prs(self, repo: str, state: str = "open", limit: int = 10) -> list[dict]:
-        owner, repo_name = self._parse_repo(repo)
-        resp = await self._request("GET",
-                f"{self.BASE}/repos/{owner}/{repo_name}/pulls",
-                params={"state": state, "per_page": limit},
-            )
-        resp.raise_for_status()
-        return [
-            {"number": p["number"], "title": p["title"],
-             "state": p["state"], "url": p["html_url"],
-             "head": p["head"]["ref"], "base": p["base"]["ref"]}
-            for p in resp.json()
-        ]
-
-    async def comment_on_issue(self, repo: str, issue_number: int, body: str) -> dict:
-        owner, repo_name = self._parse_repo(repo)
-        resp = await self._request("POST",
-                f"{self.BASE}/repos/{owner}/{repo_name}/issues/{issue_number}/comments",
-                json={"body": body},
-            )
-        resp.raise_for_status()
-        data = resp.json()
-        return {"comment_id": data["id"], "url": data["html_url"]}
-
-    async def merge_pr(self, repo: str, pr_number: int,
-                       method: str = "squash", title: str = "") -> dict:
-        owner, repo_name = self._parse_repo(repo)
-        payload: dict = {"merge_method": method}
-        if title:
-            payload["commit_title"] = title
-        resp = await self._request("PUT",
-                f"{self.BASE}/repos/{owner}/{repo_name}/pulls/{pr_number}/merge",
-                json=payload,
-            )
-        resp.raise_for_status()
-        data = resp.json()
-        return {"merged": data.get("merged", False), "sha": data.get("sha", "")[:7]}
 
     # ── 代码管理 ────────────────────────────────────────────────────
 
@@ -360,68 +330,6 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         )
         resp.raise_for_status()
         return {"path": path, "commit": resp.json()["commit"]["sha"][:7]}
-
-    async def list_commits(self, repo: str, branch: str = "main",
-                           limit: int = 10) -> list[dict]:
-        owner, repo_name = self._parse_repo(repo)
-        resp = await self._request("GET",
-                f"{self.BASE}/repos/{owner}/{repo_name}/commits",
-                params={"sha": branch, "per_page": limit},
-            )
-        resp.raise_for_status()
-        return [
-            {
-                "sha":     c_["sha"][:7],
-                "message": c_["commit"]["message"].split("\n")[0],
-                "author":  c_["commit"]["author"]["name"],
-                "date":    c_["commit"]["author"]["date"],
-            }
-            for c_ in resp.json()
-        ]
-
-    async def create_branch(self, repo: str, branch: str,
-                             from_branch: str = "main") -> dict:
-        owner, repo_name = self._parse_repo(repo)
-        # 获取源分支 SHA
-        ref = await self._request("GET",
-            f"{self.BASE}/repos/{owner}/{repo_name}/git/ref/heads/{from_branch}"
-        )
-        ref.raise_for_status()
-        sha = ref.json()["object"]["sha"]
-
-        resp = await self._request("POST",
-            f"{self.BASE}/repos/{owner}/{repo_name}/git/refs",
-            json={"ref": f"refs/heads/{branch}", "sha": sha},
-        )
-        resp.raise_for_status()
-        return {"branch": branch, "sha": sha[:7]}
-
-    async def get_repo_info(self, repo: str) -> dict:
-        owner, repo_name = self._parse_repo(repo)
-        resp = await self._request("GET",f"{self.BASE}/repos/{owner}/{repo_name}")
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "name":        data["name"],
-            "description": data.get("description", ""),
-            "stars":       data["stargazers_count"],
-            "forks":       data["forks_count"],
-            "open_issues": data["open_issues_count"],
-            "default_branch": data["default_branch"],
-            "updated_at":  data["updated_at"],
-        }
-
-    async def search_code(self, repo: str, query: str) -> list[dict]:
-        owner, repo_name = self._parse_repo(repo)
-        resp = await self._request("GET",
-                f"{self.BASE}/search/code",
-                params={"q": f"{query} repo:{owner}/{repo_name}", "per_page": 5},
-            )
-        resp.raise_for_status()
-        return [
-            {"path": i["path"], "url": i["html_url"]}
-            for i in resp.json().get("items", [])
-        ]
 
 
 # ── Tool Schema（供 ModelRouter 工具调用注册）─────────────────────────────────
@@ -481,93 +389,71 @@ GITHUB_TOOL_SCHEMAS = [
         },
     },
     {
-        "name": "list_issues",
-        "description": "列出 GitHub Issues。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "repo":  {"type": "string"},
-                "state": {"type": "string", "enum": ["open", "closed", "all"]},
-                "limit": {"type": "integer"},
-            },
-            "required": ["repo"],
-        },
-    },
-    {
         "name": "create_issue",
-        "description": "创建 GitHub Issue。",
+        "description": "在 GitHub 仓库创建 Issue。body 支持 Markdown 格式。",
         "parameters": {
             "type": "object",
             "properties": {
-                "repo":   {"type": "string"},
-                "title":  {"type": "string"},
-                "body":   {"type": "string"},
-                "labels": {"type": "array", "items": {"type": "string"}},
+                "repo":   {"type": "string", "description": "仓库名或 owner/repo"},
+                "title":  {"type": "string", "description": "Issue 标题"},
+                "body":   {"type": "string", "description": "Issue 正文（Markdown）"},
+                "labels": {"type": "array", "items": {"type": "string"}, "description": "标签列表"},
             },
             "required": ["repo", "title"],
         },
     },
     {
-        "name": "list_prs",
-        "description": "列出 Pull Requests。",
+        "name": "list_items",
+        "description": "列出 GitHub Issues 或 Pull Requests。type 参数：issues 或 prs。",
         "parameters": {
             "type": "object",
             "properties": {
-                "repo":  {"type": "string"},
-                "state": {"type": "string", "enum": ["open", "closed", "all"]},
+                "repo":  {"type": "string", "description": "仓库名或 owner/repo"},
+                "type":  {"type": "string", "enum": ["issues", "prs"], "description": "issues 或 prs"},
+                "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "筛选状态，默认 open"},
+                "limit": {"type": "integer", "description": "返回数量，默认 10"},
             },
             "required": ["repo"],
         },
     },
     {
         "name": "get_file",
-        "description": "读取 GitHub 仓库中的文件内容。",
+        "description": "读取 GitHub 仓库中某个文件的内容。path 是仓库内相对路径，不是 VPS 本地路径。",
         "parameters": {
             "type": "object",
             "properties": {
-                "repo":   {"type": "string"},
-                "path":   {"type": "string", "description": "文件路径"},
-                "branch": {"type": "string"},
+                "repo":   {"type": "string", "description": "仓库名或 owner/repo"},
+                "path":   {"type": "string", "description": "文件路径，如 README.md"},
+                "branch": {"type": "string", "description": "分支名，默认 main"},
             },
             "required": ["repo", "path"],
         },
     },
     {
         "name": "update_file",
-        "description": "更新 GitHub 仓库中的文件内容并提交。",
+        "description": "更新 GitHub 仓库中的文件并提交。自动获取当前 sha，文件不存在时新建。",
         "parameters": {
             "type": "object",
             "properties": {
-                "repo":    {"type": "string"},
-                "path":    {"type": "string"},
-                "content": {"type": "string"},
+                "repo":    {"type": "string", "description": "仓库名或 owner/repo"},
+                "path":    {"type": "string", "description": "文件路径"},
+                "content": {"type": "string", "description": "文件新内容"},
                 "message": {"type": "string", "description": "commit message"},
             },
             "required": ["repo", "path", "content", "message"],
         },
     },
     {
-        "name": "list_commits",
-        "description": "查看提交历史。",
+        "name": "get_blog_post",
+        "description": "读取 Hugo 博客某篇博文的完整内容（自动解码 base64）。",
         "parameters": {
             "type": "object",
             "properties": {
-                "repo":   {"type": "string"},
-                "branch": {"type": "string"},
-                "limit":  {"type": "integer"},
+                "repo":   {"type": "string", "description": "仓库名或 owner/repo"},
+                "path":   {"type": "string", "description": "文章路径，如 content/posts/my-post.md"},
+                "branch": {"type": "string", "description": "分支名，默认 main"},
             },
-            "required": ["repo"],
-        },
-    },
-    {
-        "name": "get_repo_info",
-        "description": "获取 GitHub 仓库基本信息（stars、issues 数等）。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "repo": {"type": "string"},
-            },
-            "required": ["repo"],
+            "required": ["repo", "path"],
         },
     },
 ]

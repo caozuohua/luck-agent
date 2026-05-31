@@ -241,16 +241,10 @@ class AgentMessageHandler:
 
         # ── GitHub 工具 ──
         if name == "create_blog_post":
-            result = await self.github.create_blog_post(**args)
+            result = await self.github.create_blog_post(**args, shell=self.shell)
             self.memory.log_github(user_id, args.get("repo",""), "create_blog_post",
                                    args.get("title",""), str(result))
-            # 成功后顺便触发 deploy
-            repo = args.get("repo", self.cfg.HUGO_REPO)
-            try:
-                await self.github.trigger_workflow(repo, "deploy.yml")
-                result["deploy_triggered"] = True
-            except Exception:
-                result["deploy_triggered"] = False
+            # VPS 路径下 trigger_workflow 由模型决策是否调用
             return result
 
         elif name == "list_blog_posts":

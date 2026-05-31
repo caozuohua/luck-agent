@@ -183,8 +183,6 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
     Intent.MEMORY_OP: [
         "remember",
         "recall",
-        "forget",
-        "show_memory",
     ],
     Intent.SCHEDULE_OP: [
         "schedule_task",
@@ -195,7 +193,6 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
     ],
     Intent.GIT_PUSH: [
         "run_shell",      # git add / commit / push
-        "run_script",
     ],
     Intent.GENERAL: [],  # 空 = 全量工具
 }
@@ -206,19 +203,15 @@ PROMPT_HINTS: dict[Intent, str] = {
 
     Intent.BLOG_WRITE: """
 ## 当前任务：发布 Hugo 博客文章
-**唯一正确路径: 调用 create_blog_post, 通过 GitHub API 写入文件, 绝对不要用 run_shell 写本地文件. **
+**唯一正确路径: VPS 本地写文件 + git push，不要用 GitHub API。**
 
-示例调用:
-create_blog_post(
-  repo="owner/blog-repo",
-  title="Python 异步编程实战",
-  content="## 前言\\n\\n...",
-  tags=["python", "async"],
-  categories=["技术"],
-  draft=false
-)
-调用成功后, 函数会自动触发 deploy.yml, 无需额外操作.
-最后用一句话告诉用户文章已发布, 附上文件路径和 commit hash.
+步骤:
+1. 先用 run_shell 写文件到博客仓库的 content/posts/ 目录
+2. 再用 run_shell 执行 git add -A && git commit -m "标题" && git push
+3. 最后触发部署: trigger_workflow(repo="...", workflow_id="deploy.yml")
+
+文件路径示例: /home/czh_ubt/blog/content/posts/my-post.md
+文件名规则: 标题全小写，空格替换为 -，去掉非英文数字字符
 """,
 
     Intent.BLOG_LIST: """
@@ -265,8 +258,6 @@ create_blog_post(
 ## 当前任务：记忆操作
 - 保存信息 : remember(key="...", value="...")
 - 查询信息 : recall(key="...")
-- 删除信息 : forget(key="...")
-- 查看全部 : show_memory()
 操作完成后简洁确认.
 """,
 
@@ -280,11 +271,9 @@ cron 格式  : 分 时 日 月 周 (如 "0 9 * * 1-5" = 工作日早9点).
 
     Intent.GIT_PUSH: """
 ## 当前任务：推送代码到 GitHub
-调用 run_shell 依次执行:
-1. run_shell(command="git -C /path add -A")
-2. run_shell(command='git -C /path commit -m "message"')
-3. run_shell(command="git -C /path push")
-每步检查 returncode, 失败立即停止并报告错误原因.
+调用 run_shell 执行一条命令完成推送:
+run_shell(command="cd /path && git add -A && git commit -m \"message\" && git push")
+失败立即停止并报告错误原因.
 """,
 
     Intent.GENERAL: "",

@@ -187,7 +187,7 @@ class Config:
         self.SHELL_WORK_DIR       = _opt("SHELL_WORK_DIR",      str(Path(__file__).parent))
         self.FILE_UPLOAD_DIR      = _opt("FILE_DIR",            str(Path(__file__).parent / "files"))
         self.BLOG_LOCAL_PATH      = _opt("BLOG_LOCAL_PATH",     str(Path(__file__).parent / "blog"))
-        self.DB_PATH              = _opt("DB_PATH",             "/opt/luck-agent/memory.db")
+        self.DB_PATH              = _opt("DB_PATH",             str(Path(__file__).parent / "memory.db"))
 
         # 数值型
         self.SHELL_TIMEOUT      = _int("SHELL_TIMEOUT",      60)

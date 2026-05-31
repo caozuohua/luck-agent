@@ -113,10 +113,18 @@ class GitHubClient:
         draft: bool = False,
         branch: str = "main",
         content_path: str = "content/posts",
+        shell=None,
     ) -> dict:
-        """创建 Hugo 博文（自动生成 front matter，提交到指定分支）。"""
+        """创建 Hugo 博文。
+
+        优先走 VPS 本地写文件 + git push（需传入 shell），
+        否则 fallback 到 GitHub Contents API。
+        """
+        import unicodedata
         owner, repo_name = self._parse_repo(repo)
-        slug = re.sub(r"[^\w\-]", "-", title.lower())[:60].strip("-")
+
+        # slug：取英文部分（如有），否则全小写+连字符
+        slug = self._make_slug(title)[:60].strip("-")
         now  = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
         front_matter = f"""---
@@ -129,13 +137,94 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 
 """
         full_content = front_matter + content
-        path = f"{content_path}/{slug}.md"
+        file_path = f"{content_path}/{slug}.md"
+
+        if shell:
+            # VPS 本地写文件 + git push
+            return await self._create_post_vps(
+                repo, owner, repo_name, branch, file_path,
+                full_content, title, shell,
+            )
+
+        # GitHub Contents API（fallback）
+        return await self._create_post_api(
+            owner, repo_name, branch, file_path, full_content, title,
+        )
+
+    @staticmethod
+    def _make_slug(title: str) -> str:
+        """从标题生成 URL-safe slug（小写英文+连字符）。"""
+        import unicodedata
+        # 尝试提取英文单词
+        ascii_parts = re.findall(r"[a-zA-Z0-9]+", title)
+        if ascii_parts:
+            return "-".join(ascii_parts).lower()
+        # 全中文：取每个字的首字母 + 哈希
+        normalized = unicodedata.normalize("NFKD", title)
+        slug = re.sub(r"[^\w\-]", "-", normalized.lower())
+        slug = re.sub(r"-+", "-", slug).strip("-")
+        if not slug or slug == "-":
+            # 终极 fallback：用哈希
+            import hashlib
+            slug = "post-" + hashlib.md5(title.encode()).hexdigest()[:8]
+        return slug
+
+    async def _create_post_vps(
+        self, repo, owner, repo_name, branch, file_path, full_content, title, shell,
+    ) -> dict:
+        """在 VPS 本地写文件 + git push。"""
+        from config import cfg
+        blog_dir = getattr(cfg, "BLOG_LOCAL_PATH", "") or f"/tmp/{owner}-{repo_name}"
+
+        # 写文件（base64 编码避免 shell 转义问题）
+        parent_dir = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
+        if parent_dir:
+            await shell.run(f"mkdir -p '{blog_dir}/{parent_dir}'")
+        # base64 编码内容避免 shell 转义问题
+        import base64 as _b64
+        encoded = _b64.b64encode(full_content.encode()).decode()
+        result = await shell.run(
+            f"echo '{encoded}' | base64 -d > '{blog_dir}/{file_path}'"
+        )
+        if result.get("returncode", -1) != 0:
+            return {"error": f"写文件失败: {result.get('stderr', '')[:200]}"}
+
+        # git push
+        commit_msg = f"Add post: {title}"
+        push_cmd = f"cd '{blog_dir}' && git add -A && git commit -m '{commit_msg}' && git push origin {branch}"
+        result = await shell.run(push_cmd)
+        if result.get("returncode", -1) != 0:
+            stderr = result.get("stderr", "")[:200]
+            # 如果没有变化也当作成功
+            if "nothing to commit" not in stderr.lower():
+                return {"error": f"git push 失败: {stderr}"}
+
+        commit_hash = ""
+        if result.get("stdout"):
+            import re as _re
+            m = _re.search(r"([a-f0-9]{7,})\s", result["stdout"])
+            if m:
+                commit_hash = m.group(1)
+
+        return {
+            "action":   "create",
+            "path":     file_path,
+            "html_url": f"https://github.com/{owner}/{repo_name}/blob/{branch}/{file_path}",
+            "commit":   commit_hash or "pushed",
+            "deploy_triggered": False,
+        }
+
+    async def _create_post_api(
+        self, owner, repo_name, branch, file_path, full_content, title,
+    ) -> dict:
+        """通过 GitHub Contents API 写入文件（fallback）。"""
+        import base64
         encoded = base64.b64encode(full_content.encode()).decode()
 
-        # 检查文件是否已存在（获取 sha）
+        # 检查文件是否已获取 sha
         sha = None
         check = await self._request("GET",
-                    f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
+                    f"{self.BASE}/repos/{owner}/{repo_name}/contents/{file_path}",
                     params={"ref": branch})
         if check.status_code == 200:
             sha = check.json().get("sha")
@@ -149,18 +238,18 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
             payload["sha"] = sha
 
         resp = await self._request("PUT",
-            f"{self.BASE}/repos/{owner}/{repo_name}/contents/{path}",
+            f"{self.BASE}/repos/{owner}/{repo_name}/contents/{file_path}",
             json=payload,
         )
         resp.raise_for_status()
         data = resp.json()
 
         return {
-            "action":  "update" if sha else "create",
-            "path":    path,
-            "sha":     data["content"]["sha"],
+            "action":   "update" if sha else "create",
+            "path":     file_path,
+            "sha":      data["content"]["sha"],
             "html_url": data["content"]["html_url"],
-            "commit":  data["commit"]["sha"][:7],
+            "commit":   data["commit"]["sha"][:7],
         }
 
     async def list_blog_posts(self, repo: str, branch: str = "main",

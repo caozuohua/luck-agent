@@ -360,7 +360,7 @@ class CardBuilder:
         return {
             "schema": "2.0",
             "header": {
-                "title":    {"tag": "plain_text", "content": "系统状态"},
+                "title":    {"tag": "plain_text", "content": "📊 系统状态"},
                 "template": "turquoise",
             },
             "body": {"elements": elements},

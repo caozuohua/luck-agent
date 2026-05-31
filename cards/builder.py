@@ -321,52 +321,47 @@ class CardBuilder:
         elements = [
             {"tag": "div", "fields": [
                 {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**消息总数**\n{memory_stats.get('messages', 0)}"}},
+                                            "content": f"**消息总数**: {memory_stats.get('messages', 0)}"}},
                 {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**任务总数**\n{memory_stats.get('tasks', 0)}"}},
+                                            "content": f"**任务总数**: {memory_stats.get('tasks', 0)}"}},
                 {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**活跃用户**\n{memory_stats.get('users', 0)}"}},
+                                            "content": f"**活跃用户**: {memory_stats.get('users', 0)}"}},
             ]},
         ]
 
         if mem:
-            elements.append(_divider())
-            elements.append({"tag": "div", "fields": [
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**内存总量**\n{mem.get('total', '?')}"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**已用**\n{mem.get('used', '?')}"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**剩余**\n{mem.get('free', '?')}"}},
-            ]})
+            elements.append({"tag": "hr"})
+            mem_content = f"**内存** {mem.get('used', '?')} / {mem.get('total', '?')}，剩余 {mem.get('free', '?')}"
             if procs:
-                elements.append({"tag": "plain_text",
-                                 "content": f"进程数: {procs}"})
+                mem_content += f" | 进程 {procs}"
+            elements.append({"tag": "div", "fields": [
+                {"is_short": False, "text": {"tag": "lark_md", "content": mem_content}},
+            ]})
 
         if disk:
-            elements.append(_divider())
+            elements.append({"tag": "hr"})
             elements.append({"tag": "div", "fields": [
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**磁盘已用**\n{disk.get('used', '?')}"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**磁盘剩余**\n{disk.get('free', '?')}"}},
+                {"is_short": False, "text": {"tag": "lark_md",
+                                            "content": f"**磁盘** 已用 {disk.get('used', '?')}，剩余 {disk.get('free', '?')}"}},
             ]})
 
         if task_summary:
-            elements.append(_divider())
-            elements.append({"tag": "markdown", "content": "**近期任务**"})
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "div", "fields": [
+                {"is_short": False, "text": {"tag": "lark_md", "content": "**近期任务**"}},
+            ]})
             for t in task_summary[:5]:
-                emoji = STATUS_EMOJI.get(t.get("status", ""), "❓")
-                elements.append({
-                    "tag": "markdown",
-                    "content": f"{emoji} `#{t['task_id']}` {t['type']} — {t['status']}",
-                })
+                emoji = STATUS_EMOJI.get(t.get("status", ""), "?")
+                elements.append({"tag": "div", "fields": [
+                    {"is_short": False, "text": {"tag": "lark_md",
+                                                "content": f"{emoji} #{t['task_id']} {t['type']} - {t['status']}"}},
+                ]})
 
         return {
             "schema": "2.0",
             "header": {
-                "title":    {"tag": "plain_text", "content": "📊 系统状态"},
-                "template": "blue",
+                "title":    {"tag": "plain_text", "content": "系统状态"},
+                "template": "turquoise",
             },
             "body": {"elements": elements},
         }

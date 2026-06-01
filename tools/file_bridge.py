@@ -128,38 +128,38 @@ class FileBridge:
         async with httpx.AsyncClient(timeout=120) as c:
             # Step 1: 上传文件获取 file_key
             if is_image:
-                upload_url = f"{self.api_base}/im/v1/images"
-                files = {"image": (path.name, path.read_bytes(), mime_type)}
-                data  = {"image_type": "message"}
+                upload_url = f"{self.api_base}/im/v1/images?image_type=message"
+                files = {"image": path.read_bytes()}
                 resp  = await c.post(upload_url, headers=self._auth_headers(token),
-                                     files=files, data=data)
+                                     files=files)
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["image_key"]
                 msg_type = "image"
-                content  = f'{{"image_key":"{file_key}"}}'
             else:
-                upload_url = f"{self.api_base}/im/v1/files"
-                files = {"file": (path.name, path.read_bytes(), mime_type)}
-                data  = {"file_type": "file", "file_name": path.name}
+                upload_url = f"{self.api_base}/im/v1/files?file_type=file&file_name={path.name}"
+                files = {"file": path.read_bytes()}
                 resp  = await c.post(upload_url, headers=self._auth_headers(token),
-                                     files=files, data=data)
+                                     files=files)
                 if resp.status_code >= 400:
                     log.error("lark_upload_fail", status=resp.status_code, body=resp.text[:500])
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["file_key"]
                 msg_type = "file"
-                content  = json.dumps({"file_key": file_key})
 
-            # Step 2: 发送消息
-            # receive_id_type 必须作为 query param 传递
+            # Step 2: 发送消息（content 必须是 JSON 字符串）
+            if msg_type == "image":
+                send_content = json.dumps({"image_key": file_key})
+            else:
+                send_content = json.dumps({"file_key": file_key})
+
             send_resp = await c.post(
                 f"{self.api_base}/im/v1/messages",
                 params={"receive_id_type": "chat_id"},
-                headers={**self._auth_headers(token), "Content-Type": "application/json"},
+                headers={**self._auth_headers(token), "Content-Type": "application/json; charset=utf-8"},
                 content=json.dumps({
                     "receive_id": chat_id,
                     "msg_type":   msg_type,
-                    "content":    content,
+                    "content":    send_content,
                 }).encode(),
             )
             if not send_resp.is_success:

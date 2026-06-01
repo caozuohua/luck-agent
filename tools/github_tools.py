@@ -101,6 +101,21 @@ class GitHubClient:
             return repo.split("/", 1)
         return self.owner, repo
 
+    @staticmethod
+    def explain_error(error: str) -> str:
+        text = (error or "").lower()
+        if "404" in text or "not found" in text:
+            return "检查 repo、branch、path 是否正确；仓库路径必须是 GitHub 仓库内相对路径。"
+        if "401" in text or "403" in text:
+            return "检查 GitHub Token 权限，至少需要 Contents 和 Actions 权限。"
+        if "422" in text:
+            return "请求参数格式可能不对，通常是路径、分支、文件已存在或内容格式有问题。"
+        if "workflow" in text or "dispatch" in text:
+            return "确认 workflow 文件名和分支名正确，且仓库里存在 workflow_dispatch。"
+        if "rate limit" in text or "429" in text:
+            return "GitHub 触发了速率限制，稍后重试。"
+        return "先检查仓库路径、权限和提交参数。"
+
     # ── 博客文章管理 ──────────────────────────────────────────────
 
     async def create_blog_post(
@@ -117,10 +132,10 @@ class GitHubClient:
     ) -> dict:
         """创建 Hugo 博文。
 
-        优先走 VPS 本地写文件 + git push（需传入 shell），
-        否则 fallback 到 GitHub Contents API。
+        优先走 VPS 本地写文件 + git push（需传入 shell）。
+        若仓库中已存在同 slug 文章，则按更新处理；否则创建新文章。
+        失败时 fallback 到 GitHub Contents API。
         """
-        import unicodedata
         owner, repo_name = self._parse_repo(repo)
 
         # slug：取英文部分（如有），否则全小写+连字符
@@ -139,17 +154,47 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         full_content = front_matter + content
         file_path = f"{content_path}/{slug}.md"
 
+        existing_path = await self._find_existing_blog_post(repo, branch, content_path, slug)
+        existed_before = bool(existing_path)
+        if existing_path and existing_path != file_path:
+            file_path = existing_path
+
         if shell:
             # VPS 本地写文件 + git push
-            return await self._create_post_vps(
+            result = await self._create_post_vps(
                 repo, owner, repo_name, branch, file_path,
-                full_content, title, shell,
+                full_content, title, shell, existed_before=existed_before,
             )
+            if not result.get("error"):
+                deploy = await self._maybe_trigger_deploy(repo, shell)
+                result["deploy_triggered"] = bool(deploy.get("triggered"))
+                if deploy.get("error"):
+                    result["deploy_error"] = deploy["error"]
+                result["content_path"] = file_path
+            return result
 
         # GitHub Contents API（fallback）
-        return await self._create_post_api(
-            owner, repo_name, branch, file_path, full_content, title,
+        result = await self._create_post_api(
+            owner, repo_name, branch, file_path, full_content, title, existed_before,
         )
+        if not result.get("error"):
+            result["deploy_triggered"] = False
+            result["content_path"] = file_path
+        return result
+
+    async def _find_existing_blog_post(self, repo: str, branch: str, content_path: str, slug: str) -> str:
+        """在仓库里查找同 slug 的现有文章，避免重复新建。"""
+        try:
+            posts = await self.list_blog_posts(repo, branch=branch, content_path=content_path)
+        except Exception:
+            return ""
+
+        target_name = f"{slug}.md"
+        for post in posts:
+            name = post.get("name", "")
+            if name == target_name:
+                return post.get("path", "")
+        return ""
 
     @staticmethod
     def _make_slug(title: str) -> str:
@@ -170,7 +215,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         return slug
 
     async def _create_post_vps(
-        self, repo, owner, repo_name, branch, file_path, full_content, title, shell,
+        self, repo, owner, repo_name, branch, file_path, full_content, title, shell, existed_before: bool = False,
     ) -> dict:
         """在 VPS 本地写文件 + git push。"""
         from config import cfg
@@ -207,15 +252,16 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
                 commit_hash = m.group(1)
 
         return {
-            "action":   "create",
+            "action":   "update" if existed_before else "create",
             "path":     file_path,
+            "content_path": file_path,
             "html_url": f"https://github.com/{owner}/{repo_name}/blob/{branch}/{file_path}",
             "commit":   commit_hash or "pushed",
             "deploy_triggered": False,
         }
 
     async def _create_post_api(
-        self, owner, repo_name, branch, file_path, full_content, title,
+        self, owner, repo_name, branch, file_path, full_content, title, existed_before: bool = False,
     ) -> dict:
         """通过 GitHub Contents API 写入文件（fallback）。"""
         import base64
@@ -245,12 +291,22 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         data = resp.json()
 
         return {
-            "action":   "update" if sha else "create",
+            "action":   "update" if sha or existed_before else "create",
             "path":     file_path,
+            "content_path": file_path,
             "sha":      data["content"]["sha"],
             "html_url": data["content"]["html_url"],
             "commit":   data["commit"]["sha"][:7],
         }
+
+    async def _maybe_trigger_deploy(self, repo: str, shell) -> dict:
+        """尝试触发部署工作流；失败不阻断主流程。"""
+        try:
+            result = await self.trigger_workflow(repo, "deploy.yml")
+            return {"triggered": True, "result": result}
+        except Exception as e:
+            log.warning("blog_deploy_failed", repo=repo, error=str(e)[:200])
+            return {"triggered": False, "error": str(e)}
 
     async def list_blog_posts(self, repo: str, branch: str = "main",
                               content_path: str = "content/posts") -> list[dict]:
@@ -425,7 +481,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 GITHUB_TOOL_SCHEMAS = [
     {
         "name": "create_blog_post",
-        "description": "创建或更新 Hugo 博客文章，自动生成 front matter 并提交到 GitHub。",
+        "description": "创建或更新 Hugo 博客文章。优先用于 GitHub 仓库内的 Hugo 内容写入：先生成 front matter，再提交到仓库；如果用户给的是 VPS 本地路径，不要用这个工具，改用 run_shell/write_file。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -441,7 +497,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "list_blog_posts",
-        "description": "列出 Hugo 博客的所有文章。",
+        "description": "列出 Hugo 博客的文章清单。返回仓库内 Markdown 文章，不是 VPS 本地文件列表。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -452,7 +508,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "trigger_workflow",
-        "description": "手动触发 GitHub Actions workflow（workflow_dispatch）。",
+        "description": "手动触发 GitHub Actions workflow（workflow_dispatch）。通常用于部署、发布、CI 重跑。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -466,7 +522,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "list_workflow_runs",
-        "description": "查看 GitHub Actions 运行历史和状态。",
+        "description": "查看 GitHub Actions 运行历史和状态，用于确认部署/CI 是否成功。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -479,7 +535,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "create_issue",
-        "description": "在 GitHub 仓库创建 Issue。body 支持 Markdown 格式。",
+        "description": "在 GitHub 仓库创建 Issue。用于记录缺陷、需求、排障结论，body 支持 Markdown。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -493,7 +549,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "list_items",
-        "description": "列出 GitHub Issues 或 Pull Requests。type 参数：issues 或 prs。",
+        "description": "列出 GitHub Issues 或 Pull Requests。type 参数只能是 issues 或 prs。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -507,7 +563,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "get_file",
-        "description": "读取 GitHub 仓库中某个文件的内容。path 是仓库内相对路径，不是 VPS 本地路径。",
+        "description": "读取 GitHub 仓库中某个文件的内容。path 必须是仓库相对路径，不是 VPS 本地路径。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -520,7 +576,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "update_file",
-        "description": "更新 GitHub 仓库中的文件并提交。自动获取当前 sha，文件不存在时新建。",
+        "description": "更新 GitHub 仓库中的文件并提交。会自动获取 sha，文件不存在时新建。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -534,7 +590,7 @@ GITHUB_TOOL_SCHEMAS = [
     },
     {
         "name": "get_blog_post",
-        "description": "读取 Hugo 博客某篇博文的完整内容（自动解码 base64）。",
+        "description": "读取 Hugo 博客某篇博文的完整内容（自动解码 base64）。用于查看已有文章，不用于 VPS 本地文件。",
         "parameters": {
             "type": "object",
             "properties": {

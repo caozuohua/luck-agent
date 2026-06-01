@@ -118,6 +118,16 @@ class ShellExecutor:
                 "truncated":  False,
             }
 
+    def explain_permission_issue(self, stderr: str) -> str:
+        text = (stderr or "").lower()
+        if "permission denied" in text or "operation not permitted" in text:
+            return "权限不足：尝试 `/sh sudo -n <命令>`，或先检查用户是否具备 sudo 权限。"
+        if "sudo: a password is required" in text:
+            return "sudo 需要密码但当前会话无法交互：建议改成免密码 sudo，或用 systemd/service 方式执行。"
+        if "not found" in text:
+            return "命令不存在：先用 `/sh which <命令>` 确认是否安装，或用 `/sh apt install ...` 安装。"
+        return "建议先用 `/status`、`/logs error 24` 排查，再决定是否需要 sudo。"
+
 
 class FileManager:
     """VPS 文件管理。所有路径相对于 base_dir，返回给模型的路径也用相对路径。"""
@@ -189,7 +199,7 @@ class FileManager:
 SHELL_TOOL_SCHEMAS = [
     {
         "name": "run_shell",
-        "description": "在 VPS 上执行 shell 命令。需要运行命令、操作 git、安装软件、查看进程、执行脚本时使用。",
+        "description": "在 VPS 上执行 shell 命令。用于系统操作、git、安装软件、查看进程、执行脚本。若遇到权限问题，先尝试无交互 sudo（sudo -n）、systemd service、或只读检查命令，再回报错误与替代方案。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -202,7 +212,7 @@ SHELL_TOOL_SCHEMAS = [
     },
     {
         "name": "list_files",
-        "description": "列出 VPS 某目录下的文件和文件夹。",
+        "description": "列出 VPS 某目录下的文件和文件夹。优先用于定位日志、配置、备份、部署产物；不要用它去查 GitHub 仓库内容。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -213,7 +223,7 @@ SHELL_TOOL_SCHEMAS = [
     },
     {
         "name": "read_file",
-        "description": "读取 VPS 上某个文件的内容。",
+        "description": "读取 VPS 上某个文件的内容。适合查看日志片段、配置文件、脚本内容；路径必须是 VPS 本地路径。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -224,7 +234,7 @@ SHELL_TOOL_SCHEMAS = [
     },
     {
         "name": "write_file",
-        "description": "在 VPS 上写入文件，自动创建父目录。",
+        "description": "在 VPS 上写入文件，自动创建父目录。适合落盘配置、脚本、草稿和临时文件；不要用于 GitHub 仓库文件。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -236,7 +246,7 @@ SHELL_TOOL_SCHEMAS = [
     },
     {
         "name": "delete_file",
-        "description": "删除 VPS 上的文件或空目录。",
+        "description": "删除 VPS 上的文件或空目录。应先确认路径，再执行删除；危险删除前先提示用户。",
         "parameters": {
             "type": "object",
             "properties": {

@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
+import shutil
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +28,18 @@ log = get_logger()
 HELP_TEXT = """
 [直接指令(大模型无关)]
 
+最常用
+/status — 运行状态总览（内存/磁盘/进程/任务）
+/health — 健康诊断（WS/SQLite/资源）
+/restart — 重启 luck-agent 服务
+/journal [小时数] — systemd 日志回溯
+/backup — 备份 SQLite 和记忆配置
+/restore <备份名> — 恢复备份
+/repair — SQLite checkpoint + vacuum
+/upgrade — 拉取远程并重启
+/rollback <commit> — 回退到指定提交
+/search <关键词> — 搜索（Tavily 优先，自动 fallback）
+
 Shell 执行
 /sh <命令> — 执行 shell 命令(危险命令需 /yes 确认)
 /sh! <命令> — 跳过确认直接执行
@@ -37,16 +51,16 @@ Shell 执行
 /files — 列出已上传文件
 /send <路径> — 发送 VPS 文件到 Lark
 
-Git & GitHub
+发布与仓库
 /git [路径] [message] — add + commit + push
 /deploy [repo] — 触发 deploy.yml
 /runs [repo] — 查看 Actions 运行
 /posts [repo] — 列出博文
 
-系统
-/status — 系统状态(内存/磁盘/进程)
+日志与故障
 /logs [error|warning] [小时数] — 查询错误日志
-/search <关键词> — 搜索(Tavily优先,自动fallback到DuckDuckGo/SearXNG/Qwant)
+/task <id> — 查看任务状态
+/tasks — 任务列表
 
 记忆管理
 /mem — 记忆总览(画像+成功模式+对话，一条消息)
@@ -63,9 +77,7 @@ Git & GitHub
 /flash <消息> — 强制 flash
 /lite <消息> — 强制 lite
 
-其他
-/task <id> — 查看任务状态
-/tasks — 任务列表
+确认
 /yes — 确认待执行的危险操作
 /help — 显示本帮助
 """.strip()
@@ -97,6 +109,7 @@ class CommandHandler:
         self.hugo_repo = hugo_repo
         self.scheduler = None   # 由 agent.py 启动后注入
         self.db_log    = None   # 由 agent.py 启动后注入
+        self.health    = None   # 由 agent.py 启动后注入
 
         # 待确认的危险命令(防误删)
         self._pending_dangerous: dict[str, str] = {}  # user_id → command
@@ -169,8 +182,32 @@ class CommandHandler:
             elif cmd == "/status":
                 await self._handle_status(user_id, chat_id)
 
+            elif cmd == "/health":
+                await self._handle_health(chat_id)
+
             elif cmd == "/logs":
                 await self._handle_logs(chat_id, args)
+
+            elif cmd == "/restart":
+                await self._handle_restart(chat_id)
+
+            elif cmd == "/journal":
+                await self._handle_journal(chat_id, args)
+
+            elif cmd == "/backup":
+                await self._handle_backup(chat_id)
+
+            elif cmd == "/restore":
+                await self._handle_restore(chat_id, args)
+
+            elif cmd == "/repair":
+                await self._handle_repair(chat_id)
+
+            elif cmd == "/upgrade":
+                await self._handle_upgrade(chat_id)
+
+            elif cmd == "/rollback":
+                await self._handle_rollback(chat_id, args)
 
             elif cmd in ("/mem", "/memory"):
                 await self._handle_memory(user_id, chat_id, args)
@@ -377,8 +414,7 @@ class CommandHandler:
             if "error" in result:
                 await self.reply(chat_id, text=f"❌ 搜索失败：{result['error']}")
             else:
-                formatted = searcher.format_result(result)
-                await self.reply(chat_id, text=formatted)
+                await self.reply(chat_id, card=self.card.search_results(query, result))
         except Exception as e:
             await self.reply(chat_id, text=f"❌ 搜索出错：{e}")
 
@@ -425,6 +461,10 @@ class CommandHandler:
     async def _handle_status(self, user_id: str, chat_id: str) -> None:
         stats  = self.memory.stats()
         tasks  = self.memory.get_recent_tasks(user_id, limit=5)
+        ws_online = getattr(self.health, "_ws_online", None)
+        ws_last_ok = getattr(self.health, "_ws_last_ok", 0.0)
+        backup_dir = Path(self.memory.db_path).parent / "backups"
+        backup_count = len([p for p in backup_dir.glob("*") if p.is_file()]) if backup_dir.exists() else 0
         # 磁盘
         disk_result = await self.shell.run("df -h / | tail -1")
         disk = {"used": "?", "free": "?"}
@@ -442,10 +482,155 @@ class CommandHandler:
         # 进程数
         ps_result = await self.shell.run("ps aux | wc -l")
         procs = ps_result["stdout"].strip() if ps_result["returncode"] == 0 else "?"
+        extra = {
+            "ws_online": ws_online,
+            "ws_last_ok": int(time.time() - ws_last_ok) if ws_last_ok else None,
+            "db_path": self.memory.db_path,
+            "backup_count": backup_count,
+            "backup_dir": str(backup_dir),
+        }
         await self.reply(
             chat_id,
-            card=self.card.system_status(stats, tasks, disk, mem, procs),
+            card=self.card.system_status({**stats, **extra}, tasks, disk, mem, procs),
         )
+
+    async def _handle_health(self, chat_id: str) -> None:
+        db_size_mb = Path(self.memory.db_path).stat().st_size / 1024 / 1024 if Path(self.memory.db_path).exists() else 0
+        backup_dir = Path(self.memory.db_path).parent / "backups"
+        backups = sorted(backup_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True) if backup_dir.exists() else []
+        lines = [
+            "**健康诊断**",
+            f"- DB: `{self.memory.db_path}` ({db_size_mb:.1f} MB)",
+            f"- Upload dir: `{self.bridge.storage}`",
+            f"- Shell workdir: `{self.shell.work_dir}`",
+            f"- WS online: `{getattr(self.health, '_ws_online', 'unknown')}`",
+            f"- Backups: `{len(backups)}` in `{backup_dir}`",
+            "",
+            "建议：优先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
+        ]
+        await self.reply(chat_id, text="\n".join(lines))
+
+    async def _handle_restart(self, chat_id: str) -> None:
+        await self.reply(chat_id, text="⏳ 重启 luck-agent 服务…")
+        result = await self.shell.run("sudo systemctl restart luck-agent && sudo systemctl is-active luck-agent")
+        if result["returncode"] == 0:
+            await self.reply(chat_id, text="✅ 已重启，服务状态正常。")
+        else:
+            await self.reply(chat_id, text=f"❌ 重启失败：\n```\n{result['stdout']}\n{result['stderr']}\n```")
+
+    async def _handle_journal(self, chat_id: str, args: str) -> None:
+        hours = 24
+        parts = args.split() if args else []
+        for p in parts:
+            if p.isdigit():
+                hours = min(int(p), 168)
+        cmd = f"sudo journalctl -u luck-agent -n 120 --since '{hours} hours ago' --no-pager"
+        result = await self.shell.run(cmd)
+        if result["returncode"] == 0:
+            await self.reply(chat_id, text=f"**systemd 日志（最近 {hours}h）**\n```\n{result['stdout']}\n```")
+        else:
+            await self.reply(chat_id, text=f"❌ 无法读取 journal：\n```\n{result['stderr']}\n```")
+
+    async def _handle_backup(self, chat_id: str) -> None:
+        db_path = Path(self.memory.db_path)
+        backup_dir = db_path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        backup_db = backup_dir / f"{db_path.stem}-{stamp}{db_path.suffix}"
+        backup_meta = backup_dir / f"{db_path.stem}-{stamp}.meta.txt"
+
+        if not db_path.exists():
+            await self.reply(chat_id, text="❌ 数据库不存在，无法备份。")
+            return
+
+        shutil.copy2(db_path, backup_db)
+        extra_files = []
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(db_path) + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, backup_dir / f"{sidecar.name}.{stamp}")
+                extra_files.append(sidecar.name)
+
+        backup_meta.write_text(
+            "\n".join([
+                f"db_path={db_path}",
+                f"created_at={stamp} UTC",
+                f"extra={','.join(extra_files) if extra_files else 'none'}",
+            ]),
+            encoding="utf-8",
+        )
+        await self.reply(chat_id, text=f"✅ 已备份：`{backup_db.name}`")
+
+    async def _handle_restore(self, chat_id: str, args: str) -> None:
+        name = args.strip()
+        if not name:
+            await self._show_backups(chat_id)
+            await self.reply(chat_id, text="用法：`/restore <备份名>`")
+            return
+        db_path = Path(self.memory.db_path)
+        backup_dir = db_path.parent / "backups"
+        source = backup_dir / name
+        if not source.exists():
+            await self.reply(chat_id, text=f"❌ 找不到备份：`{name}`")
+            return
+        shutil.copy2(source, db_path)
+        await self.reply(chat_id, text="✅ 已恢复数据库文件。建议立即 `/restart`。")
+
+    async def _show_backups(self, chat_id: str) -> None:
+        db_path = Path(self.memory.db_path)
+        backup_dir = db_path.parent / "backups"
+        if not backup_dir.exists():
+            await self.reply(chat_id, text="暂无备份。")
+            return
+        files = sorted(
+            [p for p in backup_dir.iterdir() if p.is_file() and not p.name.endswith(".meta.txt")],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not files:
+            await self.reply(chat_id, text="暂无备份。")
+            return
+        lines = ["**备份列表**"]
+        for p in files[:10]:
+            ts = time.strftime("%m-%d %H:%M", time.localtime(p.stat().st_mtime))
+            lines.append(f"- `{p.name}` · {round(p.stat().st_size / 1024, 1)} KB · {ts}")
+        await self.reply(chat_id, text="\n".join(lines))
+
+    async def _handle_upgrade(self, chat_id: str) -> None:
+        await self.reply(chat_id, text="⏳ 拉取远程并重启…")
+        result = await self.shell.run("git pull && sudo systemctl restart luck-agent")
+        await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+
+    async def _handle_rollback(self, chat_id: str, args: str) -> None:
+        commit = args.strip()
+        if not commit:
+            await self.reply(chat_id, text="用法：`/rollback <commit>`")
+            return
+        await self.reply(chat_id, text=f"⏳ 回退到 `{commit}` 并重启…")
+        result = await self.shell.run(f"git checkout {commit} && sudo systemctl restart luck-agent")
+        await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+
+    async def _handle_repair(self, chat_id: str) -> None:
+        db_path = Path(self.memory.db_path)
+        if not db_path.exists():
+            await self.reply(chat_id, text="❌ 数据库不存在，无法修复。")
+            return
+
+        result = await self.shell.run(
+            f"python - <<'PY'\n"
+            f"import sqlite3\n"
+            f"db = r'''{db_path}'''\n"
+            f"conn = sqlite3.connect(db, timeout=30)\n"
+            f"conn.execute('PRAGMA wal_checkpoint(PASSIVE)')\n"
+            f"conn.execute('VACUUM')\n"
+            f"conn.close()\n"
+            f"print('ok')\n"
+            f"PY"
+        )
+        if result["returncode"] == 0:
+            await self.reply(chat_id, text="✅ 已完成 SQLite checkpoint + vacuum。")
+        else:
+            await self.reply(chat_id, text=f"❌ 修复失败：\n```\n{result['stdout']}\n{result['stderr']}\n```")
 
     async def _handle_logs(self, chat_id: str, args: str) -> None:
         """

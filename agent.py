@@ -313,6 +313,7 @@ class AgentApp:
         self._msg_handler.scheduler = self._scheduler
         self._cmd_handler.scheduler = self._scheduler
         self._cmd_handler.db_log    = self._db_log
+        self._cmd_handler.health    = None
 
         # 健康监控：WS 心跳 + DB 维护 + 资源预警
         async def _health_notify(text: str) -> None:
@@ -336,6 +337,7 @@ class AgentApp:
             task_queue=self._queue,
             notify_fn=_health_notify,
         )
+        self._cmd_handler.health = self._health
 
         log.info("components_initialized")
 

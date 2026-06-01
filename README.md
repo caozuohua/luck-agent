@@ -1,6 +1,6 @@
 # Luck Agent
 
-基于 Python 的 Lark 飞书智能体，部署在 GCP e2-micro（永久免费层），通过 WebSocket 实时连接 Lark，集成 Gemini 多模型路由、GitHub/Shell/搜索工具链、ReAct 工具调用闭环和 SQLite 持久化记忆。
+基于 Python 的 Lark 智能体，面向 GCP e2-micro（永久免费层）和长期稳定运营场景：通过 WebSocket 实时连接 Lark，集成 Gemini 多模型路由、GitHub/Shell/搜索工具链、ReAct 工具调用闭环和 SQLite 持久化记忆。
 
 ---
 
@@ -22,7 +22,50 @@ Lark WebSocket
   cards/ ──── Lark Card 2.0 消息卡片构建器
 ```
 
-**设计原则：意图路由（零 AI）优先，工具调用最小化，记忆持久化，指令与 AI 完全解耦。**
+**设计原则：意图路由（零 AI）优先，工具调用最小化，记忆持久化，指令与 AI 完全解耦，模型不可用时仍保留完整本地运维能力。**
+
+---
+
+## 核心特性
+
+- 低资源：适配 e2-micro，尽量减少常驻内存和外部依赖
+- 高韧性：`/status`、`/health`、`/restart`、`/journal`、`/backup`、`/restore` 等大模型无关运维指令可独立工作
+- 强检索：`/search` 支持多后端轮询和 Tavily 双 key 回退
+- 可运营：博客发布、GitHub Actions、Issue/PR、文件管理可通过统一工具链完成
+- 可开源：命令、提示词、工具 schema 和卡片输出均尽量保持可读、可扩展
+
+## 适合什么场景
+
+- 你只有碎片时间，需要在 Lark 里快速搜资料、整理想法、推进博客发布
+- 你部署在低成本 VPS 上，要求模型不可用时仍能继续运维
+- 你想把个人知识体系和博客运营沉淀成可复用的开源项目，而不是一次性脚本
+
+## 推荐工作流
+
+1. 用 `/search` 收集信息，直接在对话里扫结果卡片
+2. 用 `/mem set` 记录长期偏好、选题和成功模式
+3. 用博客工具写入内容，必要时触发 `deploy.yml`
+4. 用 `/status`、`/health`、`/backup`、`/restore` 保持 VPS 稳定运行
+
+## 设计原则
+
+- 小原语优先：把高频运维动作做成稳定、可验证的本地指令，而不是依赖自然语言猜测
+- 模型可替换：Vertex AI 只作为增强层，失败时系统仍可完整运转
+- 卡片化输出：搜索、状态、博客发布都以 Lark 卡片呈现，减少碎片时间里的阅读成本
+
+## 使用方式
+
+1. 用 `/status` 和 `/health` 快速判断服务是否健康
+2. 用 `/search` 和博客工具沉淀碎片信息与个人知识体系
+3. 用 `/backup`、`/restore`、`/restart` 保持低成本长期稳定运行
+4. 当模型失效时，继续用大模型无关指令完成运维和发布
+
+## 开源协作
+
+- 修改前先跑 `py -3 -m py_compile`，确保核心 Python 文件可编译
+- 优先保持指令、卡片、工具 schema 的短小和一致，避免新增重复入口
+- 提交 PR 时说明修改的用户路径，例如 `/search`、博客发布、恢复流程或状态页
+- 如果要补配置，优先更新 `README.md` 和 `AGENTS.md`，让新贡献者能直接上手
 
 ---
 
@@ -121,6 +164,7 @@ HUGO_REPO=caozuohua/caozuohua.github.io
 
 # Tavily 搜索（可选，无则自动 fallback 到 DuckDuckGo）
 TAVILY_API_KEY=tvly-xxxxxxxx
+TAVILY_API_KEY_2=tvly-yyyyyyyy
 ```
 
 **4. 配置 GCP 认证（二选一）**
@@ -204,9 +248,17 @@ CMD ["python", "agent.py"]
 | GitHub | `/deploy [repo]` | 触发 GitHub Actions 部署 |
 | GitHub | `/runs [repo]` | 查看 Actions 运行状态 |
 | GitHub | `/posts [repo]` | 列出博客文章 |
-| GitHub | `/search <关键词>` | Web 搜索（多后端自动 failover）|
+| 搜索 | `/search <关键词>` | Web 搜索（Tavily 优先，多后端自动 failover）|
 | 系统 | `/status` | 系统状态（内存/磁盘/进程）|
+| 系统 | `/health` | 健康诊断（WS/SQLite/资源）|
 | 系统 | `/logs [error\|warning] [小时数]` | 查询错误日志回溯 |
+| 系统 | `/restart` | 重启 luck-agent 服务 |
+| 系统 | `/journal [小时数]` | systemd 日志回溯 |
+| 系统 | `/backup` | 备份 SQLite 和记忆配置 |
+| 系统 | `/restore <备份名>` | 恢复备份 |
+| 系统 | `/repair` | SQLite checkpoint + vacuum |
+| 系统 | `/upgrade` | 拉取远程并重启 |
+| 系统 | `/rollback <commit>` | 回退到指定提交 |
 | 任务 | `/task <id>` | 查看任务状态 |
 | 任务 | `/tasks` | 查看任务列表 |
 | 定时 | `/schedule list` | 查看定时任务 |
@@ -284,6 +336,16 @@ SQLite WAL 模式，自动积累三类记忆：
 # 只更新代码，不重建 venv
 git pull && sudo systemctl restart luck-agent
 ```
+
+---
+
+## 常见故障
+
+- Lark 发消息失败：先看 `/status` 和 `/health`，再查 `/logs error 24`
+- 文件发送失败：优先确认 Lark 权限、上传目录和文件大小限制
+- 搜索结果为空：先缩小关键词，必要时换具体实体名、版本号或时间范围
+- 博客发布失败：先看 GitHub 返回的错误，再查 `/runs` 和本地 `git status`
+- 数据库变慢或膨胀：用 `/repair`，必要时 `/backup` 后再 `/restart`
 
 ---
 

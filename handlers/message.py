@@ -210,14 +210,28 @@ class AgentMessageHandler:
                 self.memory.add_message(Msg(user_id, "assistant", final_text,
                                            model=result["model"], tokens=result["tokens"]))
 
+                reply_card = self.card.agent_reply(
+                    text=final_text,
+                    model=result["model"],
+                    elapsed=elapsed,
+                )
+                blog_result = next(
+                    (
+                        tr["result"]
+                        for tr in all_tool_results
+                        if tr.get("tool") == "create_blog_post" and isinstance(tr.get("result"), dict)
+                        and not tr["result"].get("error")
+                    ),
+                    None,
+                )
+                if blog_result:
+                    reply_card = self.card.blog_publish(blog_result)
+
                 # 5. 发送回复卡片
                 await self.reply(
                     chat_id,
-                    card=self.card.agent_reply(
-                        text=final_text,
-                        model=result["model"],
-                        elapsed=elapsed,
-                    ),
+                    text=final_text,
+                    card=reply_card,
                 )
 
                 log.info("message_handled",
@@ -241,39 +255,65 @@ class AgentMessageHandler:
 
         # ── GitHub 工具 ──
         if name == "create_blog_post":
-            result = await self.github.create_blog_post(**args, shell=self.shell)
+            try:
+                result = await self.github.create_blog_post(**args, shell=self.shell)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
             self.memory.log_github(user_id, args.get("repo",""), "create_blog_post",
                                    args.get("title",""), str(result))
             # VPS 路径下 trigger_workflow 由模型决策是否调用
             return result
 
         elif name == "list_blog_posts":
-            return await self.github.list_blog_posts(**args)
+            try:
+                return await self.github.list_blog_posts(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         elif name == "trigger_workflow":
-            result = await self.github.trigger_workflow(**args)
+            try:
+                result = await self.github.trigger_workflow(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
             self.memory.log_github(user_id, args.get("repo",""), "trigger_workflow",
                                    str(args), str(result))
             return result
 
         elif name == "list_workflow_runs":
-            runs = await self.github.list_workflow_runs(**args)
-            return runs
+            try:
+                return await self.github.list_workflow_runs(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         elif name == "list_items":
-            return await self.github.list_items(**args)
+            try:
+                return await self.github.list_items(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         elif name == "create_issue":
-            return await self.github.create_issue(**args)
+            try:
+                return await self.github.create_issue(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         elif name == "get_blog_post":
-            return await self.github.get_blog_post(**args)
+            try:
+                return await self.github.get_blog_post(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         elif name == "get_file":
-            return await self.github.get_file(**args)
+            try:
+                return await self.github.get_file(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         elif name == "update_file":
-            return await self.github.update_file(**args)
+            try:
+                return await self.github.update_file(**args)
+            except Exception as e:
+                return {"error": f"{e} | {self.github.explain_error(str(e))}"}
 
         # ── Shell 工具 ──
         elif name == "run_shell":
@@ -285,6 +325,10 @@ class AgentMessageHandler:
                 cwd=args.get("cwd"),
                 timeout=args.get("timeout"),
             )
+            if result.get("returncode", 0) != 0:
+                hint = self.shell.explain_permission_issue(result.get("stderr", ""))
+                if hint and "error" not in result:
+                    result["hint"] = hint
             return result
 
         elif name == "list_files":
@@ -334,18 +378,25 @@ class AgentMessageHandler:
 
             if tool == "create_blog_post":
                 action = "更新" if res.get("action") == "update" else "创建"
+                deploy_text = "🚀 已触发部署" if res.get("deploy_triggered") else "⚠️ 部署未触发"
+                deploy_error = res.get("deploy_error", "")
                 lines.append(
-                    f"✅ 博文已{action}：`{res.get('path','')}`\n"
-                    f"   commit `{res.get('commit','')}` · "
-                    f"{'🚀 已触发部署' if res.get('deploy_triggered') else '⚠️ 部署未触发'}"
+                    f"✅ 博文已{action}：`{res.get('content_path') or res.get('path','')}`\n"
+                    f"   commit `{res.get('commit','')}` · {deploy_text}"
                 )
+                if deploy_error:
+                    lines.append(f"   ⚠️ {deploy_error[:180]}")
             elif tool == "trigger_workflow":
                 lines.append(f"🚀 已触发 workflow：`{res.get('workflow','')}` @ `{res.get('ref','')}`")
             elif tool == "run_shell":
                 rc = res.get("returncode", -1)
                 icon = "✅" if rc == 0 else "❌"
                 out = (res.get("stdout") or "").strip()[:200]
-                lines.append(f"{icon} Shell 返回码 {rc}" + (f"\n```\n{out}\n```" if out else ""))
+                hint = res.get("hint", "")
+                msg = f"{icon} Shell 返回码 {rc}" + (f"\n```\n{out}\n```" if out else "")
+                if hint:
+                    msg += f"\n💡 {hint}"
+                lines.append(msg)
             elif tool == "create_issue":
                 lines.append(f"✅ Issue #{res.get('number','')} 已创建：{res.get('url','')}")
             elif tool == "update_file":
@@ -353,6 +404,14 @@ class AgentMessageHandler:
             elif tool == "get_blog_post":
                 content = (res.get("content") or "")[:150]
                 lines.append(f"📄 已读取博文 `{res.get('path','')}`：\n{content}…")
+            elif tool == "search_web":
+                summary = (res.get("summary") or "")[:180]
+                backend = res.get("backend", "")
+                lines.append(
+                    f"🔎 搜索完成"
+                    + (f"（{backend}）" if backend else "")
+                    + (f"：{summary}" if summary else "")
+                )
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

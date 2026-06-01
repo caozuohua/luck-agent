@@ -204,6 +204,7 @@ PROMPT_HINTS: dict[Intent, str] = {
     Intent.BLOG_WRITE: """
 ## 当前任务：发布 Hugo 博客文章
 **唯一正确路径: VPS 本地写文件 + git push，不要用 GitHub API。**
+如果用户给的是 GitHub 仓库内文章，先查 list_blog_posts 再创建或更新；如果给的是 VPS 本地草稿或博客工作区，优先 run_shell/write_file。
 
 步骤:
 1. 先用 run_shell 写文件到博客仓库的 content/posts/ 目录
@@ -224,6 +225,7 @@ PROMPT_HINTS: dict[Intent, str] = {
 - 触发部署 : trigger_workflow(repo="...", workflow_id="deploy.yml")
 - 查看状态 : list_workflow_runs(repo="...", limit=5)
 直接调用, 结果以表格形式汇报 status 和 conclusion.
+如果用户提到“部署失败/重跑/查看日志”，优先先看 list_workflow_runs，再决定是否触发或取消。
 """,
 
     Intent.GITHUB_ISSUE: """
@@ -239,12 +241,14 @@ PROMPT_HINTS: dict[Intent, str] = {
 - 读文件 : get_file(repo="...", path="README.md")
 - 改文件 : update_file(repo="...", path="...", content="...", message="...")
 路径是仓库内相对路径, 不是 VPS 本地路径.
+如果用户说的是 VPS 本地路径、日志或脚本，请改用 run_shell/read_file/write_file。
 """,
 
     Intent.SHELL_RUN: """
 ## 当前任务：在 VPS 上执行命令
 调用 run_shell(command="...") 执行, 汇报 returncode 和关键输出.
 多行脚本用 run_shell(command="...\\n...").
+遇到权限问题时，优先提示用户改用 sudo -n、systemd service，或者把动作拆成只读检查 + 明确执行两步。
 """,
 
     Intent.FILE_OP: """

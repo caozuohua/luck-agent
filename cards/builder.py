@@ -208,6 +208,81 @@ class CardBuilder:
             "body": {"elements": elements},
         }
 
+    # ── 博客发布结果卡片 ─────────────────────────────────────────────
+    @staticmethod
+    def blog_publish(result: dict) -> dict:
+        action = result.get("action", "create")
+        path = result.get("path", "")
+        commit = result.get("commit", "")
+        url = result.get("html_url", "")
+        deploy_triggered = result.get("deploy_triggered", False)
+        deploy_error = result.get("deploy_error", "")
+
+        elements = [
+            {"tag": "markdown", "content": f"**动作：** `{action}`"},
+            {"tag": "markdown", "content": f"**路径：** `{path}`"},
+        ]
+        if commit:
+            elements.append({"tag": "markdown", "content": f"**提交：** `{commit}`"})
+        if url:
+            elements.append({"tag": "markdown", "content": f"**链接：** {url}"})
+        elements.append({"tag": "markdown", "content": f"**部署：** {'已触发' if deploy_triggered else '未触发'}"})
+        if deploy_error:
+            elements.append({"tag": "markdown", "content": f"⚠️ {deploy_error[:300]}"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "📝 博客发布结果"},
+                "template": "green" if action == "create" else "turquoise",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 搜索结果卡片 ─────────────────────────────────────────────────
+    @staticmethod
+    def search_results(query: str, result: dict) -> dict:
+        elements = [
+            {"tag": "markdown", "content": f"**查询：** `{query}`"},
+            _divider(),
+        ]
+
+        backend = result.get("backend", "")
+        summary = result.get("summary", "")
+        source = result.get("source", "")
+        items = result.get("results", [])[:5]
+        if backend:
+            elements.append({"tag": "markdown", "content": f"**后端：** `{backend}`"})
+        if items:
+            elements.append({"tag": "markdown", "content": f"**结果数：** `{len(items)}` 条"})
+        if summary:
+            elements.append({"tag": "markdown", "content": f"📋 {summary[:500]}"})
+        if source:
+            elements.append({"tag": "markdown", "content": f"🔗 来源：{source}"})
+
+        if items:
+            elements.append(_divider())
+            for i, item in enumerate(items, 1):
+                title = item.get("title", "")
+                url = item.get("url", "")
+                desc = item.get("description", "")[:160]
+                content = f"{i}. [{title}]({url})"
+                if desc:
+                    content += f"\n   {desc}"
+                elements.append({"tag": "markdown", "content": content})
+
+        if not summary and not items:
+            elements.append({"tag": "markdown", "content": "_未找到相关结果_"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "🔎 搜索结果"},
+                "template": "blue",
+            },
+            "body": {"elements": elements},
+        }
+
     # ── 任务状态卡片 ──────────────────────────────────────────────────
     @staticmethod
     def task_status(task_id: str, task_type: str, status: str,
@@ -328,6 +403,23 @@ class CardBuilder:
                                             "content": f"**活跃用户**: {memory_stats.get('users', 0)}"}},
             ]},
         ]
+
+        extra_bits = []
+        if memory_stats.get("ws_online") is not None:
+            extra_bits.append(f"**WS**: {memory_stats.get('ws_online')}")
+        if memory_stats.get("ws_last_ok") is not None:
+            extra_bits.append(f"**心跳**: {memory_stats.get('ws_last_ok')}s 前")
+        if memory_stats.get("db_path"):
+            extra_bits.append(f"**DB**: `{memory_stats.get('db_path')}`")
+        if memory_stats.get("backup_count") is not None:
+            extra_bits.append(f"**备份**: {memory_stats.get('backup_count')} 个")
+        if memory_stats.get("backup_dir"):
+            extra_bits.append(f"**备份目录**: `{memory_stats.get('backup_dir')}`")
+        if extra_bits:
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "div", "fields": [
+                {"is_short": False, "text": {"tag": "lark_md", "content": " | ".join(extra_bits)}},
+            ]})
 
         if mem:
             elements.append({"tag": "hr"})

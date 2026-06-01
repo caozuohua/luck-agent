@@ -12,7 +12,6 @@ class SearchTools:
     """多后端搜索工具，支持 Tavily、DuckDuckGo、SearXNG、Qwant"""
     
     BACKENDS = [
-        {"name": "tavily", "url": "https://egg-search-gamma.vercel.app/search", "key": os.getenv("TAVILY_API_KEY", "")},
         {"name": "duckduckgo", "url": "https://api.duckduckgo.com/"},
         {"name": "searxng", "url": "https://searx.be/api/search"},
         {"name": "qwant", "url": "https://api.qwant.com/v3/search/web"},
@@ -20,10 +19,21 @@ class SearchTools:
     
     def __init__(self):
         self._current_backend = 0
+        tavily_keys = [
+            os.getenv("TAVILY_API_KEY", "").strip(),
+            os.getenv("TAVILY_API_KEY_2", "").strip(),
+        ]
+        self._tavily_backends = [
+            {"name": f"tavily{idx + 1}", "url": "https://egg-search-gamma.vercel.app/search", "key": key}
+            for idx, key in enumerate(tavily_keys)
+            if key
+        ]
     
     async def search(self, query: str) -> dict:
         """执行搜索，自动轮询后端"""
-        backends = self.BACKENDS.copy()
+        backends = self._tavily_backends + self.BACKENDS.copy()
+        if not backends:
+            return {"error": "未配置可用的搜索后端"}
         for i in range(len(backends)):
             backend = backends[(self._current_backend + i) % len(backends)]
             try:
@@ -41,7 +51,7 @@ class SearchTools:
         url = backend["url"]
         key = backend.get("key", "")
         
-        if name == "tavily":
+        if name.startswith("tavily"):
             return await self._tavily_search(query, url, key)
         elif name == "duckduckgo":
             return await self._duckduckgo_search(query, url)
@@ -62,7 +72,9 @@ class SearchTools:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(url, params=params, headers=headers or None)
             resp.raise_for_status()
-            return self._format_tavily_result(resp.json())
+            result = self._format_tavily_result(resp.json())
+            result["backend"] = "tavily"
+            return result
     
     def _format_tavily_result(self, data: dict) -> dict:
         """格式化 Tavily API 返回结果（兼容官方格式和 Vercel 代理格式）"""
@@ -182,6 +194,10 @@ class SearchTools:
             return f"❌ {result['error']}"
         
         output = []
+        backend = result.get("backend", "")
+        if backend:
+            output.append(f"**搜索后端**: `{backend}`")
+
         if result.get("summary"):
             output.append(f"📋 {result['summary']}")
             if result.get("source"):
@@ -195,6 +211,7 @@ class SearchTools:
                 desc = item.get("description", "")
                 line = f"{i}. [{title}]({url})"
                 if desc:
+                    desc = desc[:180]
                     line += f"\n   {desc}"
                 output.append(line)
         
@@ -205,11 +222,11 @@ class SearchTools:
 SEARCH_TOOL_SCHEMAS = [
     {
         "name": "search_web",
-        "description": "在互联网上搜索最新信息，优先使用 Tavily 搜索引擎（通过 Vercel），失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant。用于获取新闻、技术文档、最新资讯等。当你不知道答案或需要最新信息时调用此工具。",
+        "description": "在互联网上搜索最新信息。优先使用 Tavily key1/key2，失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant。适合找最新事实、文档链接、教程和公告。输入要具体，不要只给泛词。",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "搜索关键词，用自然语言描述你想查找的内容"},
+                "query": {"type": "string", "description": "搜索关键词，尽量包含实体名、版本号、时间范围或问题描述"},
             },
             "required": ["query"],
         },

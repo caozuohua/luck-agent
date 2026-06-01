@@ -124,22 +124,41 @@ class FileBridge:
         mime_type, _ = mimetypes.guess_type(path.name)
         mime_type = mime_type or "application/octet-stream"
         is_image  = mime_type.startswith("image/")
+        file_type = self._infer_file_type(path.suffix.lower(), mime_type)
+        file_bytes = path.read_bytes()
 
         async with httpx.AsyncClient(timeout=120) as c:
             # Step 1: 上传文件获取 file_key
             if is_image:
-                upload_url = f"{self.api_base}/im/v1/images?image_type=message"
-                files = {"image": path.read_bytes()}
-                resp  = await c.post(upload_url, headers=self._auth_headers(token),
-                                     files=files)
+                upload_url = f"{self.api_base}/im/v1/images"
+                files = {
+                    "image": (path.name, file_bytes, mime_type),
+                }
+                data = {"image_type": "message"}
+                resp  = await c.post(
+                    upload_url,
+                    headers=self._auth_headers(token),
+                    files=files,
+                    data=data,
+                )
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["image_key"]
                 msg_type = "image"
             else:
-                upload_url = f"{self.api_base}/im/v1/files?file_type=file&file_name={path.name}"
-                files = {"file": path.read_bytes()}
-                resp  = await c.post(upload_url, headers=self._auth_headers(token),
-                                     files=files)
+                upload_url = f"{self.api_base}/im/v1/files"
+                files = {
+                    "file": (path.name, file_bytes, mime_type),
+                }
+                data = {
+                    "file_type": file_type,
+                    "file_name": path.name,
+                }
+                resp  = await c.post(
+                    upload_url,
+                    headers=self._auth_headers(token),
+                    files=files,
+                    data=data,
+                )
                 if resp.status_code >= 400:
                     log.error("lark_upload_fail", status=resp.status_code, body=resp.text[:500])
                 resp.raise_for_status()
@@ -150,7 +169,7 @@ class FileBridge:
             if msg_type == "image":
                 send_content = json.dumps({"image_key": file_key})
             else:
-                send_content = json.dumps({"file_key": file_key})
+                send_content = json.dumps({"file_key": file_key, "file_name": path.name})
 
             send_resp = await c.post(
                 f"{self.api_base}/im/v1/messages",
@@ -163,9 +182,19 @@ class FileBridge:
                 }).encode(),
             )
             if not send_resp.is_success:
+                err_text = send_resp.text[:500]
+                hint = self._hint_send_error(send_resp.status_code, err_text, msg_type)
+                log.error(
+                    "lark_send_fail",
+                    status=send_resp.status_code,
+                    body=err_text,
+                    msg_type=msg_type,
+                    chat_id=chat_id,
+                )
                 raise RuntimeError(
                     f"发送消息失败 {send_resp.status_code}: "
-                    f"{send_resp.json().get('msg', send_resp.text)}"
+                    f"{send_resp.json().get('msg', err_text)}"
+                    + (f" | {hint}" if hint else "")
                 )
             msg_id = send_resp.json()["data"]["message_id"]
 
@@ -187,6 +216,34 @@ class FileBridge:
                 )
 
         return {"message_id": msg_id, "file_key": file_key, "file_name": path.name}
+
+    def _infer_file_type(self, suffix: str, mime_type: str) -> str:
+        """按国际版 Lark 文件上传接口尽量选择合理的 file_type。"""
+        if suffix == ".mp4" or mime_type.startswith("video/"):
+            return "mp4"
+        if suffix in (".mp3", ".wav", ".m4a", ".opus") or mime_type.startswith("audio/"):
+            return "stream"
+        if suffix == ".pdf":
+            return "pdf"
+        if suffix in (".doc", ".docx"):
+            return "doc"
+        if suffix in (".xls", ".xlsx", ".csv"):
+            return "xls"
+        if suffix in (".ppt", ".pptx"):
+            return "ppt"
+        return "stream"
+
+    def _hint_send_error(self, status: int, body: str, msg_type: str) -> str:
+        text = (body or "").lower()
+        if status == 400 and msg_type == "file":
+            return "先检查 content 里是否包含 file_key 和 file_name，且 file_type 与文件类型匹配。"
+        if "file_name" in text:
+            return "请确认上传和发送阶段都传了 file_name。"
+        if "image_key" in text:
+            return "图片消息需要 image_key，不要用 file_key。"
+        if status == 401 or status == 403:
+            return "检查 tenant token、app 权限和 Lark 国际版域名。"
+        return ""
 
     # ── 列出 VPS 存储目录 ─────────────────────────────────────────────
     def list_stored_files(self, limit: int = 20) -> list[dict]:

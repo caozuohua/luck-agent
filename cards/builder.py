@@ -250,13 +250,13 @@ class CardBuilder:
         backend = result.get("backend", "")
         summary = result.get("summary", "")
         source = result.get("source", "")
-        items = result.get("results", [])[:5]
+        items = result.get("results", [])[:8]
         if backend:
             elements.append({"tag": "markdown", "content": f"**后端：** `{backend}`"})
         if items:
             elements.append({"tag": "markdown", "content": f"**结果数：** `{len(items)}` 条"})
         if summary:
-            elements.append({"tag": "markdown", "content": f"📋 {summary[:500]}"})
+            elements.append({"tag": "markdown", "content": f"📋 {summary[:1200]}"})
         if source:
             elements.append({"tag": "markdown", "content": f"🔗 来源：{source}"})
 
@@ -265,7 +265,7 @@ class CardBuilder:
             for i, item in enumerate(items, 1):
                 title = item.get("title", "")
                 url = item.get("url", "")
-                desc = item.get("description", "")[:160]
+                desc = item.get("description", "")[:320]
                 content = f"{i}. [{title}]({url})"
                 if desc:
                     content += f"\n   {desc}"
@@ -279,6 +279,36 @@ class CardBuilder:
             "header": {
                 "title": {"tag": "plain_text", "content": "🔎 搜索结果"},
                 "template": "blue",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 健康诊断卡片 ──────────────────────────────────────────────────
+    @staticmethod
+    def health_status(details: dict) -> dict:
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**WS**\n{details.get('ws_online', 'unknown')}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**DB**\n`{details.get('db_path', '')}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**备份**\n{details.get('backup_count', 0)} 个"}},
+            ]},
+        ]
+        if details.get("backup_dir"):
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"**备份目录**\n`{details.get('backup_dir')}`"})
+        if details.get("upload_dir"):
+            elements.append({"tag": "markdown", "content": f"**上传目录**\n`{details.get('upload_dir')}`"})
+        if details.get("shell_work_dir"):
+            elements.append({"tag": "markdown", "content": f"**Shell 工作区**\n`{details.get('shell_work_dir')}`"})
+        if details.get("hint"):
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": details["hint"]})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "🩺 健康诊断"},
+                "template": "turquoise",
             },
             "body": {"elements": elements},
         }

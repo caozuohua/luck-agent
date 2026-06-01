@@ -62,7 +62,8 @@ class AgentMessageHandler:
         from tools.github_tools import GITHUB_TOOL_SCHEMAS
         from tools.shell_tools import SHELL_TOOL_SCHEMAS
         from tools.search_tools import SEARCH_TOOL_SCHEMAS
-        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + [
+        from core.scheduler import SCHEDULE_TOOL_SCHEMAS
+        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + SCHEDULE_TOOL_SCHEMAS + [
             {
                 "name": "remember",
                 "description": "保存用户的偏好、习惯、重要信息到持久化记忆。",
@@ -350,6 +351,46 @@ class AgentMessageHandler:
             result = await searcher.search(args.get("query", ""))
             return result
 
+        elif name == "schedule_task":
+            if not self.scheduler:
+                return {"error": "调度器未初始化"}
+            mode = (args.get("mode") or "").strip().lower()
+            schedule = (args.get("schedule") or "").strip()
+            name_ = (args.get("name") or "").strip()
+            prompt = (args.get("prompt") or "").strip()
+            if not all([mode, schedule, name_, prompt]):
+                return {"error": "缺少必要参数"}
+            try:
+                if mode == "cron":
+                    task = self.scheduler.add_cron(user_id, chat_id, name_, prompt, schedule)
+                elif mode == "interval":
+                    task = self.scheduler.add_interval(user_id, chat_id, name_, prompt, int(schedule))
+                else:
+                    return {"error": f"未知模式：{mode}"}
+            except Exception as e:
+                return {"error": str(e)}
+            return {"created": True, "task": task.to_dict()}
+
+        elif name == "list_schedules":
+            if not self.scheduler:
+                return {"error": "调度器未初始化"}
+            return {"tasks": [t.to_dict() for t in self.scheduler.list_user(user_id)]}
+
+        elif name == "cancel_schedule":
+            if not self.scheduler:
+                return {"error": "调度器未初始化"}
+            return {"deleted": self.scheduler.cancel(args.get("task_id", "")), "task_id": args.get("task_id", "")}
+
+        elif name == "pause_schedule":
+            if not self.scheduler:
+                return {"error": "调度器未初始化"}
+            return {"updated": self.scheduler.pause(args.get("task_id", "")), "task_id": args.get("task_id", "")}
+
+        elif name == "resume_schedule":
+            if not self.scheduler:
+                return {"error": "调度器未初始化"}
+            return {"updated": self.scheduler.resume(args.get("task_id", "")), "task_id": args.get("task_id", "")}
+
         # ── 记忆工具 ──
         elif name == "remember":
             self.memory.set_profile(user_id, args["key"], args["value"])
@@ -405,13 +446,22 @@ class AgentMessageHandler:
                 content = (res.get("content") or "")[:150]
                 lines.append(f"📄 已读取博文 `{res.get('path','')}`：\n{content}…")
             elif tool == "search_web":
-                summary = (res.get("summary") or "")[:180]
+                summary = (res.get("summary") or "")[:500]
                 backend = res.get("backend", "")
+                items = res.get("results", [])[:3]
+                item_bits = []
+                for item in items:
+                    title = item.get("title", "")
+                    url = item.get("url", "")
+                    if title and url:
+                        item_bits.append(f"- [{title}]({url})")
                 lines.append(
                     f"🔎 搜索完成"
                     + (f"（{backend}）" if backend else "")
                     + (f"：{summary}" if summary else "")
                 )
+                if item_bits:
+                    lines.append("\n".join(item_bits))
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

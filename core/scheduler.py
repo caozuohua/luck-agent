@@ -116,6 +116,21 @@ class ScheduledTask:
     next_run: float
     run_count: int
 
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "chat_id": self.chat_id,
+            "name": self.name,
+            "prompt": self.prompt,
+            "mode": self.mode,
+            "schedule": self.schedule,
+            "enabled": self.enabled,
+            "last_run": self.last_run,
+            "next_run": self.next_run,
+            "run_count": self.run_count,
+        }
+
 
 # ── ScheduleStore ─────────────────────────────────────────────────────────────
 
@@ -344,3 +359,62 @@ class Scheduler:
 
     def list_user(self, user_id: str) -> list[ScheduledTask]:
         return self._store.list_user(user_id)
+
+
+SCHEDULE_TOOL_SCHEMAS = [
+    {
+        "name": "schedule_task",
+        "description": "创建定时任务。支持 cron 和 interval 两种模式。创建后会在当前用户的 Lark 会话里定时触发 prompt。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "任务名称，便于人类识别"},
+                "prompt": {"type": "string", "description": "触发时注入给 AI 的 prompt"},
+                "mode": {"type": "string", "enum": ["cron", "interval"], "description": "cron 或 interval"},
+                "schedule": {"type": "string", "description": "cron 表达式（5字段）或间隔秒数"},
+            },
+            "required": ["name", "prompt", "mode", "schedule"],
+        },
+    },
+    {
+        "name": "list_schedules",
+        "description": "查看当前用户的定时任务列表。",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "cancel_schedule",
+        "description": "删除指定定时任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务 ID"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "pause_schedule",
+        "description": "暂停指定定时任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务 ID"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "resume_schedule",
+        "description": "恢复指定定时任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务 ID"},
+            },
+            "required": ["task_id"],
+        },
+    },
+]

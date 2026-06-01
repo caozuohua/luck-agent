@@ -161,6 +161,7 @@ GITHUB_OWNER=caozuohua               # 默认仓库 owner
 
 # Hugo 博客（可选）
 HUGO_REPO=caozuohua/caozuohua.github.io
+BLOG_LOCAL_PATH=/var/www/blog
 
 # Tavily 搜索（可选，无则自动 fallback 到 DuckDuckGo）
 TAVILY_API_KEY=tvly-xxxxxxxx
@@ -262,6 +263,7 @@ CMD ["python", "agent.py"]
 | 任务 | `/task <id>` | 查看任务状态 |
 | 任务 | `/tasks` | 查看任务列表 |
 | 定时 | `/schedule list` | 查看定时任务 |
+| 定时 | `/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>` | 新建任务 |
 | 定时 | `/schedule pause\|resume\|cancel <id>` | 管理定时任务 |
 | 记忆 | `/mem` | 记忆总览（画像+成功模式+对话，一条消息）|
 | 记忆 | `/mem profile\|patterns\|history` | 查看单项记忆 |

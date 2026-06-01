@@ -201,17 +201,18 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
 # ── 任务专用 Prompt（带具体示例，比规则描述更有效）────────────────────────────
 PROMPT_HINTS: dict[Intent, str] = {
 
-    Intent.BLOG_WRITE: """
+Intent.BLOG_WRITE: """
 ## 当前任务：发布 Hugo 博客文章
 **唯一正确路径: VPS 本地写文件 + git push，不要用 GitHub API。**
 如果用户给的是 GitHub 仓库内文章，先查 list_blog_posts 再创建或更新；如果给的是 VPS 本地草稿或博客工作区，优先 run_shell/write_file。
+博客本地工作区来自 `BLOG_LOCAL_PATH`，默认是 `/var/www/blog`，不要误用 `/opt/luck-agent` 或 `/opt/workspace`。
 
 步骤:
 1. 先用 run_shell 写文件到博客仓库的 content/posts/ 目录
 2. 再用 run_shell 执行 git add -A && git commit -m "标题" && git push
 3. 最后触发部署: trigger_workflow(repo="...", workflow_id="deploy.yml")
 
-文件路径示例: /home/czh_ubt/blog/content/posts/my-post.md
+文件路径示例: /var/www/blog/content/posts/my-post.md
 文件名规则: 标题全小写，空格替换为 -，去掉非英文数字字符
 """,
 
@@ -270,7 +271,11 @@ PROMPT_HINTS: dict[Intent, str] = {
 - 创建 cron 任务 : schedule_task(name="...", prompt="...", mode="cron", schedule="0 9 * * 1-5")
 - 创建间隔任务 : schedule_task(name="...", prompt="...", mode="interval", schedule="3600")
 - 查看任务 : list_schedules()
+- 暂停任务 : pause_schedule(task_id="...")
+- 恢复任务 : resume_schedule(task_id="...")
+- 删除任务 : cancel_schedule(task_id="...")
 cron 格式  : 分 时 日 月 周 (如 "0 9 * * 1-5" = 工作日早9点).
+如果通过 /schedule add 走直接指令，cron 表达式或秒数需要用引号包住，prompt 写在后面。
 """,
 
     Intent.GIT_PUSH: """

@@ -70,6 +70,7 @@ Shell 执行
 
 定时任务
 /schedule list — 查看任务
+/schedule add cron|interval <名称> "<cron|秒数>" <prompt> — 新建任务
 /schedule pause|resume|cancel <id> — 管理任务
 
 模型切换(对话前缀)
@@ -242,6 +243,13 @@ class CommandHandler:
             return
 
         result = await self.shell.run(cmd)
+        if result["returncode"] != 0 and result.get("stderr"):
+            hint = self.shell.explain_permission_issue(result["stderr"])
+            await self.reply(
+                chat_id,
+                text=f"❌ 执行失败：\n```\n{result['stderr']}\n```\n💡 {hint}",
+            )
+            return
         await self.reply(
             chat_id,
             card=self.card.shell_output(
@@ -498,17 +506,15 @@ class CommandHandler:
         db_size_mb = Path(self.memory.db_path).stat().st_size / 1024 / 1024 if Path(self.memory.db_path).exists() else 0
         backup_dir = Path(self.memory.db_path).parent / "backups"
         backups = sorted(backup_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True) if backup_dir.exists() else []
-        lines = [
-            "**健康诊断**",
-            f"- DB: `{self.memory.db_path}` ({db_size_mb:.1f} MB)",
-            f"- Upload dir: `{self.bridge.storage}`",
-            f"- Shell workdir: `{self.shell.work_dir}`",
-            f"- WS online: `{getattr(self.health, '_ws_online', 'unknown')}`",
-            f"- Backups: `{len(backups)}` in `{backup_dir}`",
-            "",
-            "建议：优先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
-        ]
-        await self.reply(chat_id, text="\n".join(lines))
+        await self.reply(chat_id, card=self.card.health_status({
+            "db_path": self.memory.db_path,
+            "upload_dir": self.bridge.storage,
+            "shell_work_dir": self.shell.work_dir,
+            "ws_online": getattr(self.health, "_ws_online", "unknown"),
+            "backup_count": len(backups),
+            "backup_dir": str(backup_dir),
+            "hint": "建议：优先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
+        }))
 
     async def _handle_restart(self, chat_id: str) -> None:
         await self.reply(chat_id, text="⏳ 重启 luck-agent 服务…")
@@ -516,7 +522,8 @@ class CommandHandler:
         if result["returncode"] == 0:
             await self.reply(chat_id, text="✅ 已重启，服务状态正常。")
         else:
-            await self.reply(chat_id, text=f"❌ 重启失败：\n```\n{result['stdout']}\n{result['stderr']}\n```")
+            hint = self.shell.explain_permission_issue(result["stderr"])
+            await self.reply(chat_id, text=f"❌ 重启失败：\n```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
 
     async def _handle_journal(self, chat_id: str, args: str) -> None:
         hours = 24
@@ -529,7 +536,8 @@ class CommandHandler:
         if result["returncode"] == 0:
             await self.reply(chat_id, text=f"**systemd 日志（最近 {hours}h）**\n```\n{result['stdout']}\n```")
         else:
-            await self.reply(chat_id, text=f"❌ 无法读取 journal：\n```\n{result['stderr']}\n```")
+            hint = self.shell.explain_permission_issue(result["stderr"])
+            await self.reply(chat_id, text=f"❌ 无法读取 journal：\n```\n{result['stderr']}\n```\n💡 {hint}")
 
     async def _handle_backup(self, chat_id: str) -> None:
         db_path = Path(self.memory.db_path)
@@ -599,7 +607,11 @@ class CommandHandler:
     async def _handle_upgrade(self, chat_id: str) -> None:
         await self.reply(chat_id, text="⏳ 拉取远程并重启…")
         result = await self.shell.run("git pull && sudo systemctl restart luck-agent")
-        await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+        if result["returncode"] == 0:
+            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+        else:
+            hint = self.shell.explain_permission_issue(result["stderr"])
+            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
 
     async def _handle_rollback(self, chat_id: str, args: str) -> None:
         commit = args.strip()
@@ -608,7 +620,11 @@ class CommandHandler:
             return
         await self.reply(chat_id, text=f"⏳ 回退到 `{commit}` 并重启…")
         result = await self.shell.run(f"git checkout {commit} && sudo systemctl restart luck-agent")
-        await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+        if result["returncode"] == 0:
+            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+        else:
+            hint = self.shell.explain_permission_issue(result["stderr"])
+            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
 
     async def _handle_repair(self, chat_id: str) -> None:
         db_path = Path(self.memory.db_path)
@@ -630,7 +646,8 @@ class CommandHandler:
         if result["returncode"] == 0:
             await self.reply(chat_id, text="✅ 已完成 SQLite checkpoint + vacuum。")
         else:
-            await self.reply(chat_id, text=f"❌ 修复失败：\n```\n{result['stdout']}\n{result['stderr']}\n```")
+            hint = self.shell.explain_permission_issue(result["stderr"])
+            await self.reply(chat_id, text=f"❌ 修复失败：\n```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
 
     async def _handle_logs(self, chat_id: str, args: str) -> None:
         """
@@ -691,9 +708,49 @@ class CommandHandler:
             return
 
         from core.scheduler import next_cron_desc
-        parts  = args.split(None, 1)
+        try:
+            parts = shlex.split(args) if args else []
+        except ValueError as e:
+            await self.reply(chat_id, text=f"❌ 参数解析失败：{e}")
+            return
         subcmd = parts[0].lower() if parts else "list"
         sid    = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcmd == "add":
+            if len(parts) < 5:
+                await self.reply(chat_id, text="用法：`/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>`")
+                return
+            mode = sid.lower()
+            name = parts[2].strip()
+            spec = parts[3].strip()
+            prompt = " ".join(parts[4:]).strip()
+            if not name or not spec or not prompt:
+                await self.reply(chat_id, text="用法：`/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>`")
+                return
+            if mode == "cron":
+                try:
+                    task = self.scheduler.add_cron(user_id, chat_id, name, prompt, spec)
+                except Exception as e:
+                    await self.reply(chat_id, text=f"❌ 创建 cron 任务失败：{e}")
+                    return
+            elif mode == "interval":
+                if not spec.isdigit():
+                    await self.reply(chat_id, text="用法：`/schedule add interval <名称> <秒数> <prompt>`")
+                    return
+                seconds = int(spec)
+                if seconds <= 0:
+                    await self.reply(chat_id, text="❌ 间隔秒数必须大于 0。")
+                    return
+                try:
+                    task = self.scheduler.add_interval(user_id, chat_id, name, prompt, seconds)
+                except Exception as e:
+                    await self.reply(chat_id, text=f"❌ 创建间隔任务失败：{e}")
+                    return
+            else:
+                await self.reply(chat_id, text="用法：`/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>`")
+                return
+            await self.reply(chat_id, text=f"✅ 已创建任务 `#{task.id}`：{task.name}")
+            return
 
         if subcmd == "list" or not subcmd:
             tasks = self.scheduler.list_user(user_id)

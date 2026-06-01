@@ -19,6 +19,7 @@ __pycache__/
 # 排除 SQLite 数据库文件
 *.db
 *.db-*
+backups/
 
 # ─── 业务运行产生的临时文件 ───
 # 根据你的 config.py，排除文件上传目录和工作目录

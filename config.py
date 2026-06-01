@@ -188,7 +188,7 @@ class Config:
         self.TAVILY_API_KEY_2     = _opt("TAVILY_API_KEY_2")
         self.SHELL_WORK_DIR       = _opt("SHELL_WORK_DIR",      str(Path(__file__).parent))
         self.FILE_UPLOAD_DIR      = _opt("FILE_DIR",            str(Path(__file__).parent / "files"))
-        self.BLOG_LOCAL_PATH      = _opt("BLOG_LOCAL_PATH",     str(Path(__file__).parent / "blog"))
+        self.BLOG_LOCAL_PATH      = _opt("BLOG_LOCAL_PATH",     "/var/www/blog")
         self.DB_PATH              = _opt("DB_PATH",             str(Path(__file__).parent / "memory.db"))
 
         # 数值型

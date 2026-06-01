@@ -160,7 +160,8 @@ class FileBridge:
                     data=data,
                 )
                 if resp.status_code >= 400:
-                    log.error("lark_upload_fail", status=resp.status_code, body=resp.text[:500])
+                    log.error("lark_upload_fail", status=resp.status_code, body=resp.text[:500], file_name=path.name, file_type=file_type)
+                    raise RuntimeError(self._friendly_upload_error(resp, path.name, file_type))
                 resp.raise_for_status()
                 file_key = resp.json()["data"]["file_key"]
                 msg_type = "file"
@@ -192,9 +193,7 @@ class FileBridge:
                     chat_id=chat_id,
                 )
                 raise RuntimeError(
-                    f"发送消息失败 {send_resp.status_code}: "
-                    f"{send_resp.json().get('msg', err_text)}"
-                    + (f" | {hint}" if hint else "")
+                    self._friendly_send_error(send_resp, msg_type, path.name, hint)
                 )
             msg_id = send_resp.json()["data"]["message_id"]
 
@@ -244,6 +243,23 @@ class FileBridge:
         if status == 401 or status == 403:
             return "检查 tenant token、app 权限和 Lark 国际版域名。"
         return ""
+
+    def _friendly_upload_error(self, resp: httpx.Response, file_name: str, file_type: str) -> str:
+        return (
+            f"上传失败 {resp.status_code}: {resp.text[:300]}\n"
+            f"文件：{file_name}\n"
+            f"file_type：{file_type}\n"
+            f"排查：确认国际版域名、multipart 字段 file/file_name/file_type、以及 app 是否有文件上传权限。"
+        )
+
+    def _friendly_send_error(self, resp: httpx.Response, msg_type: str, file_name: str, hint: str = "") -> str:
+        base = (
+            f"发送消息失败 {resp.status_code}: {resp.text[:300]}\n"
+            f"msg_type：{msg_type}\n"
+            f"文件：{file_name}\n"
+            f"排查：确认 content 是 JSON 字符串；file 消息必须包含 file_key + file_name。"
+        )
+        return base + (f"\n提示：{hint}" if hint else "")
 
     # ── 列出 VPS 存储目录 ─────────────────────────────────────────────
     def list_stored_files(self, limit: int = 20) -> list[dict]:

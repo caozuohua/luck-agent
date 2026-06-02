@@ -5,10 +5,13 @@ ReAct 风格：模型 → 工具调用 → 结果注入 → 模型再推理，�
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
+import httpx
 from core.log import get_logger
 from core.intent_router import route as intent_route, Intent
 
@@ -24,6 +27,213 @@ if TYPE_CHECKING:
     from config import Config
 
 MAX_TOOL_ROUNDS = 6   # 防止无限工具循环
+VALID_NOTE_TYPES = {"idea", "question", "fact", "practice"}
+
+
+def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
+    """解析以 # 开头的个人知识库笔记消息。
+
+    格式：
+      # 内容
+      # [question] 内容
+      # [fact] #Python #AI 内容
+    """
+    if not text:
+        return None
+
+    stripped = text.lstrip()
+    if not stripped.startswith("#"):
+        return None
+
+    body = stripped[1:].lstrip()
+    note_type = "idea"
+
+    type_match = re.match(r"^\[([^\]]+)\]\s*", body)
+    if type_match:
+        candidate = type_match.group(1).strip().lower()
+        if candidate in VALID_NOTE_TYPES:
+            note_type = candidate
+        body = body[type_match.end():]
+
+    topics: list[str] = []
+
+    def _collect_topic(match: re.Match[str]) -> str:
+        topic = match.group(1).strip()
+        if topic and topic not in topics:
+            topics.append(topic)
+        return ""
+
+    body = re.sub(r"(?<!\w)#([A-Za-z0-9_\u4e00-\u9fff-]+)", _collect_topic, body)
+    content = " ".join(body.split()).strip()
+    if not content:
+        return None
+    return content, note_type, topics
+
+
+def _pkb_env() -> tuple[str, str] | None:
+    url = os.getenv("VERCEL_API_URL", "").strip()
+    secret = os.getenv("API_SECRET", "").strip()
+    if not url or not secret:
+        return None
+    return url.rstrip("/"), secret
+
+
+def _coerce_pkb_limit(limit: Any, default: int = 5) -> int:
+    try:
+        value = int(limit if limit is not None else default)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, 10))
+
+
+def _normalize_pkb_result_item(item: Any) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    content_text = str(item.get("content") or item.get("text") or item.get("title") or "")
+    return {
+        "title": str(item.get("title") or content_text[:40] or "笔记"),
+        "content": content_text,
+        "topics": item.get("topics") or [],
+        "type": item.get("type") or item.get("note_type") or "",
+        "url": str(item.get("url") or item.get("link") or ""),
+        "created_at": item.get("created_at") or item.get("createdAt") or "",
+    }
+
+
+def _normalize_pkb_result_payload(data: Any) -> tuple[str, list[dict]]:
+    summary = ""
+    results: list[dict] = []
+
+    if isinstance(data, dict):
+        summary = str(
+            data.get("summary")
+            or data.get("answer")
+            or data.get("message")
+            or data.get("title")
+            or ""
+        )
+        raw_results = (
+            data.get("results")
+            or data.get("records")
+            or data.get("notes")
+            or data.get("hits")
+            or data.get("data")
+            or data.get("items")
+            or []
+        )
+        if isinstance(raw_results, dict):
+            raw_results = (
+                raw_results.get("results")
+                or raw_results.get("records")
+                or raw_results.get("notes")
+                or raw_results.get("hits")
+                or raw_results.get("data")
+                or raw_results.get("items")
+                or []
+            )
+        if isinstance(raw_results, list):
+            for item in raw_results:
+                normalized = _normalize_pkb_result_item(item)
+                if normalized:
+                    results.append(normalized)
+    elif isinstance(data, list):
+        for item in data:
+            normalized = _normalize_pkb_result_item(item)
+            if normalized:
+                results.append(normalized)
+
+    return summary, results
+
+
+async def _pkb_post(payload: dict[str, Any]) -> httpx.Response | None:
+    env = _pkb_env()
+    if not env:
+        log.error("pkb_env_missing", has_url=bool(os.getenv("VERCEL_API_URL", "").strip()),
+                  has_secret=bool(os.getenv("API_SECRET", "").strip()))
+        return None
+
+    url, secret = env
+    try:
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.post(
+                url,
+                headers={"x-api-secret": secret, "Content-Type": "application/json"},
+                json=payload,
+            )
+    except Exception as e:
+        log.error("pkb_request_error", error=str(e)[:200])
+        return None
+
+
+async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> bool:
+    """转发笔记到已部署的 PKB 接口。"""
+    env = _pkb_env()
+    if not env:
+        log.error(
+            "pkb_env_missing",
+            has_url=bool(os.getenv("VERCEL_API_URL", "").strip()),
+            has_secret=bool(os.getenv("API_SECRET", "").strip()),
+        )
+        return False
+
+    resp = await _pkb_post({
+        "content": content,
+        "type": note_type,
+        "topics": topics,
+        "source": "lark",
+    })
+    if resp is None:
+        return False
+
+    if not resp.is_success:
+        log.error(
+            "pkb_forward_fail",
+            status=resp.status_code,
+            body=resp.text[:300],
+        )
+        return False
+
+    return True
+
+
+async def search_pkb(query: str, limit: int = 5) -> dict:
+    """检索已部署的 PKB 接口。"""
+    query = query.strip()
+    if not query:
+        return {"error": "缺少 query"}
+
+    limit = _coerce_pkb_limit(limit)
+
+    if not _pkb_env():
+        return {"error": "PKB 接口环境变量未配置"}
+
+    resp = await _pkb_post({
+        "query": query,
+        "limit": limit,
+        "source": "lark",
+        "action": "search",
+    })
+    if resp is None:
+        return {"error": "PKB 请求失败"}
+
+    if not resp.is_success:
+        return {"error": f"{resp.status_code}: {resp.text[:300]}"}
+
+    try:
+        data = resp.json()
+    except Exception:
+        return {"error": "PKB 响应不是有效 JSON"}
+
+    summary, results = _normalize_pkb_result_payload(data)
+
+    return {
+        "query": query,
+        "summary": summary,
+        "results": results[:limit],
+        "count": len(results),
+        "source": "pkb",
+    }
 
 class AgentMessageHandler:
     """
@@ -64,6 +274,18 @@ class AgentMessageHandler:
         from tools.search_tools import SEARCH_TOOL_SCHEMAS
         from core.scheduler import SCHEDULE_TOOL_SCHEMAS
         self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + SCHEDULE_TOOL_SCHEMAS + [
+            {
+                "name": "search_pkb",
+                "description": "检索个人知识库中的已记录笔记。适合查找历史想法、问题、事实和实践记录。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "检索关键词"},
+                        "limit": {"type": "integer", "description": "返回条数，默认 5"},
+                    },
+                    "required": ["query"],
+                },
+            },
             {
                 "name": "remember",
                 "description": "保存用户的偏好、习惯、重要信息到持久化记忆。",
@@ -351,6 +573,13 @@ class AgentMessageHandler:
             result = await searcher.search(args.get("query", ""))
             return result
 
+        elif name == "search_pkb":
+            query = (args.get("query") or "").strip()
+            limit = _coerce_pkb_limit(args.get("limit", 5))
+            if not query:
+                return {"error": "缺少 query"}
+            return await search_pkb(query, limit=limit)
+
         elif name == "schedule_task":
             if not self.scheduler:
                 return {"error": "调度器未初始化"}
@@ -458,6 +687,28 @@ class AgentMessageHandler:
                 lines.append(
                     f"🔎 搜索完成"
                     + (f"（{backend}）" if backend else "")
+                    + (f"：{summary}" if summary else "")
+                )
+                if item_bits:
+                    lines.append("\n".join(item_bits))
+            elif tool == "search_pkb":
+                summary = (res.get("summary") or "")[:500]
+                items = res.get("results", [])[:3]
+                item_bits = []
+                for item in items:
+                    title = item.get("title", "") or "笔记"
+                    content = item.get("content", "")[:120]
+                    topics = item.get("topics") or []
+                    meta = []
+                    if item.get("type"):
+                        meta.append(item["type"])
+                    if topics:
+                        meta.append("#" + " #".join(topics))
+                    meta_text = f" ({' · '.join(meta)})" if meta else ""
+                    if title or content:
+                        item_bits.append(f"- {title}{meta_text}\n  {content}")
+                lines.append(
+                    f"🗃️ 个人知识库检索完成"
                     + (f"：{summary}" if summary else "")
                 )
                 if item_bits:

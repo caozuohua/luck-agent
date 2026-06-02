@@ -31,6 +31,7 @@ Lark WebSocket
 - 低资源：适配 e2-micro，尽量减少常驻内存和外部依赖
 - 高韧性：`/status`、`/health`、`/restart`、`/journal`、`/backup`、`/restore` 等大模型无关运维指令可独立工作
 - 强检索：`/search` 支持单个 Tavily key 结合 Vercel 聚合，并在失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant
+- 个人知识库：以 `#` 开头的消息可直接录入，`/pkb` 和模型工具可检索已记录内容
 - 可运营：博客发布、GitHub Actions、Issue/PR、文件管理可通过统一工具链完成
 - 可开源：命令、提示词、工具 schema 和卡片输出均尽量保持可读、可扩展
 
@@ -43,9 +44,10 @@ Lark WebSocket
 ## 推荐工作流
 
 1. 用 `/search` 收集信息，直接在对话里扫结果卡片
-2. 用 `/mem set` 记录长期偏好、选题和成功模式
-3. 用博客工具写入内容，必要时触发 `deploy.yml`
-4. 用 `/status`、`/health`、`/backup`、`/restore` 保持 VPS 稳定运行
+2. 用 `#` 消息录入灵感、问题和事实，再用 `/pkb` 快速检索
+3. 用 `/mem set` 记录长期偏好、选题和成功模式
+4. 用博客工具写入内容，必要时触发 `deploy.yml`
+5. 用 `/status`、`/health`、`/backup`、`/restore` 保持 VPS 稳定运行
 
 ## 设计原则
 
@@ -56,9 +58,10 @@ Lark WebSocket
 ## 使用方式
 
 1. 用 `/status` 和 `/health` 快速判断服务是否健康
-2. 用 `/search` 和博客工具沉淀碎片信息与个人知识体系
-3. 用 `/backup`、`/restore`、`/restart` 保持低成本长期稳定运行
-4. 当模型失效时，继续用大模型无关指令完成运维和发布
+2. 用 `/search`、`#` 笔记和 `/pkb` 沉淀并检索碎片信息与个人知识体系
+3. 用博客工具写入内容，必要时触发 `deploy.yml`
+4. 用 `/backup`、`/restore`、`/restart` 保持低成本长期稳定运行
+5. 当模型失效时，继续用大模型无关指令完成运维和发布
 
 > `/search`、`/status`、`/health`、博客发布和 `/schedule` 系列操作都会优先返回卡片，方便在 Lark 里快速扫读和确认结果。
 
@@ -168,6 +171,10 @@ BLOG_LOCAL_PATH=/var/www/blog
 
 # Tavily 搜索（可选，无则自动 fallback 到 DuckDuckGo）
 TAVILY_API_KEY=tvly-xxxxxxxx
+
+# 个人知识库（Vercel + Supabase）
+VERCEL_API_URL=https://your-vercel-app.vercel.app/api/pkb
+API_SECRET=your-api-secret
 ```
 
 **4. 配置 GCP 认证（二选一）**
@@ -247,6 +254,8 @@ CMD ["python", "agent.py"]
 | 文件 | `/rm <路径>` | 删除文件（危险路径直接拦截，其他需确认）|
 | 文件 | `/files` | 列出已接收文件 |
 | 文件 | `/send <路径>` | 发送 VPS 文件到当前对话 |
+| 知识库 | `# 内容` | 录入个人知识库（`[idea|question|fact|practice]` + `#Topic` 可选） |
+| 知识库 | `/pkb <关键词>` | 检索个人知识库 |
 | Git | `/git [路径] [message]` | add + commit + push |
 | GitHub | `/deploy [repo]` | 触发 GitHub Actions 部署 |
 | GitHub | `/runs [repo]` | 查看 Actions 运行状态 |
@@ -358,10 +367,11 @@ git pull && sudo systemctl restart luck-agent
 在真实 Lark 环境里，建议按下面顺序做一次完整验收：
 
 1. `/search <关键词>`：看搜索卡是否返回，重点确认标题、来源和前几条结果可在手机端一屏扫完。
-2. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy.yml` 已触发。
-3. `/status` 和 `/health`：检查总览卡与诊断卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务。
-4. `/schedule add|list|pause|resume|cancel`：先建一个 60 秒以上的 interval 任务，再试 `list`、`pause`、`resume`、`cancel`，确认都只作用于当前用户，并检查卡片里的下一次触发时间/ETA。
-5. `/send <file>`：先发送一个小文件，确认 Lark 中能收到文件卡，并且本地路径与文件名正确。
+2. `#` 录入 + `/pkb` 检索：先发一条 `#` 笔记，确认回复“已记录”，再用 `/pkb` 查回同一条内容。
+3. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy.yml` 已触发。
+4. `/status` 和 `/health`：检查总览卡与诊断卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务。
+5. `/schedule add|list|pause|resume|cancel`：先建一个 60 秒以上的 interval 任务，再试 `list`、`pause`、`resume`、`cancel`，确认都只作用于当前用户，并检查卡片里的下一次触发时间/ETA。
+6. `/send <file>`：先发送一个小文件，确认 Lark 中能收到文件卡，并且本地路径与文件名正确。
 
 如果以上五条都稳定，说明这套智能体已经具备长期碎片化使用的基础。
 

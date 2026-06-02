@@ -15,6 +15,7 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
 #   SHELL_RUN      在 VPS 执行命令/脚本
 #   FILE_OP        VPS 文件读写操作
 #   MEMORY_OP      记忆读写
+#   PKB_SEARCH     个人知识库检索
 #   SCHEDULE_OP    定时任务
 #   GIT_PUSH       推送代码
 #   SEARCH         搜索(Vercel Tavily 优先)
@@ -35,6 +36,7 @@ class Intent(str, Enum):
     SHELL_RUN      = "shell_run"
     FILE_OP        = "file_op"
     MEMORY_OP      = "memory_op"
+    PKB_SEARCH     = "pkb_search"
     SCHEDULE_OP    = "schedule_op"
     GIT_PUSH       = "git_push"
     SEARCH         = "search"
@@ -130,6 +132,17 @@ _RULES: list[tuple[Intent, float, list[str], list[str]]] = [
         r"(忘掉|忘记|删除).{0,10}(记忆|偏好|信息)",
     ]),
 
+    # 个人知识库检索
+    (Intent.PKB_SEARCH, 0.93, [
+        "查笔记", "查知识库", "检索笔记", "检索知识库", "知识库",
+        "个人知识库", "pkb", "我的笔记", "历史笔记", "以前记的",
+        "找一下笔记", "找一下知识库", "笔记里", "记录里",
+    ], [
+        r"(查|找|检索|搜索).{0,10}(笔记|知识库|记录)",
+        r"(个人知识库|pkb)",
+        r"(以前|之前|刚才|历史).{0,8}(记的|记过|记录)",
+    ]),
+
     # 定时任务
     (Intent.SCHEDULE_OP, 0.92, [
         "定时", "每天", "每周", "每小时", "每隔", "cron",
@@ -183,6 +196,9 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
     Intent.MEMORY_OP: [
         "remember",
         "recall",
+    ],
+    Intent.PKB_SEARCH: [
+        "search_pkb",
     ],
     Intent.SCHEDULE_OP: [
         "schedule_task",
@@ -264,6 +280,13 @@ Intent.BLOG_WRITE: """
 - 保存信息 : remember(key="...", value="...")
 - 查询信息 : recall(key="...")
 操作完成后简洁确认.
+""",
+
+    Intent.PKB_SEARCH: """
+## 当前任务：个人知识库检索
+- 用 search_pkb(query="...", limit=5) 检索用户已记录的笔记
+- 用户若在问“之前记过什么、查一下笔记、找知识库”，优先用这个工具
+- 回复时按相关度列出最相关的笔记标题、类型、话题和摘要
 """,
 
     Intent.SCHEDULE_OP: """

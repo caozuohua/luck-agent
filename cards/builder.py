@@ -304,6 +304,84 @@ class CardBuilder:
             "body": {"elements": elements},
         }
 
+    # ── 个人知识库结果卡片 ───────────────────────────────────────────
+    @staticmethod
+    def pkb_results(query: str, result: dict) -> dict:
+        items = result.get("results", [])[:5]
+        summary = result.get("summary", "")
+        count = result.get("count", len(items))
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**查询**\n`{query}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{count} 条"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**来源**\n`PKB`"}},
+            ]},
+        ]
+
+        if summary:
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"📋 {summary[:500]}"})
+
+        if items:
+            elements.append(_divider())
+            for i, item in enumerate(items, 1):
+                title = item.get("title", "") or "笔记"
+                note_type = item.get("type", "") or "idea"
+                topics = item.get("topics") or []
+                meta = [note_type]
+                if topics:
+                    meta.append(" / ".join(topics))
+                content = item.get("content", "")[:180]
+                url = item.get("url", "")
+                header = f"{i}. **{title}**"
+                if meta:
+                    header += f"  <font color='grey'>({ ' · '.join(meta) })</font>"
+                if url:
+                    header += f"\n{url}"
+                if content:
+                    header += f"\n{content}"
+                elements.append({"tag": "markdown", "content": header})
+        else:
+            elements.append({"tag": "markdown", "content": "_未找到相关笔记_"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "🗃️ 个人知识库"},
+                "template": "purple",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 个人知识库录入结果卡片 ───────────────────────────────────────
+    @staticmethod
+    def pkb_recorded(content: str, note_type: str, topics: list[str], ok: bool = True, detail: str = "") -> dict:
+        color = "green" if ok else "red"
+        icon = "✅" if ok else "❌"
+        topic_text = " / ".join(topics) if topics else "无"
+        snippet = content[:160] + "…" if len(content) > 160 else content
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{icon} {'已记录' if ok else '记录失败'}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{note_type}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**话题**\n{topic_text}"}},
+            ]},
+            _divider(),
+            {"tag": "markdown", "content": snippet or "_空内容_"},
+        ]
+        if detail:
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"<font color='grey'>{detail[:180]}</font>"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "🗃️ 个人知识库录入"},
+                "template": color,
+            },
+            "body": {"elements": elements},
+        }
+
     # ── 定时任务列表卡片 ─────────────────────────────────────────────
     @staticmethod
     def schedule_list(tasks: list[dict]) -> dict:

@@ -12,6 +12,7 @@ from typing import Any
 
 import lark_oapi as lark
 from core.log import get_logger
+from handlers.message import forward_to_pkb, parse_note_message
 
 log = get_logger()
 
@@ -397,6 +398,39 @@ class AgentApp:
 
             log.info("message_in", user_id=user_id[:8], type=msg_type,
                      chat_type=chat_type, length=len(text))
+
+            # PKB 录入：以 # 开头的消息优先作为个人知识库笔记处理
+            note = parse_note_message(text)
+            if note:
+                content, note_type, topics = note
+                ok = await forward_to_pkb(content, note_type, topics)
+                card_fn = getattr(self._msg_handler.card, "pkb_recorded", None)
+                if callable(card_fn):
+                    await self._sender.send(
+                        chat_id,
+                        card=card_fn(
+                            content=content,
+                            note_type=note_type,
+                            topics=topics,
+                            ok=ok,
+                            detail="已转发到个人知识库" if ok else "请检查 Vercel / Supabase 接口与 API Secret",
+                        ),
+                        reply_to=message_id,
+                    )
+                else:
+                    if ok:
+                        await self._sender.send(
+                            chat_id,
+                            text=f"✅ 已记录 [{note_type}] 内容",
+                            reply_to=message_id,
+                        )
+                    else:
+                        await self._sender.send(
+                            chat_id,
+                            text="❌ 记录失败，请重试",
+                            reply_to=message_id,
+                        )
+                return
 
             # 模型前缀解析（/pro /flash /lite 开头，剥离后转 AI）
             model_override = ""

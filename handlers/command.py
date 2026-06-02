@@ -39,6 +39,8 @@ HELP_TEXT = """
 /upgrade — 拉取远程并重启
 /rollback <commit> — 回退到指定提交
 /search <关键词> — 搜索（Tavily 优先，自动 fallback）
+/pkb <关键词> — 检索个人知识库（Vercel + Supabase）
+知识库录入：以 `#` 开头发送消息，支持 `# [question]` / `# [fact] #Topic`
 
 Shell 执行
 /sh <命令> — 执行 shell 命令(危险命令需 /yes 确认)
@@ -170,6 +172,9 @@ class CommandHandler:
 
             elif cmd == "/search":
                 await self._handle_search(user_id, chat_id, args)
+
+            elif cmd == "/pkb":
+                await self._handle_pkb(chat_id, args)
 
             elif cmd == "/git":
                 await self._handle_git(user_id, chat_id, args)
@@ -425,6 +430,51 @@ class CommandHandler:
                 await self.reply(chat_id, card=self.card.search_results(query, result))
         except Exception as e:
             await self.reply(chat_id, text=f"❌ 搜索出错：{e}")
+
+    async def _handle_pkb(self, chat_id: str, query: str) -> None:
+        """直接检索个人知识库。"""
+        if not query:
+            await self.reply(chat_id, text="用法：`/pkb <关键词>`")
+            return
+
+        await self.reply(chat_id, text=f"⏳ 检索个人知识库：`{query}`…")
+        try:
+            from handlers.message import search_pkb
+
+            result = await search_pkb(query, limit=5)
+            if "error" in result:
+                await self.reply(chat_id, text=f"❌ 检索失败：{result['error']}")
+                return
+
+            items = result.get("results", [])
+            if not items:
+                await self.reply(chat_id, text=f"📭 未找到与 `{query}` 相关的笔记。")
+                return
+
+            card_fn = getattr(self.card, "pkb_results", None)
+            if callable(card_fn):
+                await self.reply(chat_id, card=card_fn(query, result))
+                return
+
+            lines = [f"🗃️ **个人知识库检索**：`{query}`", ""]
+            for item in items[:5]:
+                title = item.get("title") or "笔记"
+                note_type = item.get("type") or "idea"
+                topics = item.get("topics") or []
+                topic_text = f" · {' / '.join(topics)}" if topics else ""
+                content = (item.get("content") or "").strip()
+                snippet = content[:120] + "…" if len(content) > 120 else content
+                lines.append(f"- [{note_type}] **{title}**{topic_text}")
+                if snippet:
+                    lines.append(f"  {snippet}")
+
+            if result.get("summary"):
+                lines.append("")
+                lines.append(f"_摘要：{result['summary'][:200]}_")
+
+            await self.reply(chat_id, text="\n".join(lines))
+        except Exception as e:
+            await self.reply(chat_id, text=f"❌ 检索出错：{e}")
 
     async def _handle_posts(self, chat_id: str, repo: str) -> None:
         repo = repo or self.hugo_repo

@@ -21,10 +21,9 @@ class SearchTools:
         self._current_backend = 0
         tavily_keys = [
             os.getenv("TAVILY_API_KEY", "").strip(),
-            os.getenv("TAVILY_API_KEY_2", "").strip(),
         ]
         self._tavily_backends = [
-            {"name": f"tavily{idx + 1}", "url": "https://egg-search-gamma.vercel.app/search", "key": key}
+            {"name": "tavily", "url": "https://egg-search-gamma.vercel.app/search", "key": key}
             for idx, key in enumerate(tavily_keys)
             if key
         ]
@@ -222,7 +221,7 @@ class SearchTools:
 SEARCH_TOOL_SCHEMAS = [
     {
         "name": "search_web",
-        "description": "在互联网上搜索最新信息。优先使用 Tavily key1/key2，失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant。适合找最新事实、文档链接、教程和公告。输入要具体，不要只给泛词。",
+        "description": "在互联网上搜索最新信息。优先使用单个 Tavily key，通过 Vercel 聚合更多资源；失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant。适合找最新事实、文档链接、教程和公告。输入要具体，不要只给泛词。",
         "parameters": {
             "type": "object",
             "properties": {

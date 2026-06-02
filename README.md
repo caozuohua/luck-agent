@@ -30,7 +30,7 @@ Lark WebSocket
 
 - 低资源：适配 e2-micro，尽量减少常驻内存和外部依赖
 - 高韧性：`/status`、`/health`、`/restart`、`/journal`、`/backup`、`/restore` 等大模型无关运维指令可独立工作
-- 强检索：`/search` 支持多后端轮询和 Tavily 双 key 回退
+- 强检索：`/search` 支持单个 Tavily key 结合 Vercel 聚合，并在失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant
 - 可运营：博客发布、GitHub Actions、Issue/PR、文件管理可通过统一工具链完成
 - 可开源：命令、提示词、工具 schema 和卡片输出均尽量保持可读、可扩展
 
@@ -60,12 +60,15 @@ Lark WebSocket
 3. 用 `/backup`、`/restore`、`/restart` 保持低成本长期稳定运行
 4. 当模型失效时，继续用大模型无关指令完成运维和发布
 
+> `/search`、`/status`、`/health`、博客发布和 `/schedule` 系列操作都会优先返回卡片，方便在 Lark 里快速扫读和确认结果。
+
 ## 开源协作
 
 - 修改前先跑 `py -3 -m py_compile`，确保核心 Python 文件可编译
 - 优先保持指令、卡片、工具 schema 的短小和一致，避免新增重复入口
 - 提交 PR 时说明修改的用户路径，例如 `/search`、博客发布、恢复流程或状态页
 - 如果要补配置，优先更新 `README.md` 和 `AGENTS.md`，让新贡献者能直接上手
+- 仓库已通过 [`.editorconfig`](/D:/Geek/luck-agent/.editorconfig) 和 [`.gitattributes`](/D:/Geek/luck-agent/.gitattributes) 统一缩进、换行和尾随空格，尽量沿用现有格式，减少无意义 diff
 
 ---
 
@@ -165,7 +168,6 @@ BLOG_LOCAL_PATH=/var/www/blog
 
 # Tavily 搜索（可选，无则自动 fallback 到 DuckDuckGo）
 TAVILY_API_KEY=tvly-xxxxxxxx
-TAVILY_API_KEY_2=tvly-yyyyyyyy
 ```
 
 **4. 配置 GCP 认证（二选一）**
@@ -259,12 +261,12 @@ CMD ["python", "agent.py"]
 | 系统 | `/restore <备份名>` | 恢复备份 |
 | 系统 | `/repair` | SQLite checkpoint + vacuum |
 | 系统 | `/upgrade` | 拉取远程并重启 |
+| 定时 | `/schedule list` | 查看定时任务（卡片）|
+| 定时 | `/schedule add cron|interval <名称> "<cron|秒数>" <prompt>` | 新建定时任务（cron 为 5 字段，interval 至少 60 秒）|
+| 定时 | `/schedule pause|resume|cancel <id>` | 管理定时任务 |
 | 系统 | `/rollback <commit>` | 回退到指定提交 |
 | 任务 | `/task <id>` | 查看任务状态 |
 | 任务 | `/tasks` | 查看任务列表 |
-| 定时 | `/schedule list` | 查看定时任务 |
-| 定时 | `/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>` | 新建任务 |
-| 定时 | `/schedule pause\|resume\|cancel <id>` | 管理定时任务 |
 | 记忆 | `/mem` | 记忆总览（画像+成功模式+对话，一条消息）|
 | 记忆 | `/mem profile\|patterns\|history` | 查看单项记忆 |
 | 记忆 | `/mem set <key> <value>` | 写入用户画像 |
@@ -350,6 +352,28 @@ git pull && sudo systemctl restart luck-agent
 - 数据库变慢或膨胀：用 `/repair`，必要时 `/backup` 后再 `/restart`
 
 ---
+
+## 验收清单
+
+在真实 Lark 环境里，建议按下面顺序做一次完整验收：
+
+1. `/search <关键词>`：看搜索卡是否返回，重点确认标题、来源和前几条结果可在手机端一屏扫完。
+2. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy.yml` 已触发。
+3. `/status` 和 `/health`：检查总览卡与诊断卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务。
+4. `/schedule add|list|pause|resume|cancel`：先建一个 60 秒以上的 interval 任务，再试 `list`、`pause`、`resume`、`cancel`，确认都只作用于当前用户，并检查卡片里的下一次触发时间/ETA。
+5. `/send <file>`：先发送一个小文件，确认 Lark 中能收到文件卡，并且本地路径与文件名正确。
+
+如果以上五条都稳定，说明这套智能体已经具备长期碎片化使用的基础。
+
+---
+
+## 维护要点
+
+- `/schedule add cron ...` 只接受 5 字段 cron，字段范围有限制，错误会直接提示。
+- `/schedule add interval ...` 最少 60 秒，避免短间隔任务拖高 VPS 负载。
+- `/schedule pause|resume|cancel` 只作用于当前用户的任务，按 `user_id + task_id` 隔离。
+- `/schedule list` 按启用状态和下一次触发时间排序，顶部会显示最近触发时间 / ETA。
+- 所有 `schedule` 卡片都优先显示任务名、状态和下次触发时间，方便在 Lark 快速扫读。
 
 ## 许可证
 

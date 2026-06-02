@@ -513,7 +513,7 @@ class CommandHandler:
             "ws_online": getattr(self.health, "_ws_online", "unknown"),
             "backup_count": len(backups),
             "backup_dir": str(backup_dir),
-            "hint": "建议：优先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
+            "hint": "排障顺序：先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
         }))
 
     async def _handle_restart(self, chat_id: str) -> None:
@@ -730,6 +730,9 @@ class CommandHandler:
             if mode == "cron":
                 try:
                     task = self.scheduler.add_cron(user_id, chat_id, name, prompt, spec)
+                except ValueError as e:
+                    await self.reply(chat_id, text=f"❌ cron 表达式无效：{e}")
+                    return
                 except Exception as e:
                     await self.reply(chat_id, text=f"❌ 创建 cron 任务失败：{e}")
                     return
@@ -743,13 +746,20 @@ class CommandHandler:
                     return
                 try:
                     task = self.scheduler.add_interval(user_id, chat_id, name, prompt, seconds)
+                except ValueError as e:
+                    await self.reply(chat_id, text=f"❌ 间隔任务无效：{e}")
+                    return
                 except Exception as e:
                     await self.reply(chat_id, text=f"❌ 创建间隔任务失败：{e}")
                     return
             else:
                 await self.reply(chat_id, text="用法：`/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>`")
                 return
-            await self.reply(chat_id, text=f"✅ 已创建任务 `#{task.id}`：{task.name}")
+            card_fn = getattr(self.card, "schedule_created", None)
+            if callable(card_fn):
+                await self.reply(chat_id, card=card_fn(task.to_dict()))
+            else:
+                await self.reply(chat_id, text=f"✅ 已创建任务 `#{task.id}`：{task.name}")
             return
 
         if subcmd == "list" or not subcmd:
@@ -757,11 +767,18 @@ class CommandHandler:
             if not tasks:
                 await self.reply(chat_id, text="暂无定时任务。用自然语言告诉智能体设置定时任务即可。")
                 return
+            card_fn = getattr(self.card, "schedule_list", None)
+            if callable(card_fn):
+                await self.reply(chat_id, card=card_fn([t.to_dict() for t in tasks]))
+                return
             lines = ["**📅 定时任务列表**"]
             for t in tasks:
                 icon    = "✅" if t.enabled else "⏸"
-                sched   = next_cron_desc(t.schedule) if t.mode == "cron" \
-                          else f"每{int(t.schedule)//60}分钟"
+                if t.mode == "cron":
+                    sched = next_cron_desc(t.schedule)
+                else:
+                    seconds = int(t.schedule)
+                    sched = f"每{seconds}秒" if seconds < 60 else f"每{seconds // 60}分钟"
                 lines.append(
                     f"{icon} `#{t.id}` **{t.name}**\n"
                     f"   {sched} · 已执行{t.run_count}次\n"
@@ -773,22 +790,56 @@ class CommandHandler:
             if not sid:
                 await self.reply(chat_id, text="用法：`/schedule pause <id>`")
                 return
-            ok = self.scheduler.pause(sid)
-            await self.reply(chat_id, text=f"{'⏸ 已暂停' if ok else '❌ 找不到任务'} #{sid}")
+            task = self.scheduler.get_for_user(user_id, sid)
+            ok = self.scheduler.pause_for_user(user_id, sid)
+            card_fn = getattr(self.card, "schedule_action", None)
+            if callable(card_fn):
+                detail = "已暂停后不会继续触发"
+                if task:
+                    detail = f"任务名：{task.name} · {detail}"
+                task_snapshot = task.to_dict() if task else None
+                if task_snapshot is not None:
+                    task_snapshot["enabled"] = False
+                await self.reply(chat_id, card=card_fn("pause", sid, ok, detail, task_snapshot))
+            else:
+                await self.reply(chat_id, text=f"{'⏸ 已暂停' if ok else '❌ 找不到任务'} #{sid}")
 
         elif subcmd == "resume":
             if not sid:
                 await self.reply(chat_id, text="用法：`/schedule resume <id>`")
                 return
-            ok = self.scheduler.resume(sid)
-            await self.reply(chat_id, text=f"{'▶️ 已恢复' if ok else '❌ 找不到任务'} #{sid}")
+            task = self.scheduler.get_for_user(user_id, sid)
+            ok = self.scheduler.resume_for_user(user_id, sid)
+            card_fn = getattr(self.card, "schedule_action", None)
+            if callable(card_fn):
+                detail = "任务已重新加入调度"
+                if task:
+                    detail = f"任务名：{task.name} · {detail}"
+                task_snapshot = task.to_dict() if task else None
+                if task_snapshot is not None:
+                    task_snapshot["enabled"] = True
+                await self.reply(chat_id, card=card_fn("resume", sid, ok, detail, task_snapshot))
+            else:
+                await self.reply(chat_id, text=f"{'▶️ 已恢复' if ok else '❌ 找不到任务'} #{sid}")
 
         elif subcmd == "cancel":
             if not sid:
                 await self.reply(chat_id, text="用法：`/schedule cancel <id>`")
                 return
-            ok = self.scheduler.cancel(sid)
-            await self.reply(chat_id, text=f"{'🗑 已删除' if ok else '❌ 找不到任务'} #{sid}")
+            task = self.scheduler.get_for_user(user_id, sid)
+            ok = self.scheduler.cancel_for_user(user_id, sid)
+            card_fn = getattr(self.card, "schedule_action", None)
+            if callable(card_fn):
+                detail = "任务已从存储中移除"
+                if task:
+                    detail = f"任务名：{task.name} · {detail}"
+                task_snapshot = task.to_dict() if task else None
+                if task_snapshot is not None:
+                    task_snapshot["enabled"] = False
+                    task_snapshot["next_run"] = 0
+                await self.reply(chat_id, card=card_fn("cancel", sid, ok, detail, task_snapshot))
+            else:
+                await self.reply(chat_id, text=f"{'🗑 已删除' if ok else '❌ 找不到任务'} #{sid}")
 
         else:
             await self.reply(chat_id, text="用法：`/schedule list|pause|resume|cancel [id]`")

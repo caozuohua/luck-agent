@@ -155,7 +155,7 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
     Intent.BLOG_WRITE: [
         "create_blog_post",
         "list_blog_posts",       # 检查是否已有同名文章
-        "trigger_workflow",      # 发布后触发部署
+        "run_shell",             # git clone / git push / 检查目录
     ],
     Intent.BLOG_LIST: [
         "list_blog_posts",
@@ -203,22 +203,67 @@ PROMPT_HINTS: dict[Intent, str] = {
 
 Intent.BLOG_WRITE: """
 ## 当前任务：发布 Hugo 博客文章
-**唯一正确路径: VPS 本地写文件 + git push，不要用 GitHub API。**
-如果用户给的是 GitHub 仓库内文章，先查 list_blog_posts 再创建或更新；如果给的是 VPS 本地草稿或博客工作区，优先 run_shell/write_file。
-博客本地工作区来自 `BLOG_LOCAL_PATH`，默认是 `/var/www/blog`，不要误用 `/opt/luck-agent` 或 `/opt/workspace`。
 
-步骤:
-1. 先用 run_shell 写文件到博客仓库的 content/posts/ 目录
-2. 再用 run_shell 执行 git add -A && git commit -m "标题" && git push
-3. 最后触发部署: trigger_workflow(repo="...", workflow_id="deploy.yml")
+**发布路径：VPS 本地写文件 + git push（不要走 GitHub Contents API）。**
 
-文件路径示例: /var/www/blog/content/posts/my-post.md
-文件名规则: 标题全小写，空格替换为 -，去掉非英文数字字符
+博客仓库在 VPS 上的路径由 BLOG_LOCAL_PATH 配置决定（默认 /var/www/blog）。
+远程仓库：HUGO_REPO 配置项（默认 caozuohua/caozuoh.io）。
+
+### 必须严格按以下步骤执行：
+
+**Step 1: 确认博客仓库已 clone**
+```
+run_shell(command="ls /var/www/blog/content/posts/")
+```
+如果目录不存在，先 clone：
+```
+run_shell(command="git clone git@github.com:caozuohua/caozuohua.github.io.git /var/www/blog")
+```
+
+**Step 2: 创建文章文件**
+调用 create_blog_post 工具：
+```
+create_blog_post(
+  repo="caozuohua/caozuohua.github.io",
+  title="文章标题",
+  content="正文内容（Markdown）",
+  tags=["标签1", "标签2"],
+  categories=["分类"],
+  draft=false
+)
+```
+工具会自动：
+- 生成 slug（从标题提取英文单词，全小写+连字符；无英文则用哈希）
+- 创建目录 content/posts/YYYY-MM-DD-slug/index.md
+- 写入 frontmatter + 正文
+- git add + git commit + git push
+
+**Step 3: 确认发布结果**
+检查 create_blog_post 返回值：
+- 如果返回 error，报告错误原因
+- 如果成功，告知用户文章路径和 commit hash
+- deploy 由工具自动触发，无需手动 trigger_workflow
+
+### 目录结构规范（必须遵守）：
+```
+content/posts/
+└── YYYY-MM-DD-english-slug/    ← 目录名 = 日期 + 英文 slug
+    └── index.md                ← 文章内容
+```
+- 目录名全小写，短横线分隔，不含中文
+- 标题（title）可以是中文，但 slug 必须是英文
+- 每篇文章必须有 frontmatter：title / date / draft / tags
+
+### 示例：
+用户说："帮我写一篇关于 Python 异步编程的博客，标签 python async"
+→ create_blog_post(title="Python 异步编程实战", content="...", tags=["python", "async"])
+→ 工具生成 slug: python-async
+→ 创建文件: content/posts/2026-06-02-python-async/index.md
 """,
 
     Intent.BLOG_LIST: """
 ## 当前任务: 查看博客文章列表
-调用 list_blog_posts(repo="...") 获取列表, 用清单格式回复文章名称和数量.
+调用 list_blog_posts(repo="caozuohua/caozuohua.github.io") 获取列表, 用清单格式回复文章名称和数量.
 """,
 
     Intent.GITHUB_ACTION: """

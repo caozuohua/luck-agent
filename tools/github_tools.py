@@ -141,6 +141,7 @@ class GitHubClient:
         # slug：取英文部分（如有），否则全小写+连字符
         slug = self._make_slug(title)[:60].strip("-")
         now  = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        date = datetime.utcnow().strftime("%Y-%m-%d")
 
         front_matter = f"""---
 title: "{title}"
@@ -148,11 +149,11 @@ date: {now}
 draft: {str(draft).lower()}
 tags: {json.dumps(tags or [], ensure_ascii=False)}
 categories: {json.dumps(categories or [], ensure_ascii=False)}
----
 
 """
         full_content = front_matter + content
-        file_path = f"{content_path}/{slug}.md"
+        # 目录型 bundle：content/posts/YYYY-MM-DD-slug/index.md
+        file_path = f"{content_path}/{date}-{slug}/index.md"
 
         existing_path = await self._find_existing_blog_post(repo, branch, content_path, slug)
         existed_before = bool(existing_path)
@@ -189,11 +190,20 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         except Exception:
             return ""
 
-        target_name = f"{slug}.md"
+        # 匹配目录型 bundle：content/posts/YYYY-MM-DD-slug/index.md
         for post in posts:
-            name = post.get("name", "")
-            if name == target_name:
-                return post.get("path", "")
+            path = post.get("path", "")
+            # 路径格式：content/posts/YYYY-MM-DD-slug/index.md
+            # 去掉前缀 content/posts/ 和后缀 /index.md，取中间部分
+            core = path
+            if core.startswith(f"{content_path}/"):
+                core = core[len(content_path) + 1:]
+            if core.endswith("/index.md"):
+                core = core[:-len("/index.md")]
+            # core = YYYY-MM-DD-slug，去掉日期前缀得 slug
+            dir_slug = core[11:] if len(core) > 11 and core[4] == "-" and core[7] == "-" else ""
+            if dir_slug == slug:
+                return path
         return ""
 
     @staticmethod

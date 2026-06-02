@@ -39,6 +39,8 @@ HELP_TEXT = """
 /upgrade — 拉取远程并重启
 /rollback <commit> — 回退到指定提交
 /search <关键词> — 搜索（Tavily 优先，自动 fallback）
+/pkb <关键词> — 检索个人知识库（Vercel + Supabase）
+知识库录入：以 `#` 开头发送消息，支持 `# [question]` / `# [fact] #Topic`
 
 Shell 执行
 /sh <命令> — 执行 shell 命令(危险命令需 /yes 确认)
@@ -170,6 +172,9 @@ class CommandHandler:
 
             elif cmd == "/search":
                 await self._handle_search(user_id, chat_id, args)
+
+            elif cmd == "/pkb":
+                await self._handle_pkb(chat_id, args)
 
             elif cmd == "/git":
                 await self._handle_git(user_id, chat_id, args)
@@ -426,6 +431,51 @@ class CommandHandler:
         except Exception as e:
             await self.reply(chat_id, text=f"❌ 搜索出错：{e}")
 
+    async def _handle_pkb(self, chat_id: str, query: str) -> None:
+        """直接检索个人知识库。"""
+        if not query:
+            await self.reply(chat_id, text="用法：`/pkb <关键词>`")
+            return
+
+        await self.reply(chat_id, text=f"⏳ 检索个人知识库：`{query}`…")
+        try:
+            from handlers.message import search_pkb
+
+            result = await search_pkb(query, limit=5)
+            if "error" in result:
+                await self.reply(chat_id, text=f"❌ 检索失败：{result['error']}")
+                return
+
+            items = result.get("results", [])
+            if not items:
+                await self.reply(chat_id, text=f"📭 未找到与 `{query}` 相关的笔记。")
+                return
+
+            card_fn = getattr(self.card, "pkb_results", None)
+            if callable(card_fn):
+                await self.reply(chat_id, card=card_fn(query, result))
+                return
+
+            lines = [f"🗃️ **个人知识库检索**：`{query}`", ""]
+            for item in items[:5]:
+                title = item.get("title") or "笔记"
+                note_type = item.get("type") or "idea"
+                topics = item.get("topics") or []
+                topic_text = f" · {' / '.join(topics)}" if topics else ""
+                content = (item.get("content") or "").strip()
+                snippet = content[:120] + "…" if len(content) > 120 else content
+                lines.append(f"- [{note_type}] **{title}**{topic_text}")
+                if snippet:
+                    lines.append(f"  {snippet}")
+
+            if result.get("summary"):
+                lines.append("")
+                lines.append(f"_摘要：{result['summary'][:200]}_")
+
+            await self.reply(chat_id, text="\n".join(lines))
+        except Exception as e:
+            await self.reply(chat_id, text=f"❌ 检索出错：{e}")
+
     async def _handle_posts(self, chat_id: str, repo: str) -> None:
         repo = repo or self.hugo_repo
         if not repo:
@@ -513,7 +563,7 @@ class CommandHandler:
             "ws_online": getattr(self.health, "_ws_online", "unknown"),
             "backup_count": len(backups),
             "backup_dir": str(backup_dir),
-            "hint": "建议：优先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
+            "hint": "排障顺序：先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
         }))
 
     async def _handle_restart(self, chat_id: str) -> None:
@@ -730,6 +780,9 @@ class CommandHandler:
             if mode == "cron":
                 try:
                     task = self.scheduler.add_cron(user_id, chat_id, name, prompt, spec)
+                except ValueError as e:
+                    await self.reply(chat_id, text=f"❌ cron 表达式无效：{e}")
+                    return
                 except Exception as e:
                     await self.reply(chat_id, text=f"❌ 创建 cron 任务失败：{e}")
                     return
@@ -743,13 +796,20 @@ class CommandHandler:
                     return
                 try:
                     task = self.scheduler.add_interval(user_id, chat_id, name, prompt, seconds)
+                except ValueError as e:
+                    await self.reply(chat_id, text=f"❌ 间隔任务无效：{e}")
+                    return
                 except Exception as e:
                     await self.reply(chat_id, text=f"❌ 创建间隔任务失败：{e}")
                     return
             else:
                 await self.reply(chat_id, text="用法：`/schedule add cron|interval <名称> \"<cron|秒数>\" <prompt>`")
                 return
-            await self.reply(chat_id, text=f"✅ 已创建任务 `#{task.id}`：{task.name}")
+            card_fn = getattr(self.card, "schedule_created", None)
+            if callable(card_fn):
+                await self.reply(chat_id, card=card_fn(task.to_dict()))
+            else:
+                await self.reply(chat_id, text=f"✅ 已创建任务 `#{task.id}`：{task.name}")
             return
 
         if subcmd == "list" or not subcmd:
@@ -757,11 +817,18 @@ class CommandHandler:
             if not tasks:
                 await self.reply(chat_id, text="暂无定时任务。用自然语言告诉智能体设置定时任务即可。")
                 return
+            card_fn = getattr(self.card, "schedule_list", None)
+            if callable(card_fn):
+                await self.reply(chat_id, card=card_fn([t.to_dict() for t in tasks]))
+                return
             lines = ["**📅 定时任务列表**"]
             for t in tasks:
                 icon    = "✅" if t.enabled else "⏸"
-                sched   = next_cron_desc(t.schedule) if t.mode == "cron" \
-                          else f"每{int(t.schedule)//60}分钟"
+                if t.mode == "cron":
+                    sched = next_cron_desc(t.schedule)
+                else:
+                    seconds = int(t.schedule)
+                    sched = f"每{seconds}秒" if seconds < 60 else f"每{seconds // 60}分钟"
                 lines.append(
                     f"{icon} `#{t.id}` **{t.name}**\n"
                     f"   {sched} · 已执行{t.run_count}次\n"
@@ -773,22 +840,56 @@ class CommandHandler:
             if not sid:
                 await self.reply(chat_id, text="用法：`/schedule pause <id>`")
                 return
-            ok = self.scheduler.pause(sid)
-            await self.reply(chat_id, text=f"{'⏸ 已暂停' if ok else '❌ 找不到任务'} #{sid}")
+            task = self.scheduler.get_for_user(user_id, sid)
+            ok = self.scheduler.pause_for_user(user_id, sid)
+            card_fn = getattr(self.card, "schedule_action", None)
+            if callable(card_fn):
+                detail = "已暂停后不会继续触发"
+                if task:
+                    detail = f"任务名：{task.name} · {detail}"
+                task_snapshot = task.to_dict() if task else None
+                if task_snapshot is not None:
+                    task_snapshot["enabled"] = False
+                await self.reply(chat_id, card=card_fn("pause", sid, ok, detail, task_snapshot))
+            else:
+                await self.reply(chat_id, text=f"{'⏸ 已暂停' if ok else '❌ 找不到任务'} #{sid}")
 
         elif subcmd == "resume":
             if not sid:
                 await self.reply(chat_id, text="用法：`/schedule resume <id>`")
                 return
-            ok = self.scheduler.resume(sid)
-            await self.reply(chat_id, text=f"{'▶️ 已恢复' if ok else '❌ 找不到任务'} #{sid}")
+            task = self.scheduler.get_for_user(user_id, sid)
+            ok = self.scheduler.resume_for_user(user_id, sid)
+            card_fn = getattr(self.card, "schedule_action", None)
+            if callable(card_fn):
+                detail = "任务已重新加入调度"
+                if task:
+                    detail = f"任务名：{task.name} · {detail}"
+                task_snapshot = task.to_dict() if task else None
+                if task_snapshot is not None:
+                    task_snapshot["enabled"] = True
+                await self.reply(chat_id, card=card_fn("resume", sid, ok, detail, task_snapshot))
+            else:
+                await self.reply(chat_id, text=f"{'▶️ 已恢复' if ok else '❌ 找不到任务'} #{sid}")
 
         elif subcmd == "cancel":
             if not sid:
                 await self.reply(chat_id, text="用法：`/schedule cancel <id>`")
                 return
-            ok = self.scheduler.cancel(sid)
-            await self.reply(chat_id, text=f"{'🗑 已删除' if ok else '❌ 找不到任务'} #{sid}")
+            task = self.scheduler.get_for_user(user_id, sid)
+            ok = self.scheduler.cancel_for_user(user_id, sid)
+            card_fn = getattr(self.card, "schedule_action", None)
+            if callable(card_fn):
+                detail = "任务已从存储中移除"
+                if task:
+                    detail = f"任务名：{task.name} · {detail}"
+                task_snapshot = task.to_dict() if task else None
+                if task_snapshot is not None:
+                    task_snapshot["enabled"] = False
+                    task_snapshot["next_run"] = 0
+                await self.reply(chat_id, card=card_fn("cancel", sid, ok, detail, task_snapshot))
+            else:
+                await self.reply(chat_id, text=f"{'🗑 已删除' if ok else '❌ 找不到任务'} #{sid}")
 
         else:
             await self.reply(chat_id, text="用法：`/schedule list|pause|resume|cancel [id]`")

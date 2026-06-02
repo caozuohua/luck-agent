@@ -45,6 +45,25 @@ def _divider() -> dict:
     return {"tag": "hr"}
 
 
+def _format_ts(ts: float) -> str:
+    if not ts or ts <= 0:
+        return ""
+    return time.strftime("%m-%d %H:%M", time.localtime(ts))
+
+
+def _format_eta(ts: float) -> str:
+    if not ts or ts <= 0:
+        return ""
+    delta = int(ts - time.time())
+    if delta <= 0:
+        return "即将触发"
+    if delta < 60:
+        return f"{delta} 秒后"
+    if delta < 3600:
+        return f"{delta // 60} 分钟后"
+    return f"{delta // 3600} 小时后"
+
+
 def _button(text: str, action_type: str, value: dict, style: str = "default") -> dict:
     return {
         "tag":   "button",
@@ -216,24 +235,27 @@ class CardBuilder:
         commit = result.get("commit", "")
         url = result.get("html_url", "")
         deploy_triggered = result.get("deploy_triggered", False)
-        deploy_error = result.get("deploy_error", "")
 
         elements = [
-            {"tag": "markdown", "content": f"**动作：** `{action}`"},
-            {"tag": "markdown", "content": f"**路径：** `{path}`"},
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**动作**\n`{action}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**部署**\n{'已触发' if deploy_triggered else '未触发'}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**路径**\n`{path}`"}},
+            ]},
         ]
-        if commit:
-            elements.append({"tag": "markdown", "content": f"**提交：** `{commit}`"})
-        if url:
-            elements.append({"tag": "markdown", "content": f"**链接：** {url}"})
-        elements.append({"tag": "markdown", "content": f"**部署：** {'已触发' if deploy_triggered else '未触发'}"})
-        if deploy_error:
-            elements.append({"tag": "markdown", "content": f"⚠️ {deploy_error[:300]}"})
+        if commit or url:
+            meta = []
+            if commit:
+                meta.append(f"提交 `{commit}`")
+            if url:
+                meta.append(f"链接 {url}")
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": " · ".join(meta)})
 
         return {
             "schema": "2.0",
             "header": {
-                "title": {"tag": "plain_text", "content": "📝 博客发布结果"},
+                "title": {"tag": "plain_text", "content": "📝 博客发布"},
                 "template": "green" if action == "create" else "turquoise",
             },
             "body": {"elements": elements},
@@ -243,20 +265,19 @@ class CardBuilder:
     @staticmethod
     def search_results(query: str, result: dict) -> dict:
         elements = [
-            {"tag": "markdown", "content": f"**查询：** `{query}`"},
-            _divider(),
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**查询**\n`{query}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**后端**\n`{result.get('backend', '') or 'unknown'}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{len(result.get('results', [])[:5])} 条"}},
+            ]},
         ]
 
-        backend = result.get("backend", "")
         summary = result.get("summary", "")
         source = result.get("source", "")
-        items = result.get("results", [])[:8]
-        if backend:
-            elements.append({"tag": "markdown", "content": f"**后端：** `{backend}`"})
-        if items:
-            elements.append({"tag": "markdown", "content": f"**结果数：** `{len(items)}` 条"})
+        items = result.get("results", [])[:5]
         if summary:
-            elements.append({"tag": "markdown", "content": f"📋 {summary[:1200]}"})
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"📋 {summary[:600]}"})
         if source:
             elements.append({"tag": "markdown", "content": f"🔗 来源：{source}"})
 
@@ -265,7 +286,7 @@ class CardBuilder:
             for i, item in enumerate(items, 1):
                 title = item.get("title", "")
                 url = item.get("url", "")
-                desc = item.get("description", "")[:320]
+                desc = item.get("description", "")[:180]
                 content = f"{i}. [{title}]({url})"
                 if desc:
                     content += f"\n   {desc}"
@@ -277,8 +298,246 @@ class CardBuilder:
         return {
             "schema": "2.0",
             "header": {
-                "title": {"tag": "plain_text", "content": "🔎 搜索结果"},
+                "title": {"tag": "plain_text", "content": "🔎 搜索"},
                 "template": "blue",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 个人知识库结果卡片 ───────────────────────────────────────────
+    @staticmethod
+    def pkb_results(query: str, result: dict) -> dict:
+        items = result.get("results", [])[:5]
+        summary = result.get("summary", "")
+        count = result.get("count", len(items))
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**查询**\n`{query}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{count} 条"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**来源**\n`PKB`"}},
+            ]},
+        ]
+
+        if summary:
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"📋 {summary[:500]}"})
+
+        if items:
+            elements.append(_divider())
+            for i, item in enumerate(items, 1):
+                title = item.get("title", "") or "笔记"
+                note_type = item.get("type", "") or "idea"
+                topics = item.get("topics") or []
+                meta = [note_type]
+                if topics:
+                    meta.append(" / ".join(topics))
+                content = item.get("content", "")[:180]
+                url = item.get("url", "")
+                header = f"{i}. **{title}**"
+                if meta:
+                    header += f"  <font color='grey'>({ ' · '.join(meta) })</font>"
+                if url:
+                    header += f"\n{url}"
+                if content:
+                    header += f"\n{content}"
+                elements.append({"tag": "markdown", "content": header})
+        else:
+            elements.append({"tag": "markdown", "content": "_未找到相关笔记_"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "🗃️ 个人知识库"},
+                "template": "purple",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 个人知识库录入结果卡片 ───────────────────────────────────────
+    @staticmethod
+    def pkb_recorded(content: str, note_type: str, topics: list[str], ok: bool = True, detail: str = "") -> dict:
+        color = "green" if ok else "red"
+        icon = "✅" if ok else "❌"
+        topic_text = " / ".join(topics) if topics else "无"
+        snippet = content[:160] + "…" if len(content) > 160 else content
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{icon} {'已记录' if ok else '记录失败'}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{note_type}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**话题**\n{topic_text}"}},
+            ]},
+            _divider(),
+            {"tag": "markdown", "content": snippet or "_空内容_"},
+        ]
+        if detail:
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"<font color='grey'>{detail[:180]}</font>"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "🗃️ 个人知识库录入"},
+                "template": color,
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 定时任务列表卡片 ─────────────────────────────────────────────
+    @staticmethod
+    def schedule_list(tasks: list[dict]) -> dict:
+        def _task_sort_key(task: dict) -> tuple:
+            enabled_rank = 0 if task.get("enabled") else 1
+            next_run = float(task.get("next_run", 0) or 0)
+            created_at = float(task.get("created_at", 0) or 0)
+            return (enabled_rank, next_run if next_run > 0 else float("inf"), created_at)
+
+        ordered_tasks = sorted(tasks, key=_task_sort_key)
+        enabled_count = sum(1 for t in ordered_tasks if t.get("enabled"))
+        upcoming = [float(t.get("next_run", 0) or 0) for t in ordered_tasks if float(t.get("next_run", 0) or 0) > 0]
+        soonest = min(upcoming) if upcoming else 0
+        soonest_ts = _format_ts(soonest)
+        soonest_eta = _format_eta(soonest)
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**任务数**\n{len(tasks)} 条"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**启用**\n{enabled_count} 条"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**模式**\ncron / interval"}},
+            ]},
+        ]
+        if soonest_ts:
+            elements.append({"tag": "markdown", "content": f"<font color='grey'>最近触发：{soonest_ts} · {soonest_eta or '—'}</font>"})
+
+        for t in ordered_tasks[:8]:
+            icon = "✅" if t.get("enabled") else "⏸"
+            mode = t.get("mode", "")
+            if mode == "cron":
+                schedule = t.get("schedule", "")
+            else:
+                try:
+                    seconds = int(t.get("schedule", 0))
+                    schedule = f"每{seconds}秒" if seconds < 60 else f"每{seconds // 60}分钟"
+                except Exception:
+                    schedule = str(t.get("schedule", ""))
+            next_run = _format_ts(float(t.get("next_run", 0) or 0))
+            eta = _format_eta(float(t.get("next_run", 0) or 0))
+            prompt = t.get("prompt", "")
+            prompt = prompt[:60] + "…" if len(prompt) > 60 else prompt
+
+            elements.append({
+                "tag": "column_set",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 3,
+                        "elements": [
+                            {"tag": "markdown", "content": f"**{icon} {t.get('name', '')}**"},
+                            {"tag": "markdown", "content": f"`#{t.get('id', '')}` · {mode} · {schedule}"},
+                            {"tag": "markdown", "content": f"<font color='grey'>下次：{next_run or '未设置'} · {eta or '—'}</font>"},
+                        ],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [
+                            {"tag": "markdown", "content": f"{t.get('run_count', 0)} 次"},
+                        ],
+                    },
+                ],
+            })
+            if prompt:
+                elements.append({"tag": "markdown", "content": f"<font color='grey'>{prompt}</font>"})
+
+        if not ordered_tasks:
+            elements.append({"tag": "markdown", "content": "_暂无定时任务_"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "📅 定时任务"},
+                "template": "purple",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 定时任务创建成功卡片 ─────────────────────────────────────────
+    @staticmethod
+    def schedule_created(task: dict) -> dict:
+        mode = task.get("mode", "")
+        schedule = task.get("schedule", "")
+        if mode == "interval":
+            try:
+                seconds = int(schedule)
+                schedule = f"每{seconds}秒" if seconds < 60 else f"每{seconds // 60}分钟"
+            except Exception:
+                schedule = str(schedule)
+        next_run = _format_ts(float(task.get("next_run", 0) or 0))
+        eta = _format_eta(float(task.get("next_run", 0) or 0))
+
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**任务**\n{task.get('name', '')}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**模式**\n{mode}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**计划**\n{schedule}"}},
+            ]},
+        ]
+
+        if next_run:
+            elements.append({"tag": "markdown", "content": f"<font color='grey'>下次触发：{next_run} · {eta or '—'}</font>"})
+
+        prompt = task.get("prompt", "")
+        if prompt:
+            prompt = prompt[:120] + "…" if len(prompt) > 120 else prompt
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"<font color='grey'>{prompt}</font>"})
+
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "📅 定时任务已创建"},
+                "template": "green",
+            },
+            "body": {"elements": elements},
+        }
+
+    # ── 定时任务动作确认卡片 ─────────────────────────────────────────
+    @staticmethod
+    def schedule_action(action: str, task_id: str, ok: bool, detail: str = "", task: dict | None = None) -> dict:
+        title = {
+            "pause": "📅 定时任务已暂停" if ok else "📅 暂停失败",
+            "resume": "📅 定时任务已恢复" if ok else "📅 恢复失败",
+            "cancel": "📅 定时任务已删除" if ok else "📅 删除失败",
+        }.get(action, "📅 定时任务操作")
+        status = "成功" if ok else "失败"
+        icon = "✅" if ok else "❌"
+        task_name = task.get("name", "") if task else ""
+        enabled = task.get("enabled") if task else None
+        next_run = _format_ts(float(task.get("next_run", 0) or 0)) if task else ""
+        eta = _format_eta(float(task.get("next_run", 0) or 0)) if task else ""
+        elements = [
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**任务**\n`#{task_id}`"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{icon} {status}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**动作**\n{action}"}},
+            ]},
+        ]
+        if task_name:
+            elements.append({"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**名称**\n{task_name}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**启用**\n{'是' if enabled else '否'}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**下次**\n{next_run or '—'}"}},
+            ]})
+            if eta:
+                elements.append({"tag": "markdown", "content": f"<font color='grey'>ETA：{eta}</font>"})
+        if detail:
+            elements.append(_divider())
+            elements.append({"tag": "markdown", "content": f"<font color='grey'>{detail[:120]}</font>"})
+        return {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": "green" if ok else "red",
             },
             "body": {"elements": elements},
         }
@@ -289,25 +548,27 @@ class CardBuilder:
         elements = [
             {"tag": "div", "fields": [
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**WS**\n{details.get('ws_online', 'unknown')}"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**DB**\n`{details.get('db_path', '')}`"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**备份**\n{details.get('backup_count', 0)} 个"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**DB**\n`{details.get('db_path', '')}`"}},
             ]},
         ]
+        meta_bits = []
         if details.get("backup_dir"):
-            elements.append(_divider())
-            elements.append({"tag": "markdown", "content": f"**备份目录**\n`{details.get('backup_dir')}`"})
+            meta_bits.append(f"备份目录 `{details.get('backup_dir')}`")
         if details.get("upload_dir"):
-            elements.append({"tag": "markdown", "content": f"**上传目录**\n`{details.get('upload_dir')}`"})
+            meta_bits.append(f"上传目录 `{details.get('upload_dir')}`")
         if details.get("shell_work_dir"):
-            elements.append({"tag": "markdown", "content": f"**Shell 工作区**\n`{details.get('shell_work_dir')}`"})
-        if details.get("hint"):
+            meta_bits.append(f"Shell 工作区 `{details.get('shell_work_dir')}`")
+        if meta_bits:
             elements.append(_divider())
+            elements.append({"tag": "markdown", "content": " · ".join(meta_bits)})
+        if details.get("hint"):
             elements.append({"tag": "markdown", "content": details["hint"]})
 
         return {
             "schema": "2.0",
             "header": {
-                "title": {"tag": "plain_text", "content": "🩺 健康诊断"},
+                "title": {"tag": "plain_text", "content": "🩺 健康"},
                 "template": "turquoise",
             },
             "body": {"elements": elements},
@@ -425,30 +686,23 @@ class CardBuilder:
                       procs: str = "") -> dict:
         elements = [
             {"tag": "div", "fields": [
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**消息总数**: {memory_stats.get('messages', 0)}"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**任务总数**: {memory_stats.get('tasks', 0)}"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                                            "content": f"**活跃用户**: {memory_stats.get('users', 0)}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**消息**\n{memory_stats.get('messages', 0)}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**任务**\n{memory_stats.get('tasks', 0)}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**用户**\n{memory_stats.get('users', 0)}"}},
             ]},
         ]
 
         extra_bits = []
         if memory_stats.get("ws_online") is not None:
-            extra_bits.append(f"**WS**: {memory_stats.get('ws_online')}")
+            extra_bits.append(f"WS {memory_stats.get('ws_online')}")
         if memory_stats.get("ws_last_ok") is not None:
-            extra_bits.append(f"**心跳**: {memory_stats.get('ws_last_ok')}s 前")
-        if memory_stats.get("db_path"):
-            extra_bits.append(f"**DB**: `{memory_stats.get('db_path')}`")
+            extra_bits.append(f"心跳 {memory_stats.get('ws_last_ok')}s 前")
         if memory_stats.get("backup_count") is not None:
-            extra_bits.append(f"**备份**: {memory_stats.get('backup_count')} 个")
-        if memory_stats.get("backup_dir"):
-            extra_bits.append(f"**备份目录**: `{memory_stats.get('backup_dir')}`")
+            extra_bits.append(f"备份 {memory_stats.get('backup_count')} 个")
         if extra_bits:
             elements.append({"tag": "hr"})
             elements.append({"tag": "div", "fields": [
-                {"is_short": False, "text": {"tag": "lark_md", "content": " | ".join(extra_bits)}},
+                {"is_short": False, "text": {"tag": "lark_md", "content": " · ".join(extra_bits)}},
             ]})
 
         if mem:
@@ -482,7 +736,7 @@ class CardBuilder:
         return {
             "schema": "2.0",
             "header": {
-                "title":    {"tag": "plain_text", "content": "📊 系统状态"},
+                "title":    {"tag": "plain_text", "content": "📊 状态"},
                 "template": "turquoise",
             },
             "body": {"elements": elements},
@@ -491,3 +745,5 @@ class CardBuilder:
     @staticmethod
     def to_json(card: dict) -> str:
         return json.dumps(card, ensure_ascii=False)
+
+

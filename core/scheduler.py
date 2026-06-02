@@ -80,6 +80,80 @@ def next_cron_desc(expr: str) -> str:
     return expr
 
 
+def validate_cron_expr(expr: str) -> None:
+    """校验 cron 表达式格式，失败时抛出 ValueError。"""
+    fields = expr.strip().split()
+    if len(fields) != 5:
+        raise ValueError("cron 表达式必须是 5 个字段：分 时 日 月 周")
+    limits = [
+        (0, 59, "分"),
+        (0, 23, "时"),
+        (1, 31, "日"),
+        (1, 12, "月"),
+        (0, 6, "周"),
+    ]
+    for field, (lo, hi, label) in zip(fields, limits):
+        if not field:
+            raise ValueError("cron 表达式字段不能为空")
+        for part in field.split(","):
+            if part == "*":
+                continue
+            if "/" in part:
+                base, step = part.split("/", 1)
+                if not step.isdigit() or int(step) <= 0:
+                    raise ValueError(f"cron 步长无效：{part}")
+                if base not in ("*", "") and not _is_int_or_range(base):
+                    raise ValueError(f"cron 步长基准无效：{part}")
+                _validate_cron_base(base, lo, hi, label)
+                continue
+            if "-" in part:
+                a, b = part.split("-", 1)
+                if not _is_int(a) or not _is_int(b):
+                    raise ValueError(f"cron 范围无效：{part}")
+                if int(a) > int(b):
+                    raise ValueError(f"cron 范围起始值大于结束值：{part}")
+                if not (lo <= int(a) <= hi and lo <= int(b) <= hi):
+                    raise ValueError(f"cron 范围超出 {label} 允许范围：{part}")
+                continue
+            if not _is_int(part):
+                raise ValueError(f"cron 值无效：{part}")
+            value = int(part)
+            if not (lo <= value <= hi):
+                raise ValueError(f"cron {label} 值超出范围：{part}")
+
+
+def _is_int(text: str) -> bool:
+    return text.isdigit()
+
+
+def _is_int_or_range(text: str) -> bool:
+    if text == "*":
+        return True
+    if "-" in text:
+        a, b = text.split("-", 1)
+        return _is_int(a) and _is_int(b)
+    return _is_int(text)
+
+
+def _validate_cron_base(base: str, lo: int, hi: int, label: str) -> None:
+    if base in ("", "*"):
+        return
+    if "-" in base:
+        a, b = base.split("-", 1)
+        if not _is_int(a) or not _is_int(b):
+            raise ValueError(f"cron 步长基准无效：{base}")
+        if int(a) > int(b):
+            raise ValueError(f"cron 步长基准起始值大于结束值：{base}")
+        if not (lo <= int(a) <= hi and lo <= int(b) <= hi):
+            raise ValueError(f"cron 步长基准超出 {label} 允许范围：{base}")
+        return
+    if not _is_int(base):
+        raise ValueError(f"cron 步长基准无效：{base}")
+    value = int(base)
+    if not (lo <= value <= hi):
+        raise ValueError(f"cron 步长基准超出 {label} 允许范围：{base}")
+
+
 # ── Schema ───────────────────────────────────────────────────────────────────
 
 SCHEDULE_SCHEMA = """
@@ -194,6 +268,14 @@ class ScheduleStore:
             ).fetchone()
         return self._row_to_task(row) if row else None
 
+    def get_for_user(self, task_id: str, user_id: str) -> ScheduledTask | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
+            ).fetchone()
+        return self._row_to_task(row) if row else None
+
     def update_after_run(self, task_id: str, next_run: float) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -211,10 +293,26 @@ class ScheduleStore:
             )
         return cur.rowcount > 0
 
+    def set_enabled_for_user(self, task_id: str, user_id: str, enabled: bool) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE scheduled_tasks SET enabled=? WHERE id=? AND user_id=?",
+                (int(enabled), task_id, user_id),
+            )
+        return cur.rowcount > 0
+
     def delete(self, task_id: str) -> bool:
         with self._conn() as conn:
             cur = conn.execute(
                 "DELETE FROM scheduled_tasks WHERE id=?", (task_id,)
+            )
+        return cur.rowcount > 0
+
+    def delete_for_user(self, task_id: str, user_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM scheduled_tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
             )
         return cur.rowcount > 0
 
@@ -239,6 +337,7 @@ class Scheduler:
     """
 
     TICK = 30   # 检查间隔（秒），30s 保证分钟级精度
+    MIN_INTERVAL_SEC = 60
 
     def __init__(self, store: ScheduleStore,
                  trigger_fn: Callable[[str, str, str, str], Coroutine]) -> None:
@@ -246,12 +345,13 @@ class Scheduler:
         self._trigger    = trigger_fn   # async (task_id, user_id, chat_id, prompt)
         self._running    = False
         self._task: asyncio.Task | None = None
+        self._active_task_ids: set[str] = set()
 
     async def start(self) -> None:
         self._running = True
-        self._task    = asyncio.create_task(self._loop(), name="scheduler")
         # 恢复 interval 任务的 next_run（进程重启后可能已过期）
         self._recover_interval_tasks()
+        self._task    = asyncio.create_task(self._loop(), name="scheduler")
         log.info("scheduler_started", tick=self.TICK)
 
     async def stop(self) -> None:
@@ -285,6 +385,8 @@ class Scheduler:
                 continue
             if not self._is_due(task, now, dt_utc):
                 continue
+            if task.id in self._active_task_ids:
+                continue
 
             log.info("schedule_triggered", id=task.id, name=task.name,
                      user=task.user_id[:8])
@@ -294,10 +396,19 @@ class Scheduler:
             self._store.update_after_run(task.id, next_run)
 
             # 异步触发，不阻塞调度器
+            self._active_task_ids.add(task.id)
             asyncio.create_task(
-                self._trigger(task.id, task.user_id, task.chat_id, task.prompt),
+                self._dispatch(task),
                 name=f"schedule-{task.id}",
             )
+
+    async def _dispatch(self, task: ScheduledTask) -> None:
+        try:
+            await self._trigger(task.id, task.user_id, task.chat_id, task.prompt)
+        except Exception as e:
+            log.error("schedule_trigger_failed", id=task.id, name=task.name, error=str(e))
+        finally:
+            self._active_task_ids.discard(task.id)
 
     def _is_due(self, task: ScheduledTask, now: float, dt: datetime) -> bool:
         if task.mode == "cron":
@@ -319,6 +430,7 @@ class Scheduler:
     def add_cron(self, user_id: str, chat_id: str,
                  name: str, prompt: str, cron_expr: str) -> ScheduledTask:
         """添加 cron 定时任务。"""
+        validate_cron_expr(cron_expr)
         task = ScheduledTask(
             id=str(uuid.uuid4())[:8],
             user_id=user_id, chat_id=chat_id,
@@ -334,6 +446,8 @@ class Scheduler:
     def add_interval(self, user_id: str, chat_id: str,
                      name: str, prompt: str, seconds: int) -> ScheduledTask:
         """添加间隔定时任务。"""
+        if seconds < self.MIN_INTERVAL_SEC:
+            raise ValueError(f"间隔秒数必须至少 {self.MIN_INTERVAL_SEC} 秒")
         task = ScheduledTask(
             id=str(uuid.uuid4())[:8],
             user_id=user_id, chat_id=chat_id,
@@ -351,14 +465,26 @@ class Scheduler:
     def cancel(self, task_id: str) -> bool:
         return self._store.delete(task_id)
 
+    def cancel_for_user(self, user_id: str, task_id: str) -> bool:
+        return self._store.delete_for_user(task_id, user_id)
+
     def pause(self, task_id: str) -> bool:
         return self._store.set_enabled(task_id, False)
+
+    def pause_for_user(self, user_id: str, task_id: str) -> bool:
+        return self._store.set_enabled_for_user(task_id, user_id, False)
 
     def resume(self, task_id: str) -> bool:
         return self._store.set_enabled(task_id, True)
 
+    def resume_for_user(self, user_id: str, task_id: str) -> bool:
+        return self._store.set_enabled_for_user(task_id, user_id, True)
+
     def list_user(self, user_id: str) -> list[ScheduledTask]:
         return self._store.list_user(user_id)
+
+    def get_for_user(self, user_id: str, task_id: str) -> ScheduledTask | None:
+        return self._store.get_for_user(task_id, user_id)
 
 
 SCHEDULE_TOOL_SCHEMAS = [

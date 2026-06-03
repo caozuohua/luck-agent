@@ -70,12 +70,22 @@ def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
     return content, note_type, topics
 
 
-def _pkb_env() -> tuple[str, str] | None:
-    url = os.getenv("VERCEL_API_URL", "").strip()
+def _pkb_url(action: str) -> str:
+    if action == "ingest":
+        url = os.getenv("PKB_INGEST_URL", "").strip()
+    elif action == "search":
+        url = os.getenv("PKB_SEARCH_URL", "").strip()
+    else:
+        url = ""
+    return (url or os.getenv("VERCEL_API_URL", "").strip()).rstrip("/")
+
+
+def _pkb_env(action: str = "default") -> tuple[str, str] | None:
+    url = _pkb_url(action)
     secret = os.getenv("API_SECRET", "").strip()
     if not url or not secret:
         return None
-    return url.rstrip("/"), secret
+    return url, secret
 
 
 def _coerce_pkb_limit(limit: Any, default: int = 5) -> int:
@@ -145,10 +155,10 @@ def _normalize_pkb_result_payload(data: Any) -> tuple[str, list[dict]]:
     return summary, results
 
 
-async def _pkb_post(payload: dict[str, Any]) -> httpx.Response | None:
-    env = _pkb_env()
+async def _pkb_post(payload: dict[str, Any], action: str = "default") -> httpx.Response | None:
+    env = _pkb_env(action)
     if not env:
-        log.error("pkb_env_missing", has_url=bool(os.getenv("VERCEL_API_URL", "").strip()),
+        log.error("pkb_env_missing", action=action, has_url=bool(_pkb_url(action)),
                   has_secret=bool(os.getenv("API_SECRET", "").strip()))
         return None
 
@@ -168,11 +178,12 @@ async def _pkb_post(payload: dict[str, Any]) -> httpx.Response | None:
 
 async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> bool:
     """转发笔记到已部署的 PKB 接口。"""
-    env = _pkb_env()
+    env = _pkb_env("ingest")
     if not env:
         log.error(
             "pkb_env_missing",
-            has_url=bool(os.getenv("VERCEL_API_URL", "").strip()),
+            action="ingest",
+            has_url=bool(_pkb_url("ingest")),
             has_secret=bool(os.getenv("API_SECRET", "").strip()),
         )
         return False
@@ -182,7 +193,7 @@ async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> boo
         "type": note_type,
         "topics": topics,
         "source": "lark",
-    })
+    }, action="ingest")
     if resp is None:
         return False
 
@@ -205,7 +216,7 @@ async def search_pkb(query: str, limit: int = 5) -> dict:
 
     limit = _coerce_pkb_limit(limit)
 
-    if not _pkb_env():
+    if not _pkb_env("search"):
         return {"error": "PKB 接口环境变量未配置"}
 
     resp = await _pkb_post({
@@ -213,11 +224,19 @@ async def search_pkb(query: str, limit: int = 5) -> dict:
         "limit": limit,
         "source": "lark",
         "action": "search",
-    })
+    }, action="search")
     if resp is None:
         return {"error": "PKB 请求失败"}
 
     if not resp.is_success:
+        if resp.status_code == 404:
+            url = _pkb_url("search")
+            return {
+                "error": (
+                    f"PKB 检索接口不存在(404)：{url}。"
+                    "请确认 PKB_SEARCH_URL，或把 VERCEL_API_URL 改成真实的检索 API route。"
+                )
+            }
         return {"error": f"{resp.status_code}: {resp.text[:300]}"}
 
     try:

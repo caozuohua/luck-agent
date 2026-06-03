@@ -174,6 +174,8 @@ TAVILY_API_KEY=tvly-xxxxxxxx
 
 # 个人知识库（Vercel + Supabase）
 VERCEL_API_URL=https://your-vercel-app.vercel.app/api/pkb
+PKB_INGEST_URL=https://your-vercel-app.vercel.app/api/pkb       # 可选：覆盖录入接口
+PKB_SEARCH_URL=https://your-vercel-app.vercel.app/api/pkb/search # 可选：覆盖检索接口
 API_SECRET=your-api-secret
 ```
 

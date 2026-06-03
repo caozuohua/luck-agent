@@ -176,7 +176,19 @@ async def _pkb_post(payload: dict[str, Any], action: str = "default") -> httpx.R
         return None
 
 
-async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> bool:
+def _pkb_error_detail(resp: httpx.Response) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        return resp.text[:300]
+    if isinstance(data, dict):
+        detail = data.get("error") or data.get("message") or data.get("detail")
+        if detail:
+            return str(detail)[:300]
+    return resp.text[:300]
+
+
+async def forward_to_pkb_result(content: str, note_type: str, topics: list[str]) -> dict:
     """转发笔记到已部署的 PKB 接口。"""
     env = _pkb_env("ingest")
     if not env:
@@ -186,7 +198,7 @@ async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> boo
             has_url=bool(_pkb_url("ingest")),
             has_secret=bool(os.getenv("API_SECRET", "").strip()),
         )
-        return False
+        return {"ok": False, "error": "PKB 录入接口环境变量未配置"}
 
     resp = await _pkb_post({
         "content": content,
@@ -195,17 +207,29 @@ async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> boo
         "source": "lark",
     }, action="ingest")
     if resp is None:
-        return False
+        return {"ok": False, "error": "PKB 请求失败"}
 
     if not resp.is_success:
+        detail = _pkb_error_detail(resp)
         log.error(
             "pkb_forward_fail",
             status=resp.status_code,
-            body=resp.text[:300],
+            error=detail,
+            url=_pkb_url("ingest"),
         )
-        return False
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "error": detail or f"HTTP {resp.status_code}",
+            "url": _pkb_url("ingest"),
+        }
 
-    return True
+    return {"ok": True, "status": resp.status_code, "url": _pkb_url("ingest")}
+
+
+async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> bool:
+    result = await forward_to_pkb_result(content, note_type, topics)
+    return bool(result.get("ok"))
 
 
 async def search_pkb(query: str, limit: int = 5) -> dict:

@@ -12,7 +12,7 @@ from typing import Any
 
 import lark_oapi as lark
 from core.log import get_logger
-from handlers.message import forward_to_pkb, parse_note_message
+from handlers.message import forward_to_pkb_result, parse_note_message
 
 log = get_logger()
 
@@ -403,7 +403,9 @@ class AgentApp:
             note = parse_note_message(text)
             if note:
                 content, note_type, topics = note
-                ok = await forward_to_pkb(content, note_type, topics)
+                pkb_result = await forward_to_pkb_result(content, note_type, topics)
+                ok = bool(pkb_result.get("ok"))
+                error_detail = pkb_result.get("error") or "请检查 Vercel / Supabase 接口与 API Secret"
                 card_fn = getattr(self._msg_handler.card, "pkb_recorded", None)
                 if callable(card_fn):
                     await self._sender.send(
@@ -413,7 +415,7 @@ class AgentApp:
                             note_type=note_type,
                             topics=topics,
                             ok=ok,
-                            detail="已转发到个人知识库" if ok else "请检查 Vercel / Supabase 接口与 API Secret",
+                            detail="已转发到个人知识库" if ok else str(error_detail),
                         ),
                         reply_to=message_id,
                     )

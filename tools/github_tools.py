@@ -19,6 +19,8 @@ from core.log import get_logger
 
 log = get_logger()
 
+DEFAULT_DEPLOY_WORKFLOW = "deploy-hugo.yml"
+
 
 class GitHubClient:
     """GitHub REST API v3 封装，含连接池复用、429 重试、速率限制处理。"""
@@ -312,7 +314,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     async def _maybe_trigger_deploy(self, repo: str, shell) -> dict:
         """尝试触发部署工作流；失败不阻断主流程。"""
         try:
-            result = await self.trigger_workflow(repo, "deploy-hugo.yml")
+            result = await self.trigger_workflow(repo, DEFAULT_DEPLOY_WORKFLOW)
             return {"triggered": True, "result": result}
         except Exception as e:
             log.warning("blog_deploy_failed", repo=repo, error=str(e)[:200])
@@ -348,7 +350,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
                     for f in inner.json():
                         if f["type"] == "file" and f["name"] == "index.md":
                             posts.append({
-                                "name":     f["name"],
+                                "name":     item["name"],
                                 "path":     f["path"],
                                 "size":     f["size"],
                                 "html_url": f["html_url"],
@@ -537,7 +539,7 @@ GITHUB_TOOL_SCHEMAS = [
             "type": "object",
             "properties": {
                 "repo":        {"type": "string", "description": "仓库名"},
-                "workflow_id": {"type": "string", "description": "workflow 文件名，如 deploy.yml"},
+                "workflow_id": {"type": "string", "description": f"workflow 文件名，如 {DEFAULT_DEPLOY_WORKFLOW}"},
                 "ref":         {"type": "string", "description": "分支或 tag，默认 main"},
                 "inputs":      {"type": "object", "description": "workflow inputs 参数"},
             },

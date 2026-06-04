@@ -284,7 +284,7 @@ content/posts/
 
     Intent.GITHUB_ACTION: """
 ## 当前任务: GitHub Actions 操作
-- 触发部署 : trigger_workflow(repo="...", workflow_id="deploy.yml")
+- 触发部署 : trigger_workflow(repo="...", workflow_id="deploy-hugo.yml")
 - 查看状态 : list_workflow_runs(repo="...", limit=5)
 直接调用, 结果以表格形式汇报 status 和 conclusion.
 如果用户提到“部署失败/重跑/查看日志”，优先先看 list_workflow_runs，再决定是否触发或取消。

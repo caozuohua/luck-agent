@@ -9,6 +9,8 @@ import json
 import time
 from typing import Any
 
+from core.topics import normalize_topics
+
 
 # ── 颜色语义 ─────────────────────────────────────────────────────────────────
 STATUS_COLOR = {
@@ -327,7 +329,7 @@ class CardBuilder:
             for i, item in enumerate(items, 1):
                 title = item.get("title", "") or "笔记"
                 note_type = item.get("type", "") or "idea"
-                topics = item.get("topics") or []
+                topics = normalize_topics(item.get("topics") or [])
                 meta = [note_type]
                 if topics:
                     meta.append(" / ".join(topics))
@@ -336,11 +338,11 @@ class CardBuilder:
                 header = f"{i}. **{title}**"
                 if meta:
                     header += f"  <font color='grey'>({ ' · '.join(meta) })</font>"
-                if url:
-                    header += f"\n{url}"
-                if content:
-                    header += f"\n{content}"
                 elements.append({"tag": "markdown", "content": header})
+                if url:
+                    elements.append({"tag": "markdown", "content": f"🔗 [打开原文]({url})"})
+                if content:
+                    elements.append({"tag": "markdown", "content": f"<font color='grey'>{content}</font>"})
         else:
             elements.append({"tag": "markdown", "content": "_未找到相关笔记_"})
 
@@ -358,7 +360,8 @@ class CardBuilder:
     def pkb_recorded(content: str, note_type: str, topics: list[str], ok: bool = True, detail: str = "") -> dict:
         color = "green" if ok else "red"
         icon = "✅" if ok else "❌"
-        topic_text = " / ".join(topics) if topics else "无"
+        normalized_topics = normalize_topics(topics)
+        topic_text = " / ".join(normalized_topics) if normalized_topics else "无"
         snippet = content[:160] + "…" if len(content) > 160 else content
         elements = [
             {"tag": "div", "fields": [

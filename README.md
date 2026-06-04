@@ -46,7 +46,7 @@ Lark WebSocket
 1. 用 `/search` 收集信息，直接在对话里扫结果卡片
 2. 用 `#` 消息录入灵感、问题和事实，再用 `/pkb` 快速检索
 3. 用 `/mem set` 记录长期偏好、选题和成功模式
-4. 用博客工具写入内容，必要时触发 `deploy.yml`
+4. 用博客工具写入内容，必要时触发 `deploy-hugo.yml`
 5. 用 `/status`、`/health`、`/backup`、`/restore` 保持 VPS 稳定运行
 
 ## 设计原则
@@ -59,7 +59,7 @@ Lark WebSocket
 
 1. 用 `/status` 和 `/health` 快速判断服务是否健康
 2. 用 `/search`、`#` 笔记和 `/pkb` 沉淀并检索碎片信息与个人知识体系
-3. 用博客工具写入内容，必要时触发 `deploy.yml`
+3. 用博客工具写入内容，必要时触发 `deploy-hugo.yml`
 4. 用 `/backup`、`/restore`、`/restart` 保持低成本长期稳定运行
 5. 当模型失效时，继续用大模型无关指令完成运维和发布
 
@@ -370,7 +370,7 @@ git pull && sudo systemctl restart luck-agent
 
 1. `/search <关键词>`：看搜索卡是否返回，重点确认标题、来源和前几条结果可在手机端一屏扫完。
 2. `#` 录入 + `/pkb` 检索：先发一条 `#` 笔记，确认回复“已记录”，再用 `/pkb` 查回同一条内容。
-3. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy.yml` 已触发。
+3. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy-hugo.yml` 已触发。
 4. `/status` 和 `/health`：检查总览卡与诊断卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务。
 5. `/schedule add|list|pause|resume|cancel`：先建一个 60 秒以上的 interval 任务，再试 `list`、`pause`、`resume`、`cancel`，确认都只作用于当前用户，并检查卡片里的下一次触发时间/ETA。
 6. `/send <file>`：先发送一个小文件，确认 Lark 中能收到文件卡，并且本地路径与文件名正确。

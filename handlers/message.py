@@ -14,6 +14,7 @@ from typing import Any, TYPE_CHECKING
 import httpx
 from core.log import get_logger
 from core.intent_router import route as intent_route, Intent
+from core.topics import normalize_topic, normalize_topics
 
 log = get_logger()
 
@@ -58,7 +59,7 @@ def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
     topics: list[str] = []
 
     def _collect_topic(match: re.Match[str]) -> str:
-        topic = match.group(1).strip()
+        topic = normalize_topic(match.group(1))
         if topic and topic not in topics:
             topics.append(topic)
         return ""
@@ -108,6 +109,28 @@ def _normalize_pkb_result_item(item: Any) -> dict | None:
         "url": str(item.get("url") or item.get("link") or ""),
         "created_at": item.get("created_at") or item.get("createdAt") or "",
     }
+
+
+def format_pkb_result_items(items: list[dict], limit: int = 5) -> list[str]:
+    lines: list[str] = []
+    for item in items[:_coerce_pkb_limit(limit)]:
+        title = str(item.get("title") or "笔记")
+        note_type = str(item.get("type") or "idea")
+        topics = normalize_topics(item.get("topics") or [])
+        content = str(item.get("content") or "").strip()
+        snippet = content[:120] + "…" if len(content) > 120 else content
+        url = str(item.get("url") or "").strip()
+
+        meta = [note_type]
+        if topics:
+            meta.append(" / ".join(topics))
+        lines.append(f"- [{' · '.join(meta)}] **{title}**")
+        if snippet:
+            lines.append(f"  {snippet}")
+        if url:
+            lines.append(f"  🔗 {url}")
+
+    return lines
 
 
 def _normalize_pkb_result_payload(data: Any) -> tuple[str, list[dict]]:
@@ -227,6 +250,8 @@ async def forward_to_pkb_result(content: str, note_type: str, topics: list[str])
     try:
         data = resp.json()
     except Exception:
+        data = {}
+    if not isinstance(data, dict):
         data = {}
 
     return {
@@ -750,23 +775,11 @@ class AgentMessageHandler:
             elif tool == "search_pkb":
                 summary = (res.get("summary") or "")[:500]
                 items = res.get("results", [])[:3]
-                item_bits = []
-                for item in items:
-                    title = item.get("title", "") or "笔记"
-                    content = item.get("content", "")[:120]
-                    topics = item.get("topics") or []
-                    meta = []
-                    if item.get("type"):
-                        meta.append(item["type"])
-                    if topics:
-                        meta.append("#" + " #".join(topics))
-                    meta_text = f" ({' · '.join(meta)})" if meta else ""
-                    if title or content:
-                        item_bits.append(f"- {title}{meta_text}\n  {content}")
                 lines.append(
                     f"🗃️ 个人知识库检索完成"
                     + (f"：{summary}" if summary else "")
                 )
+                item_bits = format_pkb_result_items(items, limit=3)
                 if item_bits:
                     lines.append("\n".join(item_bits))
             elif tool in ("remember", "recall"):

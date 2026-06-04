@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.log import get_logger
+from tools.github_tools import DEFAULT_DEPLOY_WORKFLOW
 
 if TYPE_CHECKING:
     from tools.shell_tools import ShellExecutor, FileManager
@@ -55,7 +56,7 @@ Shell 执行
 
 发布与仓库
 /git [路径] [message] — add + commit + push
-/deploy [repo] — 触发 deploy.yml
+/deploy [repo] — 触发 deploy-hugo.yml
 /runs [repo] — 查看 Actions 运行
 /posts [repo] — 列出博文
 
@@ -402,8 +403,8 @@ class CommandHandler:
         if not repo:
             await self.reply(chat_id, text="用法：`/deploy <repo>`")
             return
-        await self.reply(chat_id, text=f"⏳ 触发 deploy.yml — `{repo}`…")
-        result = await self.github.trigger_workflow(repo, "deploy.yml")
+        await self.reply(chat_id, text=f"⏳ 触发 {DEFAULT_DEPLOY_WORKFLOW} — `{repo}`…")
+        result = await self.github.trigger_workflow(repo, DEFAULT_DEPLOY_WORKFLOW)
         await self.reply(chat_id, text=f"✅ 已触发：{result}")
 
     async def _handle_runs(self, chat_id: str, repo: str) -> None:
@@ -439,7 +440,7 @@ class CommandHandler:
 
         await self.reply(chat_id, text=f"⏳ 检索个人知识库：`{query}`…")
         try:
-            from handlers.message import search_pkb
+            from handlers.message import format_pkb_result_items, search_pkb
 
             result = await search_pkb(query, limit=5)
             if "error" in result:
@@ -457,16 +458,7 @@ class CommandHandler:
                 return
 
             lines = [f"🗃️ **个人知识库检索**：`{query}`", ""]
-            for item in items[:5]:
-                title = item.get("title") or "笔记"
-                note_type = item.get("type") or "idea"
-                topics = item.get("topics") or []
-                topic_text = f" · {' / '.join(topics)}" if topics else ""
-                content = (item.get("content") or "").strip()
-                snippet = content[:120] + "…" if len(content) > 120 else content
-                lines.append(f"- [{note_type}] **{title}**{topic_text}")
-                if snippet:
-                    lines.append(f"  {snippet}")
+            lines.extend(format_pkb_result_items(items, limit=5))
 
             if result.get("summary"):
                 lines.append("")

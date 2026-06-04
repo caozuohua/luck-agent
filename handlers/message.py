@@ -224,7 +224,20 @@ async def forward_to_pkb_result(content: str, note_type: str, topics: list[str])
             "url": _pkb_url("ingest"),
         }
 
-    return {"ok": True, "status": resp.status_code, "url": _pkb_url("ingest")}
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+
+    return {
+        "ok": True,
+        "status": resp.status_code,
+        "url": _pkb_url("ingest"),
+        "id": str(data.get("id", "")),
+        "type": str(data.get("type", note_type)),
+        "topics": data.get("topics") or topics,
+        "created_at": str(data.get("created_at", "")),
+    }
 
 
 async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> bool:

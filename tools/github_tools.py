@@ -312,7 +312,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
     async def _maybe_trigger_deploy(self, repo: str, shell) -> dict:
         """尝试触发部署工作流；失败不阻断主流程。"""
         try:
-            result = await self.trigger_workflow(repo, "deploy.yml")
+            result = await self.trigger_workflow(repo, "deploy-hugo.yml")
             return {"triggered": True, "result": result}
         except Exception as e:
             log.warning("blog_deploy_failed", repo=repo, error=str(e)[:200])
@@ -320,7 +320,7 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
 
     async def list_blog_posts(self, repo: str, branch: str = "main",
                               content_path: str = "content/posts") -> list[dict]:
-        """列出博客文章。"""
+        """列出博客文章（支持 page bundle 目录型结构）。"""
         owner, repo_name = self._parse_repo(repo)
         resp = await self._request("GET",
             f"{self.BASE}/repos/{owner}/{repo_name}/contents/{content_path}",
@@ -329,17 +329,31 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         if resp.status_code == 404:
             return []
         resp.raise_for_status()
-        files = [
-                {
-                    "name":     f["name"],
-                    "path":     f["path"],
-                    "size":     f["size"],
-                    "html_url": f["html_url"],
-                }
-                for f in resp.json()
-                if f["type"] == "file" and f["name"].endswith(".md")
-            ]
-        return files
+        posts: list[dict] = []
+        for item in resp.json():
+            if item["type"] == "file" and item["name"].endswith(".md"):
+                posts.append({
+                    "name":     item["name"],
+                    "path":     item["path"],
+                    "size":     item["size"],
+                    "html_url": item["html_url"],
+                })
+            elif item["type"] == "dir":
+                # page bundle: 目录内查找 index.md
+                inner = await self._request("GET",
+                    f"{self.BASE}/repos/{owner}/{repo_name}/contents/{item['path']}",
+                    params={"ref": branch},
+                )
+                if inner.status_code == 200:
+                    for f in inner.json():
+                        if f["type"] == "file" and f["name"] == "index.md":
+                            posts.append({
+                                "name":     f["name"],
+                                "path":     f["path"],
+                                "size":     f["size"],
+                                "html_url": f["html_url"],
+                            })
+        return posts
 
     async def get_blog_post(self, repo: str, path: str, branch: str = "main") -> dict:
         """读取博文内容（解码 base64）。"""

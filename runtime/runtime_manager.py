@@ -2,12 +2,13 @@
 runtime/runtime_manager.py — Goal Runtime entrypoint.
 
 This manager is the migration bridge between the existing chat workflow and the
-new Goal Runtime. Only selected intents (initially blog_write) are routed into
-GoalManager + ExecutionEngine.
+new Goal Runtime. Selected intents are converted into persistent goals and then
+submitted to RuntimeTaskQueue so the chat handler can return immediately.
 """
 from __future__ import annotations
 
 from runtime.intent_router import RuntimeIntentRouter
+from runtime.task_queue import RuntimeTaskQueue
 
 
 class RuntimeManager:
@@ -17,11 +18,13 @@ class RuntimeManager:
         self,
         *,
         goal_manager,
-        execution_engine,
+        execution_engine=None,
+        queue: RuntimeTaskQueue | None = None,
         intent_router: RuntimeIntentRouter | None = None,
     ) -> None:
         self.goal_manager = goal_manager
-        self.execution_engine = execution_engine
+        self.execution_engine = execution_engine  # kept for compatibility; Worker owns execution now
+        self.queue = queue or RuntimeTaskQueue(max_active=1)
         self.intent_router = intent_router or RuntimeIntentRouter()
 
     async def handle_message(
@@ -47,14 +50,31 @@ class RuntimeManager:
             intent=route.intent,
         )
 
-        await self.execution_engine.run_goal(goal_id)
-
-        goal = self.goal_manager.get_goal(goal_id)
+        item = await self.queue.submit(
+            goal_id=goal_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            priority=self._priority_for_intent(route.intent),
+            meta={
+                "intent": route.intent,
+                "reason": route.reason,
+            },
+        )
 
         return {
             "handled": True,
             "goal_id": goal_id,
             "intent": route.intent,
-            "status": goal.get("status"),
+            "status": "accepted",
+            "queue_status": item.status,
             "summary": self.goal_manager.summary(goal_id),
         }
+
+    async def queue_snapshot(self) -> dict:
+        return await self.queue.snapshot()
+
+    @staticmethod
+    def _priority_for_intent(intent: str) -> int:
+        if intent == "blog_write":
+            return 50
+        return 100

@@ -88,6 +88,19 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_pkb_url("ingest"), "https://example.com/api/notes")
             self.assertEqual(_pkb_url("default"), "https://example.com/api/pkb")
 
+    def test_pkb_health_url_derives_from_search_route(self) -> None:
+        from handlers.message import _pkb_health_url
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PKB_SEARCH_URL": "https://example.com/api/pkb/search",
+                "VERCEL_API_URL": "https://fallback.example.com/api/pkb",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_pkb_health_url(), "https://example.com/api/pkb/health")
+
     def test_pkb_error_detail_prefers_json_error(self) -> None:
         from handlers.message import _pkb_error_detail
 

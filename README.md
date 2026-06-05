@@ -29,7 +29,7 @@ Lark WebSocket
 ## 核心特性
 
 - 低资源：适配 e2-micro，尽量减少常驻内存和外部依赖
-- 高韧性：`/status`、`/health`、`/restart`、`/journal`、`/backup`、`/restore` 等大模型无关运维指令可独立工作
+- 高韧性：`/status`、`/restart`、`/journal`、`/backup`、`/restore` 等大模型无关运维指令可独立工作
 - 强检索：`/search` 支持单个 Tavily key 结合 Vercel 聚合，并在失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant
 - 个人知识库：以 `#` 开头的消息可直接录入，`/pkb` 和模型工具可检索已记录内容
 - 可运营：博客发布、GitHub Actions、Issue/PR、文件管理可通过统一工具链完成
@@ -47,7 +47,7 @@ Lark WebSocket
 2. 用 `#` 消息录入灵感、问题和事实，再用 `/pkb` 快速检索
 3. 用 `/mem set` 记录长期偏好、选题和成功模式
 4. 用博客工具写入内容，必要时触发 `deploy-hugo.yml`
-5. 用 `/status`、`/health`、`/backup`、`/restore` 保持 VPS 稳定运行
+5. 用 `/status`、`/backup`、`/restore` 保持 VPS 稳定运行
 
 ## 设计原则
 
@@ -57,13 +57,13 @@ Lark WebSocket
 
 ## 使用方式
 
-1. 用 `/status` 和 `/health` 快速判断服务是否健康
+1. 用 `/status` 快速判断服务是否健康
 2. 用 `/search`、`#` 笔记和 `/pkb` 沉淀并检索碎片信息与个人知识体系
 3. 用博客工具写入内容，必要时触发 `deploy-hugo.yml`
 4. 用 `/backup`、`/restore`、`/restart` 保持低成本长期稳定运行
 5. 当模型失效时，继续用大模型无关指令完成运维和发布
 
-> `/search`、`/status`、`/health`、博客发布和 `/schedule` 系列操作都会优先返回卡片，方便在 Lark 里快速扫读和确认结果。
+> `/search`、`/status`、博客发布和 `/schedule` 系列操作都会优先返回卡片，方便在 Lark 里快速扫读和确认结果。
 
 ## 开源协作
 
@@ -160,6 +160,7 @@ GCP_LOCATION=us-central1              # Vertex AI 区域
 LARK_APP_ID=cli_xxxxxxxxxx
 LARK_APP_SECRET=xxxxxxxxxx
 LARK_DOMAIN=https://open.feishu.cn   # 飞书国内版
+ADMIN_USERS=ou_xxx,ou_yyy           # 可选；为空则不启用 Lark 用户白名单
 
 # GitHub
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
@@ -176,6 +177,7 @@ TAVILY_API_KEY=tvly-xxxxxxxx
 VERCEL_API_URL=https://your-vercel-app.vercel.app/api/pkb
 PKB_INGEST_URL=https://your-vercel-app.vercel.app/api/pkb       # 可选：覆盖录入接口
 PKB_SEARCH_URL=https://your-vercel-app.vercel.app/api/pkb/search # 可选：覆盖检索接口
+PKB_HEALTH_URL=https://your-vercel-app.vercel.app/api/pkb/health # 可选：覆盖健康检查接口
 API_SECRET=your-api-secret
 ```
 
@@ -251,8 +253,8 @@ CMD ["python", "agent.py"]
 |------|------|------|
 | Shell | `/sh <命令>` | 执行 shell 命令（危险命令需 `/yes` 确认）|
 | Shell | `/sh! <命令>` | 跳过确认强制执行 |
-| 文件 | `/ls [路径]` | 列出目录 |
-| 文件 | `/cat <路径>` | 读取文件内容 |
+| 文件 | `/ls [路径]` | 列出文件区目录 |
+| 文件 | `/cat <路径>` | 读取文件区文件内容 |
 | 文件 | `/rm <路径>` | 删除文件（危险路径直接拦截，其他需确认）|
 | 文件 | `/files` | 列出已接收文件 |
 | 文件 | `/send <路径>` | 发送 VPS 文件到当前对话 |
@@ -264,7 +266,7 @@ CMD ["python", "agent.py"]
 | GitHub | `/posts [repo]` | 列出博客文章 |
 | 搜索 | `/search <关键词>` | Web 搜索（Tavily 优先，多后端自动 failover）|
 | 系统 | `/status` | 系统状态（内存/磁盘/进程）|
-| 系统 | `/health` | 健康诊断（WS/SQLite/资源）|
+| 系统 | `/health` | 同 `/status`，兼容旧入口 |
 | 系统 | `/logs [error\|warning] [小时数]` | 查询错误日志回溯 |
 | 系统 | `/restart` | 重启 luck-agent 服务 |
 | 系统 | `/journal [小时数]` | systemd 日志回溯 |
@@ -356,7 +358,7 @@ git pull && sudo systemctl restart luck-agent
 
 ## 常见故障
 
-- Lark 发消息失败：先看 `/status` 和 `/health`，再查 `/logs error 24`
+- Lark 发消息失败：先看 `/status`，再查 `/logs error 24`
 - 文件发送失败：优先确认 Lark 权限、上传目录和文件大小限制
 - 搜索结果为空：先缩小关键词，必要时换具体实体名、版本号或时间范围
 - 博客发布失败：先看 GitHub 返回的错误，再查 `/runs` 和本地 `git status`
@@ -371,7 +373,7 @@ git pull && sudo systemctl restart luck-agent
 1. `/search <关键词>`：看搜索卡是否返回，重点确认标题、来源和前几条结果可在手机端一屏扫完。
 2. `#` 录入 + `/pkb` 检索：先发一条 `#` 笔记，确认回复“已记录”，再用 `/pkb` 查回同一条内容。
 3. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy-hugo.yml` 已触发。
-4. `/status` 和 `/health`：检查总览卡与诊断卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务。
+4. `/status`：检查总览卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务；`/health` 应返回同一张卡。
 5. `/schedule add|list|pause|resume|cancel`：先建一个 60 秒以上的 interval 任务，再试 `list`、`pause`、`resume`、`cancel`，确认都只作用于当前用户，并检查卡片里的下一次触发时间/ETA。
 6. `/send <file>`：先发送一个小文件，确认 Lark 中能收到文件卡，并且本地路径与文件名正确。
 

@@ -26,12 +26,21 @@ if TYPE_CHECKING:
 
 log = get_logger()
 
+AGENT_REPO = "caozuohua/luck-agent"
+AGENT_REPO_DIR = Path(__file__).resolve().parents[1]
+
+
+def _remote_matches_repo(remote_url: str, repo: str) -> bool:
+    normalized = remote_url.strip().removesuffix(".git").replace(":", "/")
+    return normalized.endswith(f"github.com/{repo}") or normalized.endswith(repo)
+
+
 HELP_TEXT = """
 [直接指令(大模型无关)]
 
 最常用
 /status — 运行状态总览（内存/磁盘/进程/任务）
-/health — 健康诊断（WS/SQLite/资源）
+/health — 同 /status（兼容旧入口）
 /restart — 重启 luck-agent 服务
 /journal [小时数] — systemd 日志回溯
 /backup — 备份 SQLite 和记忆配置
@@ -48,8 +57,8 @@ Shell 执行
 /sh! <命令> — 跳过确认直接执行
 
 文件操作
-/ls [路径] — 列出文件(运维友好，支持任意路径)
-/cat <路径> — 读取文件内容
+/ls [路径] — 列出文件区目录
+/cat <路径> — 读取文件区文件内容
 /rm <路径> — 删除文件(危险路径直接拦截，其他需确认)
 /files — 列出已上传文件
 /send <路径> — 发送 VPS 文件到 Lark
@@ -114,6 +123,8 @@ class CommandHandler:
         self.scheduler = None   # 由 agent.py 启动后注入
         self.db_log    = None   # 由 agent.py 启动后注入
         self.health    = None   # 由 agent.py 启动后注入
+        from tools.search_tools import SearchTools
+        self.searcher  = SearchTools()
 
         # 待确认的危险命令(防误删)
         self._pending_dangerous: dict[str, str] = {}  # user_id → command
@@ -190,7 +201,7 @@ class CommandHandler:
                 await self._handle_status(user_id, chat_id)
 
             elif cmd == "/health":
-                await self._handle_health(chat_id)
+                await self._handle_health(user_id, chat_id)
 
             elif cmd == "/logs":
                 await self._handle_logs(chat_id, args)
@@ -291,23 +302,22 @@ class CommandHandler:
 
     # ── 文件 ──────────────────────────────────────────────────────────
     async def _handle_ls(self, chat_id: str, path: str) -> None:
-        # 直接走 shell，运维方便，不受 FileManager 沙箱限制
         target = path or "."
-        result = await self.shell.run(f"ls -lah {target}")
-        if result["returncode"] != 0:
-            await self.reply(chat_id, text=f"❌ `{target}` 不存在或无法访问。")
-        else:
-            await self.reply(chat_id, text=f"**`{target}`**\n```\n{result['stdout']}\n```")
+        try:
+            files = self.files.list_dir(target)
+            await self.reply(chat_id, card=self.card.file_list(files, title=f"VPS 文件列表：{target}"))
+        except Exception as e:
+            await self.reply(chat_id, text=f"❌ `{target}` 不存在或无法访问：{e}")
 
     async def _handle_cat(self, chat_id: str, path: str) -> None:
         if not path:
             await self.reply(chat_id, text="用法：`/cat <文件路径>`")
             return
-        result = await self.shell.run(f"cat {path}")
-        if result["returncode"] != 0:
-            await self.reply(chat_id, text=f"❌ 无法读取 `{path}`：{result['stderr']}")
+        result = self.files.read_file(path)
+        if "error" in result:
+            await self.reply(chat_id, text=f"❌ {result['error']}")
         else:
-            await self.reply(chat_id, text=f"```\n{result['stdout']}\n```")
+            await self.reply(chat_id, text=f"**`{result.get('path', path)}`**\n```\n{result.get('content', '')}\n```")
 
     async def _handle_rm(self, user_id: str, chat_id: str, path: str) -> None:
         if not path:
@@ -379,7 +389,12 @@ class CommandHandler:
             return
 
         # add → commit → push(用 run_shell 多行命令，run_script 已删除)
-        script = f"cd {work_dir} && git add -A && git commit -m \"{message}\" && git push"
+        script = (
+            f"cd {shlex.quote(work_dir)} && "
+            f"git add -A && "
+            f"git commit -m {shlex.quote(message)} && "
+            "git push"
+        )
         result = await self.shell.run(script)
         if result["returncode"] == 0:
             # 记录常用 git 目录到 memory
@@ -422,9 +437,7 @@ class CommandHandler:
             return
         await self.reply(chat_id, text=f"⏳ 搜索中：`{query}`…")
         try:
-            from tools.search_tools import SearchTools
-            searcher = SearchTools()
-            result = await searcher.search(query)
+            result = await self.searcher.search(query)
             if "error" in result:
                 await self.reply(chat_id, text=f"❌ 搜索失败：{result['error']}")
             else:
@@ -532,31 +545,29 @@ class CommandHandler:
         # 进程数
         ps_result = await self.shell.run("ps aux | wc -l")
         procs = ps_result["stdout"].strip() if ps_result["returncode"] == 0 else "?"
+        try:
+            from handlers.message import check_pkb_health
+            pkb_health = await check_pkb_health()
+        except Exception as e:
+            pkb_health = {"status": "unknown", "detail": str(e)[:120]}
         extra = {
             "ws_online": ws_online,
             "ws_last_ok": int(time.time() - ws_last_ok) if ws_last_ok else None,
             "db_path": self.memory.db_path,
+            "upload_dir": str(self.bridge.storage),
+            "shell_work_dir": str(self.shell.work_dir),
             "backup_count": backup_count,
             "backup_dir": str(backup_dir),
+            "pkb_status": pkb_health.get("status", "unknown"),
+            "pkb_detail": pkb_health.get("detail", ""),
         }
         await self.reply(
             chat_id,
             card=self.card.system_status({**stats, **extra}, tasks, disk, mem, procs),
         )
 
-    async def _handle_health(self, chat_id: str) -> None:
-        db_size_mb = Path(self.memory.db_path).stat().st_size / 1024 / 1024 if Path(self.memory.db_path).exists() else 0
-        backup_dir = Path(self.memory.db_path).parent / "backups"
-        backups = sorted(backup_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True) if backup_dir.exists() else []
-        await self.reply(chat_id, card=self.card.health_status({
-            "db_path": self.memory.db_path,
-            "upload_dir": self.bridge.storage,
-            "shell_work_dir": self.shell.work_dir,
-            "ws_online": getattr(self.health, "_ws_online", "unknown"),
-            "backup_count": len(backups),
-            "backup_dir": str(backup_dir),
-            "hint": "排障顺序：先看 `/logs error 24`，再看 `/status`，必要时 `/restart`。",
-        }))
+    async def _handle_health(self, user_id: str, chat_id: str) -> None:
+        await self._handle_status(user_id, chat_id)
 
     async def _handle_restart(self, chat_id: str) -> None:
         await self.reply(chat_id, text="⏳ 重启 luck-agent 服务…")
@@ -647,13 +658,43 @@ class CommandHandler:
         await self.reply(chat_id, text="\n".join(lines))
 
     async def _handle_upgrade(self, chat_id: str) -> None:
-        await self.reply(chat_id, text="⏳ 拉取远程并重启…")
-        result = await self.shell.run("git pull && sudo systemctl restart luck-agent")
-        if result["returncode"] == 0:
-            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+        repo_dir = str(AGENT_REPO_DIR)
+        await self.reply(chat_id, text=f"⏳ 拉取 `{AGENT_REPO}` 并重启…")
+
+        origin = await self.shell.run("git config --get remote.origin.url", cwd=repo_dir)
+        if origin["returncode"] != 0:
+            await self.reply(chat_id, text=f"❌ 无法确认当前仓库：\n```\n{origin['stdout']}\n{origin['stderr']}\n```")
+            return
+
+        remote_url = (origin.get("stdout") or "").strip()
+        if not _remote_matches_repo(remote_url, AGENT_REPO):
+            await self.reply(
+                chat_id,
+                text=(
+                    f"❌ 当前目录不是 `{AGENT_REPO}`，已停止升级。\n"
+                    f"目录：`{repo_dir}`\n"
+                    f"origin：`{remote_url or 'unknown'}`"
+                ),
+            )
+            return
+
+        pull = await self.shell.run("git pull --ff-only", cwd=repo_dir)
+        if pull["returncode"] != 0:
+            await self.reply(chat_id, text=f"❌ 拉取失败：\n```\n{pull['stdout']}\n{pull['stderr']}\n```")
+            return
+
+        restart = await self.shell.run("sudo systemctl restart luck-agent", cwd=repo_dir)
+        if restart["returncode"] == 0:
+            await self.reply(chat_id, text=f"✅ `{AGENT_REPO}` 已更新并重启。\n```\n{pull['stdout']}\n```")
         else:
-            hint = self.shell.explain_permission_issue(result["stderr"])
-            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
+            hint = self.shell.explain_permission_issue(restart["stderr"])
+            await self.reply(
+                chat_id,
+                text=(
+                    f"⚠️ `{AGENT_REPO}` 已拉取，但重启失败：\n"
+                    f"```\n{restart['stdout']}\n{restart['stderr']}\n```\n💡 {hint}"
+                ),
+            )
 
     async def _handle_rollback(self, chat_id: str, args: str) -> None:
         commit = args.strip()

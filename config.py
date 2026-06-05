@@ -139,6 +139,7 @@ class Config:
     LARK_APP_SECRET: str = ""
     # 飞书国内版：https://open.feishu.cn  |  Lark国际版：https://open.larksuite.com
     LARK_DOMAIN:     str = "https://open.larksuite.com"
+    ADMIN_USERS:     set[str] = set()
 
     # GitHub
     GITHUB_TOKEN:         str = ""
@@ -181,6 +182,8 @@ class Config:
         self.GCP_KEY_FILE         = _opt("GOOGLE_APPLICATION_CREDENTIALS")
         self.GITHUB_DEFAULT_OWNER = _opt("GITHUB_OWNER")
         self.LARK_DOMAIN          = _opt("LARK_DOMAIN", "https://open.larksuite.com")
+        from core.auth import normalize_admin_users
+        self.ADMIN_USERS          = normalize_admin_users(_opt("ADMIN_USERS"))
         self.HUGO_REPO            = _opt("HUGO_REPO",           "caozuohua/caozuohua.github.io")
         self.HUGO_BRANCH          = _opt("HUGO_BRANCH",         "main")
         self.HUGO_CONTENT_PATH    = _opt("HUGO_CONTENT_PATH",   "content/posts")

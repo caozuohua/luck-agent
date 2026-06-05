@@ -15,6 +15,7 @@ import os
 import sqlite3
 import time
 import threading
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
@@ -52,19 +53,31 @@ class DBLogHandler(logging.Handler):
         super().__init__(level=logging.WARNING)
         self.db_path = db_path
         self._local  = threading.local()
+        self._queue: deque[tuple[str, str, str, str, str, float]] = deque(maxlen=100)
+        self._queue_lock = threading.Lock()
+        self._flush_event = threading.Event()
+        self._closed = False
         self._init()
+        self._writer = threading.Thread(
+            target=self._writer_loop,
+            name="db-log-flusher",
+            daemon=True,
+        )
+        self._writer.start()
 
     @contextmanager
     def _conn(self):
-        if not getattr(self._local, "conn", None):
-            self._local.conn = sqlite3.connect(
-                self.db_path, check_same_thread=False, timeout=5
-            )
+        conn = sqlite3.connect(
+            self.db_path, check_same_thread=False, timeout=5
+        )
         try:
-            yield self._local.conn
-            self._local.conn.commit()
+            yield conn
+            conn.commit()
         except Exception:
-            self._local.conn.rollback()
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init(self) -> None:
         with self._conn() as conn:
@@ -82,16 +95,48 @@ class DBLogHandler(logging.Handler):
             # 从 extra 字段提取 user_id 和 source
             user_id = str(getattr(record, "user_id", ""))[:50]
             source  = str(getattr(record, "source",  record.module))[:50]
-            self._write(level, event, detail, user_id, source)
+            created_at = time.time()
+            with self._queue_lock:
+                self._queue.append((level, event, detail, user_id, source, created_at))
+                should_flush = len(self._queue) >= 20 or record.levelno >= logging.ERROR
+            if should_flush:
+                self._flush_event.set()
         except Exception:
             pass   # 日志写入失败绝不影响主流程
 
+    def _writer_loop(self) -> None:
+        while not self._closed:
+            self._flush_event.wait(3.0)
+            self._flush_event.clear()
+            self.flush()
+
+    def flush(self) -> None:
+        try:
+            with self._queue_lock:
+                batch = list(self._queue)
+                self._queue.clear()
+            if batch:
+                self._write_many(batch)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self._closed = True
+        self._flush_event.set()
+        if getattr(self, "_writer", None) and self._writer.is_alive():
+            self._writer.join(timeout=1.0)
+        self.flush()
+        super().close()
+
     def _write(self, level: str, event: str, detail: str,
                user_id: str, source: str) -> None:
+        self._write_many([(level, event, detail, user_id, source, time.time())])
+
+    def _write_many(self, rows: list[tuple[str, str, str, str, str, float]]) -> None:
         with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO error_log (level, event, detail, user_id, source) VALUES (?,?,?,?,?)",
-                (level, event, detail, user_id, source),
+            conn.executemany(
+                "INSERT INTO error_log (level, event, detail, user_id, source, created_at) VALUES (?,?,?,?,?,?)",
+                rows,
             )
         # 自动裁剪：保留最近 2000 条
         with self._conn() as conn:
@@ -107,6 +152,7 @@ class DBLogHandler(logging.Handler):
         查询最近 N 小时的错误日志。
         level: '' = 全部, 'error' = 仅错误, 'warning' = 仅警告
         """
+        self.flush()
         since = time.time() - hours * 3600
         with self._conn() as conn:
             if level:
@@ -128,6 +174,7 @@ class DBLogHandler(logging.Handler):
         )) for r in rows]
 
     def stats(self, hours: int = 24) -> dict:
+        self.flush()
         since = time.time() - hours * 3600
         with self._conn() as conn:
             total   = conn.execute(

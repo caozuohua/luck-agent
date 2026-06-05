@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 
 MAX_TOOL_ROUNDS = 6   # 防止无限工具循环
 VALID_NOTE_TYPES = {"idea", "question", "fact", "practice"}
+PKB_SEARCH_ACTION = "search"
+PKB_INGEST_ROUTE = "/api/note 或 /api/pkb"
+PKB_SEARCH_ROUTE = "/api/pkb/search"
 
 
 def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
@@ -79,6 +82,23 @@ def _pkb_url(action: str) -> str:
     else:
         url = ""
     return (url or os.getenv("VERCEL_API_URL", "").strip()).rstrip("/")
+
+
+def _pkb_health_url() -> str:
+    explicit = os.getenv("PKB_HEALTH_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    search_url = os.getenv("PKB_SEARCH_URL", "").strip().rstrip("/")
+    if search_url.endswith(PKB_SEARCH_ROUTE):
+        return search_url[: -len(PKB_SEARCH_ROUTE)] + "/api/pkb/health"
+
+    base_url = os.getenv("VERCEL_API_URL", "").strip().rstrip("/")
+    if base_url.endswith("/api/pkb"):
+        return base_url + "/health"
+    if base_url:
+        return base_url.rstrip("/") + "/api/pkb/health"
+    return ""
 
 
 def _pkb_env(action: str = "default") -> tuple[str, str] | None:
@@ -199,6 +219,39 @@ async def _pkb_post(payload: dict[str, Any], action: str = "default") -> httpx.R
         return None
 
 
+async def check_pkb_health() -> dict:
+    url = _pkb_health_url()
+    if not url:
+        return {"status": "unknown", "detail": "PKB_HEALTH_URL/VERCEL_API_URL 未配置"}
+
+    try:
+        timeout = httpx.Timeout(3.0, connect=2.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+    except Exception as e:
+        return {"status": "down", "detail": str(e)[:160], "url": url}
+
+    if not resp.is_success:
+        return {"status": "down", "detail": f"HTTP {resp.status_code}", "url": url}
+
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    supabase = data.get("supabase")
+    has_secret = data.get("hasApiSecret")
+    if data.get("ok") and supabase is not False:
+        detail = "Supabase ok" if supabase is True else "PKB ok"
+        if has_secret is False:
+            detail += "，API_SECRET 未配置"
+        return {"status": "ok", "detail": detail, "url": url}
+
+    return {"status": "degraded", "detail": f"supabase={supabase}, secret={has_secret}", "url": url}
+
+
 def _pkb_error_detail(resp: httpx.Response) -> str:
     try:
         data = resp.json()
@@ -293,12 +346,12 @@ async def search_pkb(query: str, limit: int = 5) -> dict:
     if not resp.is_success:
         if resp.status_code == 404:
             url = _pkb_url("search")
-            return {
-                "error": (
-                    f"PKB 检索接口不存在(404)：{url}。"
-                    "请确认 PKB_SEARCH_URL，或把 VERCEL_API_URL 改成真实的检索 API route。"
-                )
-            }
+        return {
+            "error": (
+                f"PKB 检索接口不存在(404)：{url}。"
+                    f"请确认 PKB_SEARCH_URL 指向 {PKB_SEARCH_ROUTE}。"
+            )
+        }
         return {"error": f"{resp.status_code}: {resp.text[:300]}"}
 
     try:
@@ -348,6 +401,8 @@ class AgentMessageHandler:
         self.file_mgr = file_mgr
         self.card     = card
         self.reply    = lark_reply_fn
+        from tools.search_tools import SearchTools
+        self.searcher = SearchTools()
 
         # 合并所有工具 schema
         from tools.github_tools import GITHUB_TOOL_SCHEMAS
@@ -355,6 +410,19 @@ class AgentMessageHandler:
         from tools.search_tools import SEARCH_TOOL_SCHEMAS
         from core.scheduler import SCHEDULE_TOOL_SCHEMAS
         self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + SCHEDULE_TOOL_SCHEMAS + [
+            {
+                "name": "write_pkb",
+                "description": "写入个人知识库笔记。仅当用户明确要求保存、记录、录入到知识库/PKB/笔记时使用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "要保存的笔记正文"},
+                        "note_type": {"type": "string", "enum": ["idea", "question", "fact", "practice"], "description": "笔记类型"},
+                        "topics": {"type": "array", "items": {"type": "string"}, "description": "主题标签"},
+                    },
+                    "required": ["content"],
+                },
+            },
             {
                 "name": "search_pkb",
                 "description": "检索个人知识库中的已记录笔记。适合查找历史想法、问题、事实和实践记录。",
@@ -649,9 +717,7 @@ class AgentMessageHandler:
 
         # ── 搜索工具 ──
         elif name == "search_web":
-            from tools.search_tools import SearchTools
-            searcher = SearchTools()
-            result = await searcher.search(args.get("query", ""))
+            result = await self.searcher.search(args.get("query", ""))
             return result
 
         elif name == "search_pkb":
@@ -660,6 +726,16 @@ class AgentMessageHandler:
             if not query:
                 return {"error": "缺少 query"}
             return await search_pkb(query, limit=limit)
+
+        elif name == "write_pkb":
+            content = (args.get("content") or "").strip()
+            note_type = (args.get("note_type") or "idea").strip()
+            if note_type not in VALID_NOTE_TYPES:
+                note_type = "idea"
+            topics = normalize_topics(args.get("topics") or [])
+            if not content:
+                return {"error": "缺少 content"}
+            return await forward_to_pkb_result(content, note_type, topics)
 
         elif name == "schedule_task":
             if not self.scheduler:
@@ -782,6 +858,8 @@ class AgentMessageHandler:
                 item_bits = format_pkb_result_items(items, limit=3)
                 if item_bits:
                     lines.append("\n".join(item_bits))
+            elif tool == "write_pkb":
+                lines.append(f"🗃️ 个人知识库已记录：`{res.get('type', 'idea')}`")
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

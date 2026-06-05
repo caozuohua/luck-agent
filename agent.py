@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 import lark_oapi as lark
+from core.auth import is_authorized_user
 from core.log import get_logger
 from handlers.message import forward_to_pkb_result, parse_note_message
 
@@ -357,6 +358,10 @@ class AgentApp:
             user_id    = sender.get("sender_id", {}).get("open_id", "")
 
             if not user_id or not chat_id:
+                return
+
+            if not is_authorized_user(self.cfg, user_id):
+                log.warning("unauthorized_lark_user", user_id=user_id[:8], chat_id=chat_id[:8])
                 return
 
             # WS 心跳：收到消息说明连接正常

@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import re
+import shlex
 import time
 from datetime import datetime
 from typing import Any
@@ -236,19 +237,24 @@ categories: {json.dumps(categories or [], ensure_ascii=False)}
         # 写文件（base64 编码避免 shell 转义问题）
         parent_dir = file_path.rsplit("/", 1)[0] if "/" in file_path else ""
         if parent_dir:
-            await shell.run(f"mkdir -p '{blog_dir}/{parent_dir}'")
+            await shell.run(f"mkdir -p {shlex.quote(f'{blog_dir}/{parent_dir}')}")
         # base64 编码内容避免 shell 转义问题
         import base64 as _b64
         encoded = _b64.b64encode(full_content.encode()).decode()
         result = await shell.run(
-            f"echo '{encoded}' | base64 -d > '{blog_dir}/{file_path}'"
+            f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(f'{blog_dir}/{file_path}')}"
         )
         if result.get("returncode", -1) != 0:
             return {"error": f"写文件失败: {result.get('stderr', '')[:200]}"}
 
         # git push
         commit_msg = f"Add post: {title}"
-        push_cmd = f"cd '{blog_dir}' && git add -A && git commit -m '{commit_msg}' && git push origin {branch}"
+        push_cmd = (
+            f"cd {shlex.quote(blog_dir)} && "
+            f"git add -A && "
+            f"git commit -m {shlex.quote(commit_msg)} && "
+            f"git push origin {shlex.quote(branch)}"
+        )
         result = await shell.run(push_cmd)
         if result.get("returncode", -1) != 0:
             stderr = result.get("stderr", "")[:200]

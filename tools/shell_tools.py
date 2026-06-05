@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import shutil
 import time
 from pathlib import Path
@@ -68,19 +69,30 @@ class ShellExecutor:
             env.update(env_extra)
 
         try:
+            proc_kwargs = {
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+                "cwd": str(run_dir),
+                "env": env,
+            }
+            if os.name == "posix" and hasattr(os, "setsid"):
+                proc_kwargs["preexec_fn"] = os.setsid
             proc = await asyncio.create_subprocess_shell(
                 command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(run_dir),
-                env=env,
+                **proc_kwargs,
             )
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout or self.timeout
                 )
             except asyncio.TimeoutError:
-                proc.kill()
+                if os.name == "posix" and hasattr(os, "killpg"):
+                    try:
+                        os.killpg(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
                 await proc.wait()
                 return {
                     "stdout":     "",

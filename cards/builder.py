@@ -702,11 +702,28 @@ class CardBuilder:
             extra_bits.append(f"心跳 {memory_stats.get('ws_last_ok')}s 前")
         if memory_stats.get("backup_count") is not None:
             extra_bits.append(f"备份 {memory_stats.get('backup_count')} 个")
+        if memory_stats.get("pkb_status"):
+            pkb_text = f"PKB {memory_stats.get('pkb_status')}"
+            if memory_stats.get("pkb_detail"):
+                pkb_text += f"（{memory_stats.get('pkb_detail')}）"
+            extra_bits.append(pkb_text)
         if extra_bits:
             elements.append({"tag": "hr"})
             elements.append({"tag": "div", "fields": [
                 {"is_short": False, "text": {"tag": "lark_md", "content": " · ".join(extra_bits)}},
             ]})
+
+        path_bits = []
+        if memory_stats.get("db_path"):
+            path_bits.append(f"DB `{memory_stats.get('db_path')}`")
+        if memory_stats.get("backup_dir"):
+            path_bits.append(f"备份 `{memory_stats.get('backup_dir')}`")
+        if memory_stats.get("upload_dir"):
+            path_bits.append(f"上传 `{memory_stats.get('upload_dir')}`")
+        if memory_stats.get("shell_work_dir"):
+            path_bits.append(f"Shell `{memory_stats.get('shell_work_dir')}`")
+        if path_bits:
+            elements.append({"tag": "markdown", "content": "<font color='grey'>" + " · ".join(path_bits) + "</font>"})
 
         if mem:
             elements.append({"tag": "hr"})
@@ -748,5 +765,3 @@ class CardBuilder:
     @staticmethod
     def to_json(card: dict) -> str:
         return json.dumps(card, ensure_ascii=False)
-
-

@@ -15,6 +15,7 @@ core/intent_router.py — 意图路由器（零 AI，纯规则）
 #   SHELL_RUN      在 VPS 执行命令/脚本
 #   FILE_OP        VPS 文件读写操作
 #   MEMORY_OP      记忆读写
+#   PKB_WRITE      个人知识库写入
 #   PKB_SEARCH     个人知识库检索
 #   SCHEDULE_OP    定时任务
 #   GIT_PUSH       推送代码
@@ -36,6 +37,7 @@ class Intent(str, Enum):
     SHELL_RUN      = "shell_run"
     FILE_OP        = "file_op"
     MEMORY_OP      = "memory_op"
+    PKB_WRITE      = "pkb_write"
     PKB_SEARCH     = "pkb_search"
     SCHEDULE_OP    = "schedule_op"
     GIT_PUSH       = "git_push"
@@ -132,6 +134,16 @@ _RULES: list[tuple[Intent, float, list[str], list[str]]] = [
         r"(忘掉|忘记|删除).{0,10}(记忆|偏好|信息)",
     ]),
 
+    # 个人知识库写入
+    (Intent.PKB_WRITE, 0.94, [
+        "记到知识库", "写入知识库", "存到知识库", "录入知识库",
+        "记到pkb", "写入pkb", "存到pkb", "录入pkb",
+        "保存到笔记", "记录到笔记", "写到笔记",
+    ], [
+        r"(记|写|存|保存|录入).{0,8}(知识库|pkb|笔记)",
+        r"(知识库|pkb|笔记).{0,8}(记|写|存|保存|录入)",
+    ]),
+
     # 个人知识库检索
     (Intent.PKB_SEARCH, 0.93, [
         "查笔记", "查知识库", "检索笔记", "检索知识库", "知识库",
@@ -196,6 +208,9 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
     Intent.MEMORY_OP: [
         "remember",
         "recall",
+    ],
+    Intent.PKB_WRITE: [
+        "write_pkb",
     ],
     Intent.PKB_SEARCH: [
         "search_pkb",
@@ -313,9 +328,9 @@ content/posts/
 遇到权限问题时，优先提示用户改用 sudo -n、systemd service，或者把动作拆成只读检查 + 明确执行两步。
 """,
 
-    Intent.FILE_OP: """
+Intent.FILE_OP: """
 ## 当前任务：VPS 文件操作
-读文件用 run_shell(command="cat /path/to/file") 或 read_file(path="...").
+读文件优先用 read_file(path="...")，列目录优先用 list_files(path="...").
 写文件用 write_file(path="...", content="...").
 注意: 这是 VPS 本地路径, 不是 GitHub 仓库路径.
 """,
@@ -325,6 +340,13 @@ content/posts/
 - 保存信息 : remember(key="...", value="...")
 - 查询信息 : recall(key="...")
 操作完成后简洁确认.
+""",
+
+    Intent.PKB_WRITE: """
+## 当前任务：个人知识库写入
+- 用 write_pkb(content="...", note_type="idea|question|fact|practice", topics=[...]) 写入用户知识库
+- 只写入用户明确要求保存、记录、录入到知识库/PKB/笔记的内容
+- 写入后简要确认类型、主题和结果，不要重复大段原文
 """,
 
     Intent.PKB_SEARCH: """

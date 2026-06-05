@@ -11,7 +11,6 @@ will consume the GoalManager API in later PRs.
 from __future__ import annotations
 
 import time
-from dataclasses import asdict
 from typing import Any
 
 from core.log import get_logger
@@ -273,6 +272,91 @@ class GoalManager:
     def get_steps(self, goal_id: str) -> list[dict]:
         self.get_goal(goal_id)
         return self.memory.get_goal_steps(goal_id)
+
+    def progress(self, goal_id: str) -> dict:
+        """Return computed progress for cards, commands, and future runtime decisions."""
+        goal = self.get_goal(goal_id)
+        steps = self.memory.get_goal_steps(goal_id)
+        total = len(steps)
+        done = sum(1 for s in steps if s.get("status") == "done")
+        failed = sum(1 for s in steps if s.get("status") == "failed")
+        running = sum(1 for s in steps if s.get("status") == "running")
+        blocked = goal.get("status") == "blocked" or any(s.get("status") == "blocked" for s in steps)
+        percent = 100 if goal.get("status") == "done" else int(done * 100 / total) if total else 0
+        return {
+            "goal_id": goal_id,
+            "title": goal.get("title", ""),
+            "intent": goal.get("intent", "general"),
+            "status": goal.get("status", ""),
+            "current_step": goal.get("current_step", ""),
+            "total_steps": total,
+            "done_steps": done,
+            "failed_steps": failed,
+            "running_steps": running,
+            "blocked": blocked,
+            "percent": percent,
+            "error": goal.get("error", ""),
+            "updated_at": goal.get("updated_at"),
+        }
+
+    def summary(self, goal_id: str) -> str:
+        """Return a concise human-readable goal summary for Lark cards or commands."""
+        p = self.progress(goal_id)
+        bits = [
+            f"目标：{p['title']}",
+            f"状态：{p['status']}",
+            f"进度：{p['done_steps']}/{p['total_steps']} ({p['percent']}%)",
+        ]
+        if p.get("current_step"):
+            bits.append(f"当前步骤：{p['current_step']}")
+        if p.get("error"):
+            bits.append(f"问题：{p['error']}")
+        return "\n".join(bits)
+
+    def timeline(self, goal_id: str) -> list[dict]:
+        """Return ordered timeline records derived from goal and goal_steps."""
+        goal = self.get_goal(goal_id)
+        rows: list[dict] = [
+            {
+                "type": "goal_created",
+                "goal_id": goal_id,
+                "title": goal.get("title", ""),
+                "status": goal.get("status", ""),
+                "at": goal.get("created_at"),
+            }
+        ]
+        for step in self.memory.get_goal_steps(goal_id):
+            rows.append({
+                "type": "step",
+                "goal_id": goal_id,
+                "step_id": step.get("step_id"),
+                "name": step.get("name"),
+                "status": step.get("status"),
+                "error": step.get("error", ""),
+                "started_at": step.get("started_at"),
+                "finished_at": step.get("finished_at"),
+                "at": step.get("started_at") or step.get("created_at"),
+            })
+        rows.append({
+            "type": "goal_updated",
+            "goal_id": goal_id,
+            "status": goal.get("status", ""),
+            "current_step": goal.get("current_step", ""),
+            "error": goal.get("error", ""),
+            "at": goal.get("updated_at"),
+        })
+        return sorted(rows, key=lambda item: item.get("at") or 0)
+
+    def resume_all_recoverable(self, user_id: str | None = None) -> list[dict]:
+        """Resume all interrupted/blocked/pending goals for a user or globally."""
+        resumed: list[dict] = []
+        for status in RESUMABLE_STATUSES:
+            for goal in self.memory.list_goals(user_id=user_id, status=status, limit=100):
+                try:
+                    resumed.append(self.resume_goal(goal["goal_id"]))
+                except GoalError as e:
+                    log.warning("goal_resume_skipped", goal_id=goal.get("goal_id"), error=str(e))
+        return resumed
 
     def recover_interrupted_goals(self, stale_after_seconds: int = 300) -> list[dict]:
         """Mark stale running goals as interrupted and return recoverable goals."""

@@ -202,6 +202,8 @@ class AgentApp:
         self._cmd_handler                           = None
         self._msg_handler                           = None
         self._file_handler                          = None
+        self._runtime_manager                       = None
+        self._runtime_workers                       = None
 
     def _init_components(self) -> None:
         """所有组件在 secrets 加载完成后初始化。"""
@@ -217,6 +219,13 @@ class AgentApp:
         from handlers.command   import CommandHandler
         from handlers.message   import AgentMessageHandler
         from handlers.file_handler import FileMessageHandler
+        from controllers.blog_controller import BlogController
+        from core.execution_engine import ExecutionEngine
+        from core.goal import GoalManager
+        from core.supervisor import Supervisor
+        from runtime.runtime_manager import RuntimeManager
+        from runtime.task_queue import RuntimeTaskQueue
+        from runtime.worker import WorkerManager
 
         cfg = self.cfg
 
@@ -291,6 +300,25 @@ class AgentApp:
             bridge=self._bridge,
             card=CardBuilder,
             lark_reply_fn=reply_fn,
+        )
+
+        # Goal Runtime: selected intents are persisted and queued for background execution.
+        goal_manager = GoalManager(self._memory)
+        runtime_queue = RuntimeTaskQueue(max_active=1)
+        execution_engine = ExecutionEngine(
+            goal_manager=goal_manager,
+            supervisor=Supervisor(memory=self._memory),
+        )
+        execution_engine.register_controller(BlogController())
+        self._runtime_manager = RuntimeManager(
+            goal_manager=goal_manager,
+            execution_engine=execution_engine,
+            queue=runtime_queue,
+        )
+        self._runtime_workers = WorkerManager(
+            queue=runtime_queue,
+            execution_engine=execution_engine,
+            worker_count=1,
         )
 
         # 调度器：定时任务触发 → 注入 AgentMessageHandler
@@ -458,6 +486,23 @@ class AgentApp:
                 if handled:
                     return
 
+            # Goal Runtime gets first refusal for migrated intents.
+            runtime_result = await self._runtime_manager.handle_message(
+                user_id=user_id,
+                chat_id=chat_id,
+                text=text,
+            )
+            if runtime_result["handled"]:
+                await self._sender.send(
+                    chat_id,
+                    text=(
+                        f"任务已接受：`{runtime_result['goal_id']}`\n"
+                        f"{runtime_result['summary']}"
+                    ),
+                    reply_to=message_id,
+                )
+                return
+
             # 转给 AI
             asyncio.create_task(
                 self._msg_handler.handle(user_id, chat_id, message_id, text,
@@ -481,6 +526,7 @@ class AgentApp:
         await self._queue.start()
         await self._scheduler.start()
         await self._health.start()
+        self._runtime_workers.start()
 
         # 构建 WS 事件分发
         def _make_lark_handler():
@@ -530,6 +576,7 @@ class AgentApp:
         await stop_event.wait()
 
         log.info("shutting_down")
+        await self._runtime_workers.stop()
         await self._queue.stop()
         await self._scheduler.stop()
         await self._health.stop()

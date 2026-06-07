@@ -32,3 +32,4 @@ workspace/
 .idea/
 .vscode/
 *.swp
+.worktrees/

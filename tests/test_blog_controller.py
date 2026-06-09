@@ -11,8 +11,23 @@ class FakeRouter:
         self.calls: list[dict] = []
         self.text = text
 
-    async def chat(self, **kwargs):
-        self.calls.append(kwargs)
+    async def chat(
+        self,
+        model_name: str,
+        messages: list[dict],
+        tools_schema: list[dict] | None = None,
+        system: str = "",
+        user_id: str = "",
+    ) -> dict:
+        self.calls.append(
+            {
+                "model_name": model_name,
+                "messages": messages,
+                "tools_schema": tools_schema,
+                "system": system,
+                "user_id": user_id,
+            }
+        )
         return {
             "text": self.text,
             "tool_calls": [],
@@ -43,7 +58,10 @@ class ModelContentGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(router.calls[0]["tools_schema"], [])
         self.assertEqual(router.calls[0]["model_name"], "fake-model")
         self.assertEqual(router.calls[0]["user_id"], "u1")
-        self.assertIn("中文", router.calls[0]["system"])
+        self.assertIn("遵循用户请求的语言", router.calls[0]["system"])
+        self.assertNotIn("中文结果", router.calls[0]["system"])
+        self.assertIn("5-10 个具体选题", router.calls[0]["system"])
+        self.assertIn("标题、切入点和目标读者", router.calls[0]["system"])
 
     async def test_generate_falls_back_to_title(self) -> None:
         router = FakeRouter()
@@ -56,6 +74,25 @@ class ModelContentGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             router.calls[0]["messages"],
             [{"role": "user", "content": "使用这个标题"}],
+        )
+
+    async def test_generate_falls_back_to_title_for_blank_source_message(
+        self,
+    ) -> None:
+        router = FakeRouter()
+        generator = ModelContentGenerator(router=router, model_name="fake-model")
+
+        await generator.generate(
+            {
+                "user_id": "u1",
+                "title": "有效标题",
+                "plan": {"source_message": " \t\n "},
+            }
+        )
+
+        self.assertEqual(
+            router.calls[0]["messages"],
+            [{"role": "user", "content": "有效标题"}],
         )
 
     async def test_generate_rejects_empty_input(self) -> None:

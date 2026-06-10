@@ -12,7 +12,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-QueueStatus = Literal["pending", "running", "done", "failed", "cancelled"]
+QueueStatus = Literal["pending", "running", "done", "failed", "interrupted", "cancelled"]
 
 
 @dataclass
@@ -39,6 +39,7 @@ class RuntimeTaskQueue:
         self.max_active = max_active
         self._queue: asyncio.PriorityQueue[tuple[int, float, str]] = asyncio.PriorityQueue()
         self._items: dict[str, RuntimeQueueItem] = {}
+        self._finished_tasks: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def submit(
@@ -59,6 +60,7 @@ class RuntimeTaskQueue:
         )
         async with self._lock:
             self._items[goal_id] = item
+            self._finished_tasks.discard(goal_id)
             await self._queue.put((priority, item.created_at, goal_id))
         return item
 
@@ -68,38 +70,49 @@ class RuntimeTaskQueue:
             async with self._lock:
                 item = self._items.get(goal_id)
                 if not item or item.status != "pending":
-                    self._queue.task_done()
+                    self._finish_task(goal_id)
                     continue
                 item.status = "running"
                 item.started_at = time.time()
                 return item
 
     async def mark_done(self, goal_id: str) -> None:
-        async with self._lock:
-            item = self._items.get(goal_id)
-            if item:
-                item.status = "done"
-                item.finished_at = time.time()
-        self._queue.task_done()
+        await self._mark_terminal(goal_id, status="done")
 
     async def mark_failed(self, goal_id: str, error: str) -> None:
-        async with self._lock:
-            item = self._items.get(goal_id)
-            if item:
-                item.status = "failed"
-                item.error = error
-                item.finished_at = time.time()
-        self._queue.task_done()
+        await self._mark_terminal(goal_id, status="failed", error=error)
+
+    async def mark_interrupted(self, goal_id: str, reason: str) -> None:
+        await self._mark_terminal(goal_id, status="interrupted", error=reason)
+
+    async def mark_cancelled(self, goal_id: str, reason: str) -> None:
+        await self._mark_terminal(goal_id, status="cancelled", error=reason)
 
     async def cancel(self, goal_id: str, reason: str = "cancelled") -> bool:
+        return await self._mark_terminal(goal_id, status="cancelled", error=reason)
+
+    async def _mark_terminal(
+        self,
+        goal_id: str,
+        *,
+        status: QueueStatus,
+        error: str = "",
+    ) -> bool:
         async with self._lock:
             item = self._items.get(goal_id)
             if not item or item.status not in {"pending", "running"}:
                 return False
-            item.status = "cancelled"
-            item.error = reason
+            item.status = status
+            item.error = error
             item.finished_at = time.time()
-            return True
+            self._finish_task(goal_id)
+        return True
+
+    def _finish_task(self, goal_id: str) -> None:
+        if goal_id in self._finished_tasks:
+            return
+        self._finished_tasks.add(goal_id)
+        self._queue.task_done()
 
     async def snapshot(self) -> dict[str, Any]:
         async with self._lock:

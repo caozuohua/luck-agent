@@ -88,6 +88,8 @@ class RuntimeWorker:
         self.state.current_goal_id = item.goal_id
         self.state.updated_at = time.time()
         log.info("runtime_worker_pickup", worker_id=self.worker_id, goal_id=item.goal_id)
+        queue_settled = False
+        goal: dict[str, Any] | None = None
         try:
             try:
                 goal = await self.execution_engine.run_goal(item.goal_id)
@@ -95,7 +97,13 @@ class RuntimeWorker:
                 error = f"{type(exc).__name__}: {exc}"
                 try:
                     goal = self.execution_engine.goal_manager.fail_goal(item.goal_id, error)
-                except Exception:
+                except Exception as persist_error:
+                    log.error(
+                        "runtime_goal_persist_failed",
+                        goal_id=item.goal_id,
+                        error=f"{type(persist_error).__name__}: {persist_error}",
+                        original_error=error,
+                    )
                     goal = {
                         "goal_id": item.goal_id,
                         "user_id": item.user_id,
@@ -105,42 +113,118 @@ class RuntimeWorker:
                         "artifacts": [],
                     }
 
-            status = str(goal.get("status") or "failed")
-            if status == "done":
-                await self.queue.mark_done(item.goal_id)
-                self.state.processed += 1
-                self.state.last_error = ""
-                terminal_error = ""
-            else:
-                terminal_error = str(goal.get("error") or f"goal ended with status {status}")
-                await self.queue.mark_failed(item.goal_id, terminal_error)
-                self.state.failed += 1
-                self.state.last_error = terminal_error
-
-            if self.terminal_callback:
-                try:
-                    await self.terminal_callback(goal)
-                except Exception as notify_error:
-                    log.error(
-                        "runtime_terminal_notify_failed",
-                        goal_id=item.goal_id,
-                        status=status,
-                        error=str(notify_error),
-                    )
-
-            if status == "done":
-                log.info("runtime_goal_done", worker_id=self.worker_id, goal_id=item.goal_id)
-            else:
-                log.error(
-                    "runtime_goal_failed",
-                    worker_id=self.worker_id,
-                    goal_id=item.goal_id,
-                    status=status,
-                    error=terminal_error,
-                )
+            status, terminal_error = await self._account_terminal_goal(item, goal)
+            queue_settled = True
+            await self._notify_terminal_goal(item, goal, status)
+            self._log_terminal_goal(item, status, terminal_error)
+        except asyncio.CancelledError:
+            if not queue_settled:
+                goal = goal or self._persist_interrupted_goal(item)
+                status, terminal_error = await self._account_terminal_goal(item, goal)
+                queue_settled = True
+                await self._notify_terminal_goal(item, goal, status)
+                self._log_terminal_goal(item, status, terminal_error)
+            raise
         finally:
             self.state.current_goal_id = ""
             self.state.updated_at = time.time()
+
+    async def _account_terminal_goal(
+        self,
+        item: RuntimeQueueItem,
+        goal: dict[str, Any],
+    ) -> tuple[str, str]:
+        status = str(goal.get("status") or "failed")
+        if status == "done":
+            await self.queue.mark_done(item.goal_id)
+            self.state.processed += 1
+            self.state.last_error = ""
+            return status, ""
+        if status == "cancelled":
+            terminal_error = str(goal.get("error") or "goal cancelled")
+            await self.queue.mark_cancelled(item.goal_id, terminal_error)
+            self.state.last_error = terminal_error
+            return status, terminal_error
+        if status == "interrupted":
+            terminal_error = str(goal.get("error") or "goal interrupted")
+            await self.queue.mark_interrupted(item.goal_id, terminal_error)
+            self.state.last_error = terminal_error
+            return status, terminal_error
+
+        terminal_error = str(goal.get("error") or f"goal ended with status {status}")
+        await self.queue.mark_failed(item.goal_id, terminal_error)
+        self.state.failed += 1
+        self.state.last_error = terminal_error
+        return status, terminal_error
+
+    async def _notify_terminal_goal(
+        self,
+        item: RuntimeQueueItem,
+        goal: dict[str, Any],
+        status: str,
+    ) -> None:
+        if not self.terminal_callback or status not in {"done", "blocked", "failed"}:
+            return
+        try:
+            await self.terminal_callback(goal)
+        except Exception as notify_error:
+            log.error(
+                "runtime_terminal_notify_failed",
+                goal_id=item.goal_id,
+                status=status,
+                error=str(notify_error),
+            )
+
+    def _log_terminal_goal(
+        self,
+        item: RuntimeQueueItem,
+        status: str,
+        terminal_error: str,
+    ) -> None:
+        if status == "done":
+            log.info("runtime_goal_done", worker_id=self.worker_id, goal_id=item.goal_id)
+        elif status in {"cancelled", "interrupted"}:
+            log.info(
+                f"runtime_goal_{status}",
+                worker_id=self.worker_id,
+                goal_id=item.goal_id,
+                error=terminal_error,
+            )
+        else:
+            log.error(
+                "runtime_goal_failed",
+                worker_id=self.worker_id,
+                goal_id=item.goal_id,
+                status=status,
+                error=terminal_error,
+            )
+
+    def _persist_interrupted_goal(self, item: RuntimeQueueItem) -> dict[str, Any]:
+        reason = "worker stopped"
+        goal_manager = self.execution_engine.goal_manager
+        pause_goal = getattr(goal_manager, "pause_goal", None)
+        if pause_goal:
+            try:
+                return pause_goal(item.goal_id, reason=reason)
+            except Exception:
+                pass
+        try:
+            return goal_manager.fail_goal(item.goal_id, reason)
+        except Exception as persist_error:
+            log.error(
+                "runtime_goal_persist_failed",
+                goal_id=item.goal_id,
+                error=f"{type(persist_error).__name__}: {persist_error}",
+                original_error=reason,
+            )
+            return {
+                "goal_id": item.goal_id,
+                "user_id": item.user_id,
+                "chat_id": item.chat_id,
+                "status": "failed",
+                "error": reason,
+                "artifacts": [],
+            }
 
     def health(self) -> dict[str, Any]:
         return self.state.to_dict()

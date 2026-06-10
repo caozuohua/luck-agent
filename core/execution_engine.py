@@ -5,25 +5,29 @@ The engine is generic:
 - GoalManager owns lifecycle and persistence.
 - ExecutionEngine owns loop control and dispatch.
 - Supervisor owns verification, retry/block decisions, and lesson capture.
-- Domain controllers own actual business steps, e.g. BlogController.
+- Goal Skills own actual business steps.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
+from core.goal import EXECUTION_TERMINAL_STATUSES
 from core.log import get_logger
 from core.protocols import ToolResult
 from core.supervisor import Supervisor, SupervisorDecision
+from runtime.events import NoopRuntimeEventRecorder
+from skills.base import GoalSkill
+from skills.registry import SkillNotFoundError, SkillRegistry
 
 log = get_logger()
 
 
 @dataclass
 class StepSpec:
-    """Declarative step definition produced by a domain controller."""
+    """Declarative step definition produced by a Goal Skill."""
 
     name: str
     action: str
@@ -38,7 +42,7 @@ class StepSpec:
 
 @dataclass
 class StepResult:
-    """Normalized execution result returned by controllers."""
+    """Normalized execution result returned by Goal Skills."""
 
     ok: bool
     action: str
@@ -50,7 +54,7 @@ class StepResult:
     blocking: bool = False
     elapsed_ms: int = 0
 
-    def to_tool_result(self, tool: str = "controller") -> dict[str, Any]:
+    def to_tool_result(self, tool: str = "skill") -> dict[str, Any]:
         return ToolResult(
             ok=self.ok,
             tool=tool,
@@ -66,21 +70,6 @@ class StepResult:
         return asdict(self)
 
 
-class GoalController(Protocol):
-    """Controller interface for one goal intent/domain."""
-
-    intent: str
-
-    async def build_plan(self, goal: dict) -> list[StepSpec]:
-        ...
-
-    async def execute_step(self, goal: dict, step: StepSpec) -> StepResult:
-        ...
-
-    async def is_goal_complete(self, goal: dict, steps: list[dict]) -> bool:
-        ...
-
-
 class ExecutionEngineError(RuntimeError):
     """Execution engine error."""
 
@@ -92,32 +81,81 @@ class ExecutionEngine:
         self,
         *,
         goal_manager,
+        skill_registry: SkillRegistry,
         supervisor: Supervisor | None = None,
-        controllers: dict[str, GoalController] | None = None,
+        event_recorder=None,
         max_steps: int = 30,
         default_step_timeout: int = 120,
     ) -> None:
         self.goal_manager = goal_manager
+        self.skill_registry = skill_registry
         self.supervisor = supervisor or Supervisor(memory=getattr(goal_manager, "memory", None))
-        self.controllers: dict[str, GoalController] = controllers or {}
+        self.event_recorder = (
+            event_recorder
+            if event_recorder is not None
+            else NoopRuntimeEventRecorder()
+        )
         self.max_steps = max_steps
         self.default_step_timeout = default_step_timeout
 
-    def register_controller(self, controller: GoalController) -> None:
-        self.controllers[controller.intent] = controller
-        log.info("controller_registered", intent=controller.intent)
-
-    def get_controller(self, intent: str) -> GoalController:
-        controller = self.controllers.get(intent)
-        if not controller:
-            raise ExecutionEngineError(f"no controller registered for intent: {intent}")
-        return controller
-
     async def run_goal(self, goal_id: str) -> dict:
         """Run a goal until done, blocked, failed, cancelled, or step budget exhausted."""
-        goal = self.goal_manager.start_goal(goal_id)
-        controller = self.get_controller(goal.get("intent", "general"))
-        await self._ensure_plan(goal, controller)
+        goal = self.goal_manager.get_goal(goal_id)
+        if self._is_terminal(goal):
+            return goal
+
+        goal, claimed = self.goal_manager.claim_goal(goal_id)
+        if not claimed:
+            return goal
+
+        try:
+            skill = self.skill_registry.resolve_goal(goal)
+        except SkillNotFoundError:
+            goal, changed = self._finish_goal(goal_id, "blocked", "missing skill")
+            if not changed:
+                return goal
+            self._record(
+                "goal.blocked",
+                goal=goal,
+                status="blocked",
+                payload={"error_type": "SkillNotFoundError"},
+            )
+            return goal
+
+        self._record("goal.started", goal=goal, skill=skill, status="running")
+        try:
+            has_plan = await self._ensure_plan(goal, skill)
+        except Exception as error:
+            error_type = type(error).__name__
+            goal, changed = self._finish_goal(
+                goal_id,
+                "failed",
+                f"skill build failed: {error_type}",
+            )
+            if not changed:
+                return goal
+            self._record(
+                "goal.failed",
+                goal=goal,
+                skill=skill,
+                status="failed",
+                payload={"error_type": error_type},
+            )
+            return goal
+        if has_plan is None:
+            return self.goal_manager.get_goal(goal_id)
+        if not has_plan:
+            goal, changed = self._finish_goal(goal_id, "blocked", "empty plan")
+            if not changed:
+                return goal
+            self._record(
+                "goal.blocked",
+                goal=goal,
+                skill=skill,
+                status="blocked",
+                payload={"reason": "empty plan"},
+            )
+            return goal
 
         for _ in range(self.max_steps):
             goal = self.goal_manager.get_goal(goal_id)
@@ -125,30 +163,150 @@ class ExecutionEngine:
                 return goal
 
             steps = self.goal_manager.get_steps(goal_id)
-            complete = await controller.is_goal_complete(goal, steps)
-            completion = self.supervisor.review_goal_completion(goal=goal, steps=steps, complete=complete)
+            try:
+                complete = await skill.is_goal_complete(goal, steps)
+            except Exception as error:
+                error_type = type(error).__name__
+                goal, changed = self._finish_goal(
+                    goal_id,
+                    "failed",
+                    f"skill completion failed: {error_type}",
+                )
+                if changed:
+                    self._record(
+                        "goal.failed",
+                        goal=goal,
+                        skill=skill,
+                        status="failed",
+                        payload={"error_type": error_type},
+                    )
+                return goal
+            try:
+                completion = self.supervisor.review_goal_completion(
+                    goal=goal,
+                    steps=steps,
+                    complete=complete,
+                )
+            except Exception as error:
+                error_type = type(error).__name__
+                goal, changed = self._finish_goal(
+                    goal_id,
+                    "failed",
+                    f"supervisor completion failed: {error_type}",
+                )
+                if changed:
+                    self._record(
+                        "goal.failed",
+                        goal=goal,
+                        skill=skill,
+                        status="failed",
+                        payload={"error_type": error_type},
+                    )
+                return goal
             if completion.get("is_goal_complete"):
-                return self.goal_manager.complete_goal(goal_id)
+                goal, changed = self._finish_goal(goal_id, "done")
+                if not changed:
+                    return goal
+                self._record(
+                    "goal.completed",
+                    goal=goal,
+                    skill=skill,
+                    status="done",
+                )
+                return goal
 
             step_record = self._next_pending_step(steps)
             if not step_record:
-                return self.goal_manager.block_goal(goal_id, "no pending step but goal is incomplete")
+                goal, changed = self._finish_goal(
+                    goal_id,
+                    "blocked",
+                    "no pending step but goal is incomplete",
+                )
+                if not changed:
+                    return goal
+                self._record(
+                    "goal.blocked",
+                    goal=goal,
+                    skill=skill,
+                    status="blocked",
+                    payload={"reason": "no pending step"},
+                )
+                return goal
 
-            decision = await self.run_step(goal_id, step_record["step_id"])
+            try:
+                decision = await self.run_step(goal_id, step_record["step_id"])
+            except Exception as error:
+                error_type = type(error).__name__
+                goal, changed = self._finish_goal(
+                    goal_id,
+                    "failed",
+                    f"step persistence failed: {error_type}",
+                )
+                if changed:
+                    self._record(
+                        "goal.failed",
+                        goal=goal,
+                        skill=skill,
+                        status="failed",
+                        payload={"error_type": error_type},
+                    )
+                return goal
+
+            goal = self.goal_manager.get_goal(goal_id)
+            if self._is_terminal(goal):
+                return goal
             if decision.decision == "pass":
                 continue
             if decision.decision == "retry":
-                self._mark_step_for_retry(step_record, decision)
                 continue
             if decision.decision == "fail":
-                return self.goal_manager.fail_goal(goal_id, decision.reason or "step failed")
-            return self.goal_manager.block_goal(
+                goal, changed = self._finish_goal(
+                    goal_id,
+                    "failed",
+                    decision.reason or "step failed",
+                )
+                if not changed:
+                    return goal
+                self._record(
+                    "goal.failed",
+                    goal=goal,
+                    skill=skill,
+                    status="failed",
+                    payload={"reason": decision.reason or "step failed"},
+                )
+                return goal
+            goal, changed = self._finish_goal(
                 goal_id,
+                "blocked",
                 decision.reason or "step blocked",
                 step_record.get("name"),
             )
+            if not changed:
+                return goal
+            self._record(
+                "goal.blocked",
+                goal=goal,
+                skill=skill,
+                status="blocked",
+                payload={"reason": decision.reason or "step blocked"},
+            )
+            return goal
 
-        return self.goal_manager.block_goal(goal_id, f"max step budget exceeded: {self.max_steps}")
+        goal, changed = self._finish_goal(
+            goal_id,
+            "blocked",
+            f"max step budget exceeded: {self.max_steps}",
+        )
+        if not changed:
+            return goal
+        self._record(
+            "goal.blocked",
+            goal=goal,
+            skill=skill,
+            status="blocked",
+            payload={"reason": "max steps", "max_steps": self.max_steps},
+        )
+        return goal
 
     async def run_step(self, goal_id: str, step_id: str) -> SupervisorDecision:
         """Run one persisted step and let Supervisor decide pass/retry/block/fail."""
@@ -156,20 +314,76 @@ class ExecutionEngine:
         step_record = self.goal_manager.memory.get_goal_step(step_id)
         if not step_record:
             raise ExecutionEngineError(f"step not found: {step_id}")
-        controller = self.get_controller(goal.get("intent", "general"))
+        skill = self.skill_registry.resolve_goal(goal)
         step = self._step_spec_from_record(step_record)
 
-        self.goal_manager.start_step(step_id)
-        result = await self._execute_controller_step(controller, goal, step)
+        started_step, claimed = self.goal_manager.start_step(step_id)
+        if not claimed:
+            return self._aborted_step_decision(
+                self.goal_manager.get_goal(goal_id)
+            )
+        self._record(
+            "step.started",
+            goal=goal,
+            skill=skill,
+            step_id=step_id,
+            status="running",
+            payload={"name": started_step.get("name", ""), "action": step.action},
+        )
+        result = await self._execute_skill_step(skill, goal, step)
+
+        current_goal = self.goal_manager.get_goal(goal_id)
+        if self._is_terminal(current_goal):
+            return self._aborted_step_decision(current_goal)
 
         retry_count = int(step_record.get("retry_count") or 0)
         max_retry = int((step_record.get("input") or {}).get("max_retry") or step.max_retry)
-        decision = self.supervisor.review_step_result(
+        try:
+            decision = self.supervisor.review_step_result(
+                goal=goal,
+                step=step_record,
+                result=result,
+                retry_count=retry_count,
+                max_retry=max_retry,
+            )
+        except Exception as error:
+            error_type = type(error).__name__
+            reason = f"supervisor step failed: {error_type}"
+            committed = await self.goal_manager.commit_step_result(
+                step_id,
+                status="failed",
+                output={"result": result.to_dict()},
+                error=reason,
+            )
+            if not committed:
+                return self._aborted_step_decision(
+                    self.goal_manager.get_goal(goal_id)
+                )
+            self._record(
+                "step.failed",
+                goal=goal,
+                skill=skill,
+                step_id=step_id,
+                status="failed",
+                payload={"error_type": error_type, "action": step.action},
+            )
+            return SupervisorDecision(
+                decision="fail",
+                verification={},
+                reason=reason,
+            )
+        self._record(
+            "supervisor.decision",
             goal=goal,
-            step=step_record,
-            result=result,
-            retry_count=retry_count,
-            max_retry=max_retry,
+            skill=skill,
+            step_id=step_id,
+            status=decision.decision,
+            payload={
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "retry_count": retry_count,
+                "max_retry": max_retry,
+            },
         )
 
         output = {
@@ -177,22 +391,87 @@ class ExecutionEngine:
             "supervisor": decision.to_dict(),
         }
         if decision.decision == "pass":
-            self.goal_manager.finish_step(step_id, output=output)
-            for artifact in result.artifacts:
-                self.goal_manager.append_artifact(goal_id, artifact)
+            committed = await self.goal_manager.commit_step_result(
+                step_id,
+                status="done",
+                output=output,
+                artifacts=result.artifacts,
+            )
+            if not committed:
+                return self._aborted_step_decision(
+                    self.goal_manager.get_goal(goal_id)
+                )
+            self._record(
+                "step.completed",
+                goal=goal,
+                skill=skill,
+                step_id=step_id,
+                status="done",
+                payload={"action": step.action},
+            )
         elif decision.decision == "retry":
-            self.goal_manager.memory.update_goal_step(
+            next_retry_count = retry_count + 1
+            committed = await self.goal_manager.commit_step_result(
                 step_id,
                 status="pending",
                 output=output,
                 error=decision.reason,
-                retry_count=retry_count + 1,
-                finished_at=time.time(),
+                retry_increment=True,
+            )
+            if not committed:
+                return self._aborted_step_decision(
+                    self.goal_manager.get_goal(goal_id)
+                )
+            self._record(
+                "step.retry",
+                goal=goal,
+                skill=skill,
+                step_id=step_id,
+                status="pending",
+                payload={
+                    "reason": decision.reason,
+                    "retry_count": next_retry_count,
+                    "max_retry": max_retry,
+                },
             )
         elif decision.decision == "fail":
-            self.goal_manager.fail_step(step_id, decision.reason, output=output)
+            committed = await self.goal_manager.commit_step_result(
+                step_id,
+                status="failed",
+                output=output,
+                error=decision.reason,
+            )
+            if not committed:
+                return self._aborted_step_decision(
+                    self.goal_manager.get_goal(goal_id)
+                )
+            self._record(
+                "step.failed",
+                goal=goal,
+                skill=skill,
+                step_id=step_id,
+                status="failed",
+                payload={"reason": decision.reason, "action": step.action},
+            )
         else:
-            self.goal_manager.fail_step(step_id, decision.reason, output=output)
+            committed = await self.goal_manager.commit_step_result(
+                step_id,
+                status="blocked",
+                output=output,
+                error=decision.reason,
+            )
+            if not committed:
+                return self._aborted_step_decision(
+                    self.goal_manager.get_goal(goal_id)
+                )
+            self._record(
+                "step.blocked",
+                goal=goal,
+                skill=skill,
+                step_id=step_id,
+                status="blocked",
+                payload={"reason": decision.reason, "action": step.action},
+            )
 
         log.info(
             "goal_step_reviewed",
@@ -204,16 +483,16 @@ class ExecutionEngine:
         )
         return decision
 
-    async def _execute_controller_step(
+    async def _execute_skill_step(
         self,
-        controller: GoalController,
+        skill: GoalSkill,
         goal: dict,
         step: StepSpec,
     ) -> StepResult:
         started = time.monotonic()
         try:
             result = await asyncio.wait_for(
-                controller.execute_step(goal, step),
+                skill.execute_step(goal, step),
                 timeout=step.timeout or self.default_step_timeout,
             )
         except asyncio.TimeoutError:
@@ -225,12 +504,12 @@ class ExecutionEngine:
                 blocking=True,
                 elapsed_ms=elapsed_ms,
             )
-        except Exception as e:
+        except Exception as error:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return StepResult(
                 ok=False,
                 action=step.action,
-                error=f"{type(e).__name__}: {e}",
+                error=f"skill execute failed: {type(error).__name__}",
                 blocking=True,
                 elapsed_ms=elapsed_ms,
             )
@@ -238,33 +517,99 @@ class ExecutionEngine:
             result.elapsed_ms = int((time.monotonic() - started) * 1000)
         return result
 
-    async def _ensure_plan(self, goal: dict, controller: GoalController) -> None:
+    async def _ensure_plan(self, goal: dict, skill: GoalSkill) -> bool | None:
         """Create persisted goal steps if the goal has no step records yet."""
         goal_id = goal["goal_id"]
         existing_steps = self.goal_manager.get_steps(goal_id)
         if existing_steps:
-            return
-        plan = await controller.build_plan(goal)
+            return True
+        plan = await skill.build_plan(goal)
         if not plan:
-            raise ExecutionEngineError(f"controller returned empty plan: {controller.intent}")
-        for step in plan:
-            payload = step.to_dict()
-            payload["max_retry"] = step.max_retry
-            self.goal_manager.create_step(
-                goal_id=goal_id,
-                name=step.name,
-                input=payload,
-                status="pending",
-            )
-        self.goal_manager.set_current_step(goal_id, plan[0].name)
+            return False
+        created_steps, committed = self.goal_manager.commit_plan(goal_id, plan)
+        if not committed:
+            current_goal = self.goal_manager.get_goal(goal_id)
+            if self._is_terminal(current_goal):
+                return None
+            return bool(self.goal_manager.get_steps(goal_id))
 
-    def _mark_step_for_retry(self, step_record: dict, decision: SupervisorDecision) -> None:
-        retry_count = int(step_record.get("retry_count") or 0)
-        self.goal_manager.memory.update_goal_step(
-            step_record["step_id"],
-            status="pending",
-            retry_count=retry_count + 1,
-            error=decision.reason,
+        for step, created in zip(plan, created_steps):
+            self._record(
+                "step.created",
+                goal=goal,
+                skill=skill,
+                step_id=created["step_id"],
+                status="pending",
+                payload={"name": step.name, "action": step.action},
+            )
+        return True
+
+    def _record(
+        self,
+        event_type: str,
+        *,
+        goal: dict,
+        skill: GoalSkill | None = None,
+        step_id: str = "",
+        status: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        metadata = getattr(skill, "metadata", None)
+        event_payload = dict(payload or {})
+        event_payload["skill_version"] = (
+            str(getattr(metadata, "version", "") or "")
+        )
+        try:
+            self.event_recorder.record(
+                event_type,
+                goal_id=str(goal.get("goal_id") or ""),
+                step_id=step_id,
+                skill=str(getattr(metadata, "name", "") or ""),
+                intent=str(goal.get("intent") or "general"),
+                status=status,
+                user_id=str(goal.get("user_id") or ""),
+                chat_id=str(goal.get("chat_id") or ""),
+                payload=event_payload,
+            )
+        except Exception as error:
+            log.warning(
+                "runtime_event_record_failed",
+                event_type=event_type,
+                goal_id=goal.get("goal_id", ""),
+                error_type=type(error).__name__,
+            )
+
+    def _finish_goal(
+        self,
+        goal_id: str,
+        status: str,
+        error: str = "",
+        current_step: str | None = None,
+    ) -> tuple[dict, bool]:
+        goal = self.goal_manager.get_goal(goal_id)
+        if self._is_terminal(goal):
+            return goal, False
+
+        updates: dict[str, Any] = {"status": status, "error": error}
+        if current_step is not None:
+            updates["current_step"] = current_step
+        updated = self.goal_manager.memory.update_goal_if_status(
+            goal_id,
+            {"running"},
+            **updates,
+        )
+        return self.goal_manager.get_goal(goal_id), updated
+
+    @staticmethod
+    def _is_terminal(goal: dict) -> bool:
+        return goal.get("status") in EXECUTION_TERMINAL_STATUSES
+
+    @staticmethod
+    def _aborted_step_decision(goal: dict) -> SupervisorDecision:
+        return SupervisorDecision(
+            decision="block",
+            verification={},
+            reason=f"goal {goal.get('status') or 'not running'}",
         )
 
     @staticmethod

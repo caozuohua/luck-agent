@@ -219,15 +219,19 @@ class AgentApp:
         from handlers.command   import CommandHandler
         from handlers.message   import AgentMessageHandler
         from handlers.file_handler import FileMessageHandler
-        from controllers.blog_controller import BlogController
         from controllers.content_generator import ModelContentGenerator
         from core.execution_engine import ExecutionEngine
         from core.goal import GoalManager
         from core.supervisor import Supervisor
+        from runtime.events import RuntimeEventRecorder
         from runtime.notifications import RuntimeGoalNotifier
         from runtime.runtime_manager import RuntimeManager
         from runtime.task_queue import RuntimeTaskQueue
         from runtime.worker import WorkerManager
+        from skills.blog import BlogSkill
+        from skills.legacy_react import LegacyReactSkill
+        from skills.registry import SkillRegistry
+        from skills.router import SkillRouter
 
         cfg = self.cfg
 
@@ -307,16 +311,23 @@ class AgentApp:
         # Goal Runtime: selected intents are persisted and queued for background execution.
         goal_manager = GoalManager(self._memory)
         runtime_queue = RuntimeTaskQueue(max_active=1)
+        generator = ModelContentGenerator(router=self._router, model_name=cfg.MODEL_PRO)
+        registry = SkillRegistry([BlogSkill(generator=generator), LegacyReactSkill()])
+        skill_router = SkillRouter(registry)
+        event_recorder = RuntimeEventRecorder(self._memory)
         execution_engine = ExecutionEngine(
             goal_manager=goal_manager,
             supervisor=Supervisor(memory=self._memory),
+            skill_registry=registry,
+            event_recorder=event_recorder,
         )
-        generator = ModelContentGenerator(router=self._router, model_name=cfg.MODEL_PRO)
-        execution_engine.register_controller(BlogController(generator=generator))
         self._runtime_manager = RuntimeManager(
             goal_manager=goal_manager,
             execution_engine=execution_engine,
             queue=runtime_queue,
+            skill_registry=registry,
+            skill_router=skill_router,
+            event_recorder=event_recorder,
         )
         notifier = RuntimeGoalNotifier(sender=self._sender, card_builder=CardBuilder)
         self._runtime_workers = WorkerManager(

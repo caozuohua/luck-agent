@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent import AgentApp
-from controllers.blog_controller import BlogController
 from controllers.content_generator import GeneratedContent
 from core.execution_engine import ExecutionEngine
 from core.goal import GoalManager
@@ -81,11 +80,31 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def test_agent_runtime_wires_final_result_dependencies(self) -> None:
         source = inspect.getsource(AgentApp._init_components)
 
+        self.assertNotIn("BlogController", source)
+        self.assertNotIn("register_controller", source)
         self.assertIn(
             "ModelContentGenerator(router=self._router, model_name=cfg.MODEL_PRO)",
             source,
         )
-        self.assertIn("BlogController(generator=generator)", source)
+        self.assertIn(
+            "registry = SkillRegistry(["
+            "BlogSkill(generator=generator), LegacyReactSkill()])",
+            " ".join(source.split()),
+        )
+        self.assertIn("skill_router = SkillRouter(registry)", source)
+        self.assertIn(
+            "event_recorder = RuntimeEventRecorder(self._memory)",
+            source,
+        )
+        self.assertIn("skill_registry=registry", source)
+        self.assertEqual(source.count("event_recorder=event_recorder"), 2)
+        runtime_manager_source = source[
+            source.index("self._runtime_manager = RuntimeManager("):
+            source.index("notifier = RuntimeGoalNotifier(")
+        ]
+        self.assertIn("skill_router=skill_router", runtime_manager_source)
+        worker_source = source[source.index("self._runtime_workers = WorkerManager("):]
+        self.assertNotIn("event_recorder=", worker_source)
         self.assertIn(
             "RuntimeGoalNotifier(sender=self._sender, card_builder=CardBuilder)",
             source,
@@ -166,14 +185,12 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             memory = Memory(str(Path(temp_dir) / "runtime.db"))
             goal_manager = GoalManager(memory)
             queue = RuntimeTaskQueue(max_active=1)
+            registry, router = blog_runtime_dependencies()
             engine = ExecutionEngine(
                 goal_manager=goal_manager,
                 supervisor=Supervisor(memory=memory),
+                skill_registry=registry,
             )
-            engine.register_controller(
-                BlogController(generator=EndToEndGenerator())
-            )
-            registry, router = blog_runtime_dependencies()
             manager = RuntimeManager(
                 goal_manager=goal_manager,
                 execution_engine=engine,
@@ -258,12 +275,12 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 status="done",
             )
             queue = RuntimeTaskQueue(max_active=1)
+            registry, router = blog_runtime_dependencies()
             engine = ExecutionEngine(
                 goal_manager=goal_manager,
                 supervisor=Supervisor(memory=memory),
+                skill_registry=registry,
             )
-            engine.register_controller(BlogController(generator=EndToEndGenerator()))
-            registry, router = blog_runtime_dependencies()
             manager = RuntimeManager(
                 goal_manager=goal_manager,
                 execution_engine=engine,

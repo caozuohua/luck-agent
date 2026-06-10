@@ -29,6 +29,7 @@ log = get_logger()
 
 ACTIVE_STATUSES = {"pending", "running", "interrupted"}
 TERMINAL_STATUSES = {"done", "failed", "cancelled"}
+EXECUTION_TERMINAL_STATUSES = TERMINAL_STATUSES | {"blocked"}
 PAUSABLE_STATUSES = {"pending", "running", "interrupted", "blocked"}
 RESUMABLE_STATUSES = {"pending", "blocked", "interrupted"}
 
@@ -156,6 +157,24 @@ class GoalManager:
         log.info("goal_started", goal_id=goal_id, current_step=current_step or goal.get("current_step", ""))
         return self.get_goal(goal_id)
 
+    def claim_goal(self, goal_id: str) -> tuple[dict, bool]:
+        """Atomically claim a pending or interrupted goal for execution."""
+        self.get_goal(goal_id)
+        claimed = self.memory.update_goal_if_status(
+            goal_id,
+            {"pending", "interrupted"},
+            status="running",
+            error="",
+        )
+        goal = self.get_goal(goal_id)
+        if claimed:
+            log.info(
+                "goal_claimed",
+                goal_id=goal_id,
+                current_step=goal.get("current_step", ""),
+            )
+        return goal, claimed
+
     def pause_goal(self, goal_id: str, reason: str = "") -> dict:
         goal = self.get_goal(goal_id)
         if goal["status"] not in PAUSABLE_STATUSES:
@@ -255,13 +274,46 @@ class GoalManager:
         log.info("goal_step_created", goal_id=goal_id, step_id=step.step_id, name=name)
         return step.step_id
 
-    def start_step(self, step_id: str) -> dict:
-        step = self.memory.get_goal_step(step_id)
+    def commit_plan(
+        self,
+        goal_id: str,
+        steps: list[Any],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Atomically persist a complete plan for a running goal."""
+        self.get_goal(goal_id)
+        payloads: list[dict[str, Any]] = []
+        for raw_step in steps:
+            spec = raw_step.to_dict() if hasattr(raw_step, "to_dict") else dict(raw_step)
+            step = GoalStep(
+                step_id=new_id("step"),
+                goal_id=goal_id,
+                name=str(spec.get("name") or "unnamed_step"),
+                status="pending",
+                input=spec,
+            )
+            payload = step.to_dict()
+            ok, err = validate_json(payload, STEP_SCHEMA)
+            if not ok:
+                raise GoalError(f"invalid step payload: {err}")
+            payloads.append(payload)
+
+        committed = self.memory.commit_goal_plan(goal_id, payloads)
+        if committed:
+            for payload in payloads:
+                log.info(
+                    "goal_step_created",
+                    goal_id=goal_id,
+                    step_id=payload["step_id"],
+                    name=payload["name"],
+                )
+            return payloads, True
+        return [], False
+
+    def start_step(self, step_id: str) -> tuple[dict, bool]:
+        step, claimed = self.memory.start_goal_step(step_id)
         if not step:
             raise GoalError(f"step not found: {step_id}")
-        self.memory.update_goal_step(step_id, status="running", started_at=time.time())
-        self.memory.update_goal(step["goal_id"], current_step=step["name"], status="running")
-        return self.memory.get_goal_step(step_id)
+        return step, claimed
 
     def finish_step(self, step_id: str, output: dict[str, Any] | None = None) -> dict:
         step = self.memory.get_goal_step(step_id)
@@ -276,7 +328,33 @@ class GoalManager:
         )
         return self.memory.get_goal_step(step_id)
 
-    def fail_step(self, step_id: str, error: str, output: dict[str, Any] | None = None) -> dict:
+    async def commit_step_result(
+        self,
+        step_id: str,
+        *,
+        status: str,
+        output: dict[str, Any] | None = None,
+        error: str = "",
+        retry_increment: bool = False,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        return self.memory.commit_goal_step_result(
+            step_id,
+            status=status,
+            output=output,
+            error=error,
+            retry_increment=retry_increment,
+            artifacts=artifacts,
+        )
+
+    def fail_step(
+        self,
+        step_id: str,
+        error: str,
+        output: dict[str, Any] | None = None,
+        *,
+        update_goal_status: bool = True,
+    ) -> dict:
         step = self.memory.get_goal_step(step_id)
         if not step:
             raise GoalError(f"step not found: {step_id}")
@@ -287,7 +365,30 @@ class GoalManager:
             error=error,
             finished_at=time.time(),
         )
-        self.memory.update_goal(step["goal_id"], status="blocked", error=error)
+        if update_goal_status:
+            self.memory.update_goal(step["goal_id"], status="blocked", error=error)
+        return self.memory.get_goal_step(step_id)
+
+    def block_step(
+        self,
+        step_id: str,
+        error: str,
+        output: dict[str, Any] | None = None,
+        *,
+        update_goal_status: bool = True,
+    ) -> dict:
+        step = self.memory.get_goal_step(step_id)
+        if not step:
+            raise GoalError(f"step not found: {step_id}")
+        self.memory.update_goal_step(
+            step_id,
+            status="blocked",
+            output=output or {},
+            error=error,
+            finished_at=time.time(),
+        )
+        if update_goal_status:
+            self.memory.update_goal(step["goal_id"], status="blocked", error=error)
         return self.memory.get_goal_step(step_id)
 
     def get_steps(self, goal_id: str) -> list[dict]:

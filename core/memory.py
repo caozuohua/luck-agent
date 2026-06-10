@@ -461,6 +461,51 @@ class Memory:
                 ),
             )
 
+    def commit_goal_plan(self, goal_id: str, steps: list[dict[str, Any]]) -> bool:
+        """Atomically insert a complete plan for a running goal with no steps."""
+        if not steps:
+            return False
+
+        now = time.time()
+        with self._conn() as conn:
+            claimed = conn.execute(
+                """UPDATE goals
+                   SET current_step=?, updated_at=?
+                   WHERE goal_id=?
+                     AND status='running'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM goal_steps
+                         WHERE goal_steps.goal_id=goals.goal_id
+                     )""",
+                (steps[0]["name"], now, goal_id),
+            )
+            if claimed.rowcount <= 0:
+                return False
+
+            conn.executemany(
+                """INSERT INTO goal_steps
+                   (step_id, goal_id, name, status, input, output, error,
+                    retry_count, started_at, finished_at, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        step["step_id"],
+                        step["goal_id"],
+                        step["name"],
+                        step.get("status", "pending"),
+                        self._json_dumps(step.get("input", {})),
+                        self._json_dumps(step.get("output", {})),
+                        step.get("error", ""),
+                        int(step.get("retry_count", 0)),
+                        step.get("started_at"),
+                        step.get("finished_at"),
+                        step.get("created_at", now),
+                    )
+                    for step in steps
+                ],
+            )
+        return True
+
     def update_goal_step(self, step_id: str, **updates: Any) -> bool:
         allowed = {
             "name", "status", "input", "output", "error",
@@ -477,6 +522,111 @@ class Memory:
         with self._conn() as conn:
             cur = conn.execute(f"UPDATE goal_steps SET {set_clause} WHERE step_id=?", params)
         return cur.rowcount > 0
+
+    def start_goal_step(self, step_id: str) -> tuple[dict | None, bool]:
+        """Atomically start a pending step only while its goal is running."""
+        started_at = time.time()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM goal_steps WHERE step_id=?",
+                (step_id,),
+            ).fetchone()
+            if not row:
+                return None, False
+
+            claimed = conn.execute(
+                """UPDATE goal_steps
+                   SET status='running', started_at=?
+                   WHERE step_id=?
+                     AND status='pending'
+                     AND EXISTS (
+                         SELECT 1 FROM goals
+                         WHERE goals.goal_id=goal_steps.goal_id
+                           AND goals.status='running'
+                     )""",
+                (started_at, step_id),
+            )
+            if claimed.rowcount <= 0:
+                return self._decode_json_fields(row, ("input", "output")), False
+
+            conn.execute(
+                """UPDATE goals
+                   SET current_step=?, status='running', updated_at=?
+                   WHERE goal_id=? AND status='running'""",
+                (row["name"], started_at, row["goal_id"]),
+            )
+            started = conn.execute(
+                "SELECT * FROM goal_steps WHERE step_id=?",
+                (step_id,),
+            ).fetchone()
+        return (
+            self._decode_json_fields(started, ("input", "output"))
+            if started
+            else None,
+            True,
+        )
+
+    def commit_goal_step_result(
+        self,
+        step_id: str,
+        *,
+        status: str,
+        output: dict[str, Any] | None = None,
+        error: str = "",
+        retry_increment: bool = False,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Atomically commit a running step result while its goal is running."""
+        assignments = [
+            "status=?",
+            "output=?",
+            "error=?",
+            "finished_at=?",
+        ]
+        params: list[Any] = [
+            status,
+            self._json_dumps(output or {}),
+            error,
+            time.time(),
+        ]
+        if retry_increment:
+            assignments.append("retry_count=retry_count+1")
+        params.append(step_id)
+
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"""UPDATE goal_steps
+                    SET {", ".join(assignments)}
+                    WHERE step_id=?
+                      AND status='running'
+                      AND EXISTS (
+                          SELECT 1 FROM goals
+                          WHERE goals.goal_id=goal_steps.goal_id
+                            AND goals.status='running'
+                      )""",
+                params,
+            )
+            if cur.rowcount <= 0:
+                return False
+
+            if artifacts:
+                row = conn.execute(
+                    """SELECT goals.goal_id, goals.artifacts
+                       FROM goals
+                       JOIN goal_steps ON goal_steps.goal_id=goals.goal_id
+                       WHERE goal_steps.step_id=?""",
+                    (step_id,),
+                ).fetchone()
+                if not row:
+                    raise RuntimeError("goal missing during step result commit")
+                merged = list(self._json_loads(row["artifacts"], []) or [])
+                merged.extend(artifacts)
+                conn.execute(
+                    """UPDATE goals SET artifacts=?, updated_at=?
+                       WHERE goal_id=? AND status='running'""",
+                    (self._json_dumps(merged), time.time(), row["goal_id"]),
+                )
+        return True
 
     def get_goal_step(self, step_id: str) -> dict | None:
         with self._conn() as conn:

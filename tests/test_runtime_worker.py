@@ -16,25 +16,32 @@ class FakeQueue:
         self.interrupted: list[tuple[str, str]] = []
         self.events = events
 
-    async def mark_done(self, goal_id: str) -> None:
+    async def get_item(self, goal_id: str) -> RuntimeQueueItem | None:
+        return None
+
+    async def mark_done(self, goal_id: str) -> bool:
         self.done.append(goal_id)
         if self.events is not None:
             self.events.append(("done", goal_id))
+        return True
 
-    async def mark_failed(self, goal_id: str, error: str) -> None:
+    async def mark_failed(self, goal_id: str, error: str) -> bool:
         self.failed.append((goal_id, error))
         if self.events is not None:
             self.events.append(("failed", goal_id, error))
+        return True
 
-    async def mark_cancelled(self, goal_id: str, reason: str) -> None:
+    async def mark_cancelled(self, goal_id: str, reason: str) -> bool:
         self.cancelled.append((goal_id, reason))
         if self.events is not None:
             self.events.append(("cancelled", goal_id, reason))
+        return True
 
-    async def mark_interrupted(self, goal_id: str, reason: str) -> None:
+    async def mark_interrupted(self, goal_id: str, reason: str) -> bool:
         self.interrupted.append((goal_id, reason))
         if self.events is not None:
             self.events.append(("interrupted", goal_id, reason))
+        return True
 
 
 class FakeGoalManager:
@@ -91,11 +98,70 @@ class BlockingEngine:
         raise AssertionError("unreachable")
 
 
+class ControlledEngine:
+    def __init__(self, result: dict, goal_manager: FakeGoalManager | None = None) -> None:
+        self.result = result
+        self.goal_manager = goal_manager or FakeGoalManager()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run_goal(self, goal_id: str) -> dict:
+        self.started.set()
+        await self.release.wait()
+        return {**self.result, "goal_id": goal_id}
+
+
+class CancelledGoalManager(FakeGoalManager):
+    def pause_goal(self, goal_id: str, reason: str = "") -> dict:
+        self.pause_calls.append((goal_id, reason))
+        raise RuntimeError("goal status cannot be paused: cancelled")
+
+    def get_goal(self, goal_id: str) -> dict:
+        return {
+            "goal_id": goal_id,
+            "user_id": "u1",
+            "chat_id": "c1",
+            "status": "cancelled",
+            "error": "user cancelled",
+            "artifacts": [],
+        }
+
+
 def queue_item() -> RuntimeQueueItem:
     return RuntimeQueueItem(goal_id="g1", user_id="u1", chat_id="c1")
 
 
 class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_preserves_goal_cancelled_during_pause_race(self) -> None:
+        notified: list[dict] = []
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        goal_manager = CancelledGoalManager()
+        engine = BlockingEngine(goal_manager)
+
+        async def notify(goal: dict) -> None:
+            notified.append(goal)
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=engine,
+            terminal_callback=notify,
+        )
+        worker.start()
+        await asyncio.wait_for(engine.started.wait(), timeout=1)
+        self.assertTrue(await queue.cancel("g1", "user cancelled"))
+
+        await worker.stop()
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+        item = await queue.get_item("g1")
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "cancelled")
+        self.assertEqual(goal_manager.calls, [])
+        self.assertEqual(worker.state.failed, 0)
+        self.assertEqual(notified, [])
+
     async def test_stop_interrupts_running_goal_and_finishes_real_queue_item(self) -> None:
         notified: list[dict] = []
         queue = RuntimeTaskQueue()
@@ -124,6 +190,64 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(goal_manager.pause_calls, [("g1", "worker stopped")])
         self.assertEqual(notified, [])
         self.assertEqual(worker.state.current_goal_id, "")
+
+    async def test_queue_cancel_wins_over_engine_done_result(self) -> None:
+        notified: list[dict] = []
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        engine = ControlledEngine({"status": "done", "artifacts": []})
+
+        async def notify(goal: dict) -> None:
+            notified.append(goal)
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=engine,
+            terminal_callback=notify,
+        )
+        worker.start()
+        await asyncio.wait_for(engine.started.wait(), timeout=1)
+
+        self.assertTrue(await queue.cancel("g1", "user cancelled"))
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(queue._queue.join(), timeout=0.01)
+        engine.release.set()
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+        await worker.stop()
+
+        item = await queue.get_item("g1")
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "cancelled")
+        self.assertEqual(item.error, "user cancelled")
+        self.assertEqual(worker.state.processed, 0)
+        self.assertEqual(worker.state.failed, 0)
+        self.assertEqual(notified, [])
+
+    async def test_worker_counts_only_successful_queue_transition(self) -> None:
+        queue = FakeQueue()
+
+        async def reject_done(goal_id: str) -> bool:
+            queue.done.append(goal_id)
+            return False
+
+        queue.mark_done = reject_done
+        notified: list[dict] = []
+
+        async def notify(goal: dict) -> None:
+            notified.append(goal)
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            terminal_callback=notify,
+        )
+
+        await worker._process_item(queue_item())
+
+        self.assertEqual(worker.state.processed, 0)
+        self.assertEqual(notified, [])
 
     async def test_done_goal_marks_queue_done_then_notifies_once(self) -> None:
         events: list[tuple] = []

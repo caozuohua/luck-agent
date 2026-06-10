@@ -51,16 +51,20 @@ class RuntimeTaskQueue:
         priority: int = 100,
         meta: dict[str, Any] | None = None,
     ) -> RuntimeQueueItem:
-        item = RuntimeQueueItem(
-            goal_id=goal_id,
-            user_id=user_id,
-            chat_id=chat_id,
-            priority=priority,
-            meta=meta or {},
-        )
         async with self._lock:
+            existing = self._items.get(goal_id)
+            if existing:
+                if existing.status in {"pending", "running"}:
+                    return existing
+                raise ValueError(f"goal already submitted with terminal status: {goal_id}")
+            item = RuntimeQueueItem(
+                goal_id=goal_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                priority=priority,
+                meta=meta or {},
+            )
             self._items[goal_id] = item
-            self._finished_tasks.discard(goal_id)
             await self._queue.put((priority, item.created_at, goal_id))
         return item
 
@@ -76,20 +80,39 @@ class RuntimeTaskQueue:
                 item.started_at = time.time()
                 return item
 
-    async def mark_done(self, goal_id: str) -> None:
-        await self._mark_terminal(goal_id, status="done")
+    async def get_item(self, goal_id: str) -> RuntimeQueueItem | None:
+        async with self._lock:
+            return self._items.get(goal_id)
 
-    async def mark_failed(self, goal_id: str, error: str) -> None:
-        await self._mark_terminal(goal_id, status="failed", error=error)
+    async def mark_done(self, goal_id: str) -> bool:
+        return await self._mark_terminal(goal_id, status="done")
 
-    async def mark_interrupted(self, goal_id: str, reason: str) -> None:
-        await self._mark_terminal(goal_id, status="interrupted", error=reason)
+    async def mark_failed(self, goal_id: str, error: str) -> bool:
+        return await self._mark_terminal(goal_id, status="failed", error=error)
 
-    async def mark_cancelled(self, goal_id: str, reason: str) -> None:
-        await self._mark_terminal(goal_id, status="cancelled", error=reason)
+    async def mark_interrupted(self, goal_id: str, reason: str) -> bool:
+        return await self._mark_terminal(goal_id, status="interrupted", error=reason)
+
+    async def mark_cancelled(self, goal_id: str, reason: str) -> bool:
+        return await self._mark_terminal(
+            goal_id,
+            status="cancelled",
+            error=reason,
+            allowed_statuses={"pending", "running", "cancelled"},
+        )
 
     async def cancel(self, goal_id: str, reason: str = "cancelled") -> bool:
-        return await self._mark_terminal(goal_id, status="cancelled", error=reason)
+        async with self._lock:
+            item = self._items.get(goal_id)
+            if not item or item.status not in {"pending", "running"}:
+                return False
+            previous_status = item.status
+            item.status = "cancelled"
+            item.error = reason
+            if previous_status == "pending":
+                item.finished_at = time.time()
+                self._finish_task(goal_id)
+            return True
 
     async def _mark_terminal(
         self,
@@ -97,10 +120,15 @@ class RuntimeTaskQueue:
         *,
         status: QueueStatus,
         error: str = "",
+        allowed_statuses: set[QueueStatus] | None = None,
     ) -> bool:
         async with self._lock:
             item = self._items.get(goal_id)
-            if not item or item.status not in {"pending", "running"}:
+            if (
+                not item
+                or goal_id in self._finished_tasks
+                or item.status not in (allowed_statuses or {"pending", "running"})
+            ):
                 return False
             item.status = status
             item.error = error

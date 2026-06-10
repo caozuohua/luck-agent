@@ -113,17 +113,18 @@ class RuntimeWorker:
                         "artifacts": [],
                     }
 
-            status, terminal_error = await self._account_terminal_goal(item, goal)
-            queue_settled = True
-            await self._notify_terminal_goal(item, goal, status)
-            self._log_terminal_goal(item, status, terminal_error)
+            goal = await self._preserve_queue_cancellation(item, goal)
+            status, terminal_error, queue_settled = await self._account_terminal_goal(item, goal)
+            if queue_settled:
+                await self._notify_terminal_goal(item, goal, status)
+                self._log_terminal_goal(item, status, terminal_error)
         except asyncio.CancelledError:
             if not queue_settled:
                 goal = goal or self._persist_interrupted_goal(item)
-                status, terminal_error = await self._account_terminal_goal(item, goal)
-                queue_settled = True
-                await self._notify_terminal_goal(item, goal, status)
-                self._log_terminal_goal(item, status, terminal_error)
+                status, terminal_error, queue_settled = await self._account_terminal_goal(item, goal)
+                if queue_settled:
+                    await self._notify_terminal_goal(item, goal, status)
+                    self._log_terminal_goal(item, status, terminal_error)
             raise
         finally:
             self.state.current_goal_id = ""
@@ -133,29 +134,51 @@ class RuntimeWorker:
         self,
         item: RuntimeQueueItem,
         goal: dict[str, Any],
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, bool]:
         status = str(goal.get("status") or "failed")
         if status == "done":
-            await self.queue.mark_done(item.goal_id)
-            self.state.processed += 1
-            self.state.last_error = ""
-            return status, ""
+            transitioned = await self.queue.mark_done(item.goal_id)
+            if transitioned:
+                self.state.processed += 1
+                self.state.last_error = ""
+            return status, "", transitioned
         if status == "cancelled":
             terminal_error = str(goal.get("error") or "goal cancelled")
-            await self.queue.mark_cancelled(item.goal_id, terminal_error)
-            self.state.last_error = terminal_error
-            return status, terminal_error
+            transitioned = await self.queue.mark_cancelled(item.goal_id, terminal_error)
+            if transitioned:
+                self.state.last_error = terminal_error
+            return status, terminal_error, transitioned
         if status == "interrupted":
             terminal_error = str(goal.get("error") or "goal interrupted")
-            await self.queue.mark_interrupted(item.goal_id, terminal_error)
-            self.state.last_error = terminal_error
-            return status, terminal_error
+            transitioned = await self.queue.mark_interrupted(item.goal_id, terminal_error)
+            if transitioned:
+                self.state.last_error = terminal_error
+            return status, terminal_error, transitioned
 
         terminal_error = str(goal.get("error") or f"goal ended with status {status}")
-        await self.queue.mark_failed(item.goal_id, terminal_error)
-        self.state.failed += 1
-        self.state.last_error = terminal_error
-        return status, terminal_error
+        transitioned = await self.queue.mark_failed(item.goal_id, terminal_error)
+        if transitioned:
+            self.state.failed += 1
+            self.state.last_error = terminal_error
+        return status, terminal_error, transitioned
+
+    async def _preserve_queue_cancellation(
+        self,
+        item: RuntimeQueueItem,
+        goal: dict[str, Any],
+    ) -> dict[str, Any]:
+        queue_item = await self.queue.get_item(item.goal_id)
+        if not queue_item or queue_item.status != "cancelled":
+            return goal
+        return {
+            **goal,
+            "goal_id": item.goal_id,
+            "user_id": goal.get("user_id") or item.user_id,
+            "chat_id": goal.get("chat_id") or item.chat_id,
+            "status": "cancelled",
+            "error": queue_item.error or "goal cancelled",
+            "artifacts": goal.get("artifacts") or [],
+        }
 
     async def _notify_terminal_goal(
         self,
@@ -207,7 +230,14 @@ class RuntimeWorker:
             try:
                 return pause_goal(item.goal_id, reason=reason)
             except Exception:
-                pass
+                get_goal = getattr(goal_manager, "get_goal", None)
+                if get_goal:
+                    try:
+                        goal = get_goal(item.goal_id)
+                        if goal.get("status") == "cancelled":
+                            return goal
+                    except Exception:
+                        pass
         try:
             return goal_manager.fail_goal(item.goal_id, reason)
         except Exception as persist_error:

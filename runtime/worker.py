@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -18,6 +19,8 @@ from core.log import get_logger
 from runtime.task_queue import RuntimeTaskQueue, RuntimeQueueItem
 
 log = get_logger()
+
+TerminalCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -38,10 +41,18 @@ class WorkerState:
 class RuntimeWorker:
     """Single background worker for Goal Runtime."""
 
-    def __init__(self, *, worker_id: str, queue: RuntimeTaskQueue, execution_engine) -> None:
+    def __init__(
+        self,
+        *,
+        worker_id: str,
+        queue: RuntimeTaskQueue,
+        execution_engine,
+        terminal_callback: TerminalCallback | None = None,
+    ) -> None:
         self.worker_id = worker_id
         self.queue = queue
         self.execution_engine = execution_engine
+        self.terminal_callback = terminal_callback
         self.state = WorkerState(worker_id=worker_id)
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -78,17 +89,55 @@ class RuntimeWorker:
         self.state.updated_at = time.time()
         log.info("runtime_worker_pickup", worker_id=self.worker_id, goal_id=item.goal_id)
         try:
-            await self.execution_engine.run_goal(item.goal_id)
-            await self.queue.mark_done(item.goal_id)
-            self.state.processed += 1
-            self.state.last_error = ""
-            log.info("runtime_goal_done", worker_id=self.worker_id, goal_id=item.goal_id)
-        except Exception as e:
-            error = f"{type(e).__name__}: {e}"
-            await self.queue.mark_failed(item.goal_id, error)
-            self.state.failed += 1
-            self.state.last_error = error
-            log.error("runtime_goal_failed", worker_id=self.worker_id, goal_id=item.goal_id, error=error)
+            try:
+                goal = await self.execution_engine.run_goal(item.goal_id)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                try:
+                    goal = self.execution_engine.goal_manager.fail_goal(item.goal_id, error)
+                except Exception:
+                    goal = {
+                        "goal_id": item.goal_id,
+                        "user_id": item.user_id,
+                        "chat_id": item.chat_id,
+                        "status": "failed",
+                        "error": error,
+                        "artifacts": [],
+                    }
+
+            status = str(goal.get("status") or "failed")
+            if status == "done":
+                await self.queue.mark_done(item.goal_id)
+                self.state.processed += 1
+                self.state.last_error = ""
+                terminal_error = ""
+            else:
+                terminal_error = str(goal.get("error") or f"goal ended with status {status}")
+                await self.queue.mark_failed(item.goal_id, terminal_error)
+                self.state.failed += 1
+                self.state.last_error = terminal_error
+
+            if self.terminal_callback:
+                try:
+                    await self.terminal_callback(goal)
+                except Exception as notify_error:
+                    log.error(
+                        "runtime_terminal_notify_failed",
+                        goal_id=item.goal_id,
+                        status=status,
+                        error=str(notify_error),
+                    )
+
+            if status == "done":
+                log.info("runtime_goal_done", worker_id=self.worker_id, goal_id=item.goal_id)
+            else:
+                log.error(
+                    "runtime_goal_failed",
+                    worker_id=self.worker_id,
+                    goal_id=item.goal_id,
+                    status=status,
+                    error=terminal_error,
+                )
         finally:
             self.state.current_goal_id = ""
             self.state.updated_at = time.time()
@@ -100,12 +149,24 @@ class RuntimeWorker:
 class WorkerManager:
     """Manage a small pool of RuntimeWorker instances."""
 
-    def __init__(self, *, queue: RuntimeTaskQueue, execution_engine, worker_count: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        queue: RuntimeTaskQueue,
+        execution_engine,
+        worker_count: int = 1,
+        terminal_callback: TerminalCallback | None = None,
+    ) -> None:
         self.queue = queue
         self.execution_engine = execution_engine
         self.worker_count = max(1, worker_count)
         self.workers: list[RuntimeWorker] = [
-            RuntimeWorker(worker_id=f"worker-{i+1}", queue=queue, execution_engine=execution_engine)
+            RuntimeWorker(
+                worker_id=f"worker-{i+1}",
+                queue=queue,
+                execution_engine=execution_engine,
+                terminal_callback=terminal_callback,
+            )
             for i in range(self.worker_count)
         ]
 

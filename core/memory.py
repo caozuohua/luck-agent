@@ -97,6 +97,29 @@ CREATE TABLE IF NOT EXISTS goal_steps (
 CREATE INDEX IF NOT EXISTS idx_goal_steps_goal ON goal_steps(goal_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_goal_steps_status ON goal_steps(status, created_at DESC);
 
+-- Goal Runtime：可观测事件
+CREATE TABLE IF NOT EXISTS runtime_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id    TEXT NOT NULL UNIQUE,
+    goal_id     TEXT DEFAULT '',
+    step_id     TEXT DEFAULT '',
+    skill       TEXT DEFAULT '',
+    intent      TEXT DEFAULT '',
+    event_type  TEXT NOT NULL,
+    status      TEXT DEFAULT '',
+    user_id     TEXT DEFAULT '',
+    chat_id     TEXT DEFAULT '',
+    payload     TEXT NOT NULL DEFAULT '{}',
+    created_at  REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_events_goal
+    ON runtime_events(goal_id, id);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_skill
+    ON runtime_events(skill, id);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_type
+    ON runtime_events(event_type, id);
+
 -- Lessons Learned：失败经验 / 修复经验
 CREATE TABLE IF NOT EXISTS lessons (
     lesson_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -474,6 +497,73 @@ class Memory:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM goals WHERE goal_id=?", (goal_id,))
         return cur.rowcount > 0
+
+    # ── Runtime Events ────────────────────────────────────────────
+    def append_runtime_event(self, event: dict[str, Any]) -> None:
+        conn = sqlite3.connect(self.db_path, timeout=0.05)
+        try:
+            conn.execute(
+                """INSERT INTO runtime_events
+                   (event_id, goal_id, step_id, skill, intent, event_type,
+                    status, user_id, chat_id, payload, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event["event_id"],
+                    event.get("goal_id", ""),
+                    event.get("step_id", ""),
+                    event.get("skill", ""),
+                    event.get("intent", ""),
+                    event["event_type"],
+                    event.get("status", ""),
+                    event.get("user_id", ""),
+                    event.get("chat_id", ""),
+                    json.dumps(
+                        event.get("payload", {}),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    ),
+                    event.get("created_at", time.time()),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_runtime_events(
+        self,
+        *,
+        goal_id: str | None = None,
+        skill: str | None = None,
+        event_type: str | None = None,
+        after_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for field, value in (
+            ("goal_id", goal_id),
+            ("skill", skill),
+            ("event_type", event_type),
+        ):
+            if value is not None:
+                clauses.append(f"{field}=?")
+                params.append(value)
+        if after_id is not None:
+            clauses.append("id>?")
+            params.append(int(after_id))
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 1000)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM runtime_events {where}
+                    ORDER BY id ASC LIMIT ?""",
+                params,
+            ).fetchall()
+        return [self._decode_json_fields(row, ("payload",)) for row in rows]
 
     # ── Lessons Learned ───────────────────────────────────────────
     def save_lesson(self, lesson: dict) -> int:

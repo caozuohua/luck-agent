@@ -104,10 +104,12 @@ class ControlledEngine:
         self.goal_manager = goal_manager or FakeGoalManager()
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.returning = asyncio.Event()
 
     async def run_goal(self, goal_id: str) -> dict:
         self.started.set()
         await self.release.wait()
+        self.returning.set()
         return {**self.result, "goal_id": goal_id}
 
 
@@ -132,6 +134,47 @@ def queue_item() -> RuntimeQueueItem:
 
 
 class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_after_engine_done_finalizes_queued_cancellation(self) -> None:
+        notified: list[dict] = []
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        engine = ControlledEngine({"status": "done", "artifacts": []})
+
+        async def notify(goal: dict) -> None:
+            notified.append(goal)
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=engine,
+            terminal_callback=notify,
+        )
+        worker.start()
+        await asyncio.wait_for(engine.started.wait(), timeout=1)
+
+        await queue._lock.acquire()
+        try:
+            engine.release.set()
+            await asyncio.wait_for(engine.returning.wait(), timeout=1)
+            await asyncio.sleep(0)
+            cancel_task = asyncio.create_task(queue.cancel("g1", "user cancelled"))
+            await asyncio.sleep(0)
+            stop_task = asyncio.create_task(worker.stop())
+            await asyncio.sleep(0)
+        finally:
+            queue._lock.release()
+
+        self.assertTrue(await cancel_task)
+        await asyncio.wait_for(stop_task, timeout=1)
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+        item = await queue.get_item("g1")
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "cancelled")
+        self.assertEqual(queue._queue._unfinished_tasks, 0)
+        self.assertEqual(worker.state.processed, 0)
+        self.assertEqual(notified, [])
+
     async def test_stop_preserves_goal_cancelled_during_pause_race(self) -> None:
         notified: list[dict] = []
         queue = RuntimeTaskQueue()

@@ -119,8 +119,8 @@ class RuntimeWorker:
                 await self._notify_terminal_goal(item, goal, status)
                 self._log_terminal_goal(item, status, terminal_error)
         except asyncio.CancelledError:
+            goal = await self._goal_after_worker_cancel(item, goal)
             if not queue_settled:
-                goal = goal or self._persist_interrupted_goal(item)
                 status, terminal_error, queue_settled = await self._account_terminal_goal(item, goal)
                 if queue_settled:
                     await self._notify_terminal_goal(item, goal, status)
@@ -179,6 +179,24 @@ class RuntimeWorker:
             "error": queue_item.error or "goal cancelled",
             "artifacts": goal.get("artifacts") or [],
         }
+
+    async def _goal_after_worker_cancel(
+        self,
+        item: RuntimeQueueItem,
+        goal: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        queue_item = await self.queue.get_item(item.goal_id)
+        if queue_item and queue_item.status not in {"pending", "running"}:
+            return {
+                **(goal or {}),
+                "goal_id": item.goal_id,
+                "user_id": (goal or {}).get("user_id") or item.user_id,
+                "chat_id": (goal or {}).get("chat_id") or item.chat_id,
+                "status": queue_item.status,
+                "error": queue_item.error,
+                "artifacts": (goal or {}).get("artifacts") or [],
+            }
+        return self._persist_interrupted_goal(item)
 
     async def _notify_terminal_goal(
         self,

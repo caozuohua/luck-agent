@@ -134,6 +134,62 @@ def queue_item() -> RuntimeQueueItem:
 
 
 class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_stop_calls_share_one_shutdown(self) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        callback_started = asyncio.Event()
+        callback_release = asyncio.Event()
+        notified: list[str] = []
+
+        async def notify(goal: dict) -> None:
+            callback_started.set()
+            await callback_release.wait()
+            notified.append(goal["goal_id"])
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            terminal_callback=notify,
+        )
+        worker.start()
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+
+        first_stop = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+        second_stop = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+
+        self.assertFalse(first_stop.done())
+        self.assertFalse(second_stop.done())
+        self.assertEqual(worker._task.cancelling(), 1)
+
+        callback_release.set()
+        await asyncio.wait_for(asyncio.gather(first_stop, second_stop), timeout=1)
+
+        self.assertEqual(notified, ["g1"])
+        self.assertTrue(worker._task.done())
+        active_notify_tasks = [
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name().startswith("runtime-terminal-notify-") and not task.done()
+        ]
+        self.assertEqual(active_notify_tasks, [])
+
+    async def test_stop_is_safe_after_shutdown_completed(self) -> None:
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=RuntimeTaskQueue(),
+            execution_engine=FakeEngine(),
+        )
+        worker.start()
+
+        await asyncio.wait_for(worker.stop(), timeout=1)
+        await asyncio.wait_for(worker.stop(), timeout=1)
+
+        self.assertTrue(worker._task.done())
+        self.assertFalse(worker.state.running)
+
     async def test_stop_drains_inflight_terminal_callback(self) -> None:
         queue = RuntimeTaskQueue()
         await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")

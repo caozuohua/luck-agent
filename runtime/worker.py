@@ -56,10 +56,12 @@ class RuntimeWorker:
         self.state = WorkerState(worker_id=worker_id)
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._stopping_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         if self._task and not self._task.done():
             return
+        self._stopping_task = None
         self._stop_event.clear()
         self.state.running = True
         self.state.started_at = time.time()
@@ -68,6 +70,14 @@ class RuntimeWorker:
         log.info("runtime_worker_started", worker_id=self.worker_id)
 
     async def stop(self) -> None:
+        if self._stopping_task is None:
+            self._stopping_task = asyncio.create_task(
+                self._stop_once(),
+                name=f"runtime-worker-stop-{self.worker_id}",
+            )
+        await asyncio.shield(self._stopping_task)
+
+    async def _stop_once(self) -> None:
         self._stop_event.set()
         self.state.running = False
         self.state.updated_at = time.time()
@@ -125,7 +135,7 @@ class RuntimeWorker:
                 self._log_terminal_goal(item, status, terminal_error)
         except asyncio.CancelledError:
             if notify_task:
-                await notify_task
+                await self._drain_notification(notify_task)
                 self._log_terminal_goal(item, status, terminal_error)
                 raise
             goal = await self._goal_after_worker_cancel(item, goal)
@@ -226,6 +236,14 @@ class RuntimeWorker:
                 status=status,
                 error=str(notify_error),
             )
+
+    async def _drain_notification(self, notify_task: asyncio.Task[None]) -> None:
+        while not notify_task.done():
+            try:
+                await asyncio.shield(notify_task)
+            except asyncio.CancelledError:
+                continue
+        await notify_task
 
     def _start_terminal_notification(
         self,

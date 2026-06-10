@@ -90,6 +90,9 @@ class RuntimeWorker:
         log.info("runtime_worker_pickup", worker_id=self.worker_id, goal_id=item.goal_id)
         queue_settled = False
         goal: dict[str, Any] | None = None
+        notify_task: asyncio.Task[None] | None = None
+        status = ""
+        terminal_error = ""
         try:
             try:
                 goal = await self.execution_engine.run_goal(item.goal_id)
@@ -116,14 +119,22 @@ class RuntimeWorker:
             goal = await self._preserve_queue_cancellation(item, goal)
             status, terminal_error, queue_settled = await self._account_terminal_goal(item, goal)
             if queue_settled:
-                await self._notify_terminal_goal(item, goal, status)
+                notify_task = self._start_terminal_notification(item, goal, status)
+                if notify_task:
+                    await asyncio.shield(notify_task)
                 self._log_terminal_goal(item, status, terminal_error)
         except asyncio.CancelledError:
+            if notify_task:
+                await notify_task
+                self._log_terminal_goal(item, status, terminal_error)
+                raise
             goal = await self._goal_after_worker_cancel(item, goal)
             if not queue_settled:
                 status, terminal_error, queue_settled = await self._account_terminal_goal(item, goal)
                 if queue_settled:
-                    await self._notify_terminal_goal(item, goal, status)
+                    notify_task = self._start_terminal_notification(item, goal, status)
+                    if notify_task:
+                        await asyncio.shield(notify_task)
                     self._log_terminal_goal(item, status, terminal_error)
             raise
         finally:
@@ -215,6 +226,19 @@ class RuntimeWorker:
                 status=status,
                 error=str(notify_error),
             )
+
+    def _start_terminal_notification(
+        self,
+        item: RuntimeQueueItem,
+        goal: dict[str, Any],
+        status: str,
+    ) -> asyncio.Task[None] | None:
+        if not self.terminal_callback or status not in {"done", "blocked", "failed"}:
+            return None
+        return asyncio.create_task(
+            self._notify_terminal_goal(item, goal, status),
+            name=f"runtime-terminal-notify-{item.goal_id}",
+        )
 
     def _log_terminal_goal(
         self,

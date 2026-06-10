@@ -134,6 +134,80 @@ def queue_item() -> RuntimeQueueItem:
 
 
 class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_drains_inflight_terminal_callback(self) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        callback_started = asyncio.Event()
+        callback_release = asyncio.Event()
+        notified: list[str] = []
+
+        async def notify(goal: dict) -> None:
+            callback_started.set()
+            await callback_release.wait()
+            notified.append(goal["goal_id"])
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            terminal_callback=notify,
+        )
+        worker.start()
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+
+        item = await queue.get_item("g1")
+        self.assertIsNotNone(item)
+        self.assertEqual(item.status, "done")
+        stop_task = asyncio.create_task(worker.stop())
+        await asyncio.sleep(0)
+        self.assertFalse(stop_task.done())
+
+        callback_release.set()
+        await asyncio.wait_for(stop_task, timeout=1)
+
+        self.assertEqual(notified, ["g1"])
+        self.assertEqual(worker.state.processed, 1)
+        self.assertTrue(worker._task.done())
+
+    async def test_stop_drains_failing_terminal_callback_and_logs_error(self) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        callback_started = asyncio.Event()
+        callback_release = asyncio.Event()
+        calls = 0
+
+        async def notify(goal: dict) -> None:
+            nonlocal calls
+            calls += 1
+            callback_started.set()
+            await callback_release.wait()
+            raise RuntimeError("delivery failed")
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            terminal_callback=notify,
+        )
+
+        with patch("runtime.worker.log") as runtime_log:
+            worker.start()
+            await asyncio.wait_for(callback_started.wait(), timeout=1)
+            stop_task = asyncio.create_task(worker.stop())
+            await asyncio.sleep(0)
+            self.assertFalse(stop_task.done())
+            callback_release.set()
+            await asyncio.wait_for(stop_task, timeout=1)
+
+        self.assertEqual(calls, 1)
+        runtime_log.error.assert_any_call(
+            "runtime_terminal_notify_failed",
+            goal_id="g1",
+            status="done",
+            error="delivery failed",
+        )
+        self.assertTrue(worker._task.done())
+
     async def test_stop_after_engine_done_finalizes_queued_cancellation(self) -> None:
         notified: list[dict] = []
         queue = RuntimeTaskQueue()

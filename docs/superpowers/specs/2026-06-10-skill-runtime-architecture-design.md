@@ -364,6 +364,7 @@ Goal:
 
 - `goal.created`
 - `goal.accepted`
+- `goal.started`
 - `goal.recovered`
 - `goal.cancelled`
 - `goal.completed`

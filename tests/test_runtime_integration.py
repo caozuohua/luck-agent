@@ -15,17 +15,21 @@ from core.execution_engine import ExecutionEngine
 from core.goal import GoalManager
 from core.memory import Memory
 from core.supervisor import Supervisor
-from runtime.intent_router import RuntimeIntentRouter
 from runtime.runtime_manager import RuntimeManager
 from runtime.task_queue import RuntimeTaskQueue
 from runtime.worker import WorkerManager
+from skills.blog import BlogSkill
+from skills.base import SkillContext
+from skills.legacy_react import LegacyReactSkill
+from skills.registry import SkillRegistry
+from skills.router import SkillRouter
 
 
 class FakeGoalManager:
     def __init__(self) -> None:
         self.created: list[dict] = []
 
-    def create_goal_from_message(self, **kwargs) -> str:
+    def create_goal(self, **kwargs) -> str:
         self.created.append(kwargs)
         return "goal-test"
 
@@ -47,12 +51,32 @@ class EndToEndGenerator:
         )
 
 
+def blog_runtime_dependencies(
+    generator: EndToEndGenerator | None = None,
+) -> tuple[SkillRegistry, SkillRouter]:
+    registry = SkillRegistry(
+        [
+            BlogSkill(generator=generator or EndToEndGenerator()),
+            LegacyReactSkill(),
+        ]
+    )
+    return registry, SkillRouter(registry)
+
+
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def test_blog_topic_request_routes_to_goal_runtime(self) -> None:
-        route = RuntimeIntentRouter().route("帮我整理一个博客选题")
+        _, router = blog_runtime_dependencies()
+        route = router.route(
+            SkillContext(
+                user_id="route-user",
+                chat_id="route-chat",
+                text="帮我整理一个博客选题",
+            )
+        )
 
         self.assertEqual(route.intent, "blog_write")
-        self.assertTrue(route.use_goal_runtime)
+        self.assertEqual(route.skill.metadata.name, "blog_write")
+        self.assertEqual(route.execution_mode, "goal_runtime")
 
     def test_agent_runtime_wires_final_result_dependencies(self) -> None:
         source = inspect.getsource(AgentApp._init_components)
@@ -79,10 +103,13 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_manager_submits_goal_without_inline_execution(self) -> None:
         goal_manager = FakeGoalManager()
         queue = RuntimeTaskQueue(max_active=1)
+        registry, router = blog_runtime_dependencies()
         manager = RuntimeManager(
             goal_manager=goal_manager,
             execution_engine=FailingExecutionEngine(),
             queue=queue,
+            skill_registry=registry,
+            skill_router=router,
         )
 
         result = await manager.handle_message(
@@ -102,7 +129,13 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             memory = Memory(str(Path(temp_dir) / "runtime.db"))
             goal_manager = GoalManager(memory)
             queue = RuntimeTaskQueue(max_active=1)
-            manager = RuntimeManager(goal_manager=goal_manager, queue=queue)
+            registry, router = blog_runtime_dependencies()
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                queue=queue,
+                skill_registry=registry,
+                skill_router=router,
+            )
             goal_id = goal_manager.create_goal(
                 user_id="cancel-user",
                 chat_id="cancel-chat",
@@ -140,10 +173,13 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             engine.register_controller(
                 BlogController(generator=EndToEndGenerator())
             )
+            registry, router = blog_runtime_dependencies()
             manager = RuntimeManager(
                 goal_manager=goal_manager,
                 execution_engine=engine,
                 queue=queue,
+                skill_registry=registry,
+                skill_router=router,
             )
             terminal_goals: list[dict] = []
 
@@ -227,10 +263,13 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 supervisor=Supervisor(memory=memory),
             )
             engine.register_controller(BlogController(generator=EndToEndGenerator()))
+            registry, router = blog_runtime_dependencies()
             manager = RuntimeManager(
                 goal_manager=goal_manager,
                 execution_engine=engine,
                 queue=queue,
+                skill_registry=registry,
+                skill_router=router,
             )
             terminal_goals: list[dict] = []
 
@@ -248,7 +287,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     duplicate_recovery = await manager.recover_goals()
 
                 self.assertEqual(recovered, 2)
-                self.assertEqual(duplicate_recovery, 2)
+                self.assertEqual(duplicate_recovery, 0)
                 snapshot = await queue.snapshot()
                 self.assertEqual(snapshot["counts"], {"pending": 2})
                 recovered_items = {
@@ -313,7 +352,13 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     (time.time() - 600, stale_id),
                 )
             queue = RuntimeTaskQueue(max_active=1)
-            manager = RuntimeManager(goal_manager=goal_manager, queue=queue)
+            registry, router = blog_runtime_dependencies()
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                queue=queue,
+                skill_registry=registry,
+                skill_router=router,
+            )
 
             try:
                 self.assertEqual(await manager.recover_goals(), 1)
@@ -350,11 +395,17 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     status="done",
                 )
             queue = RuntimeTaskQueue(max_active=1)
-            manager = RuntimeManager(goal_manager=goal_manager, queue=queue)
+            registry, router = blog_runtime_dependencies()
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                queue=queue,
+                skill_registry=registry,
+                skill_router=router,
+            )
 
             try:
                 self.assertEqual(await manager.recover_goals(), 125)
-                self.assertEqual(await manager.recover_goals(), 125)
+                self.assertEqual(await manager.recover_goals(), 0)
 
                 snapshot = await queue.snapshot()
                 self.assertEqual(snapshot["counts"], {"pending": 125})

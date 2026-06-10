@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -105,11 +106,18 @@ class RuntimeTaskQueue:
             allowed_statuses={"pending", "running", "cancelled"},
         )
 
-    async def cancel(self, goal_id: str, reason: str = "cancelled") -> bool:
+    async def cancel(
+        self,
+        goal_id: str,
+        reason: str = "cancelled",
+        before_transition: Callable[[RuntimeQueueItem], None] | None = None,
+    ) -> bool:
         async with self._lock:
             item = self._items.get(goal_id)
             if not item or item.status not in {"pending", "running"}:
                 return False
+            if before_transition is not None:
+                before_transition(item)
             previous_status = item.status
             item.status = "cancelled"
             item.error = reason

@@ -48,9 +48,22 @@ class SkillRouter:
         match_error_handler: MatchErrorHandler | None = None,
     ) -> None:
         self.registry = registry
-        self.match_error_handler = match_error_handler
+        self._match_error_handlers: list[MatchErrorHandler] = []
+        if match_error_handler is not None:
+            self.add_match_error_handler(match_error_handler)
 
-    def route(self, context: SkillContext) -> SkillRoute:
+    def add_match_error_handler(
+        self,
+        handler: MatchErrorHandler,
+    ) -> None:
+        if handler not in self._match_error_handlers:
+            self._match_error_handlers.append(handler)
+
+    def route(
+        self,
+        context: SkillContext,
+        match_error_handler: MatchErrorHandler | None = None,
+    ) -> SkillRoute:
         candidates: list[tuple[float, int, str, Skill, str]] = []
         fallback: Skill | None = None
         normalized_context = SkillContext(
@@ -77,6 +90,7 @@ class SkillRouter:
                     skill,
                     normalized_context,
                     error,
+                    match_error_handler,
                 )
                 continue
             if not isinstance(match, SkillMatch):
@@ -87,6 +101,7 @@ class SkillRouter:
                         "match must return SkillMatch, "
                         f"got {type(match).__name__}"
                     ),
+                    match_error_handler,
                 )
                 continue
 
@@ -96,6 +111,7 @@ class SkillRouter:
                     skill,
                     normalized_context,
                     TypeError("match.matched must be a bool"),
+                    match_error_handler,
                 )
                 continue
             if (
@@ -108,6 +124,7 @@ class SkillRouter:
                     skill,
                     normalized_context,
                     ValueError("match.score must be finite and between 0 and 1"),
+                    match_error_handler,
                 )
                 continue
             if not isinstance(match.reason, str):
@@ -115,6 +132,7 @@ class SkillRouter:
                     skill,
                     normalized_context,
                     TypeError("match.reason must be a string"),
+                    match_error_handler,
                 )
                 continue
 
@@ -144,19 +162,25 @@ class SkillRouter:
         skill: Skill,
         context: SkillContext,
         error: Exception,
+        match_error_handler: MatchErrorHandler | None = None,
     ) -> None:
         log.warning(
             "skill_match_failed",
             skill=skill.metadata.name,
             error=f"{type(error).__name__}: {error}",
         )
-        if self.match_error_handler is None:
-            return
-        try:
-            self.match_error_handler(skill, context, error)
-        except Exception as handler_error:
-            log.warning(
-                "skill_match_error_handler_failed",
-                skill=skill.metadata.name,
-                error=f"{type(handler_error).__name__}: {handler_error}",
-            )
+        handlers = list(self._match_error_handlers)
+        if (
+            match_error_handler is not None
+            and match_error_handler not in handlers
+        ):
+            handlers.insert(0, match_error_handler)
+        for handler in handlers:
+            try:
+                handler(skill, context, error)
+            except Exception as handler_error:
+                log.warning(
+                    "skill_match_error_handler_failed",
+                    skill=skill.metadata.name,
+                    error=type(handler_error).__name__,
+                )

@@ -7,6 +7,62 @@ from runtime.task_queue import RuntimeTaskQueue
 
 
 class RuntimeTaskQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_runs_callback_before_transition(self) -> None:
+        queue = RuntimeTaskQueue()
+        item = await queue.submit(
+            goal_id="g1",
+            user_id="u1",
+            chat_id="c1",
+        )
+        observed: list[tuple[str, str, float | None]] = []
+
+        def before_transition(current) -> None:
+            self.assertIs(current, item)
+            observed.append(
+                (current.status, current.error, current.finished_at)
+            )
+
+        self.assertTrue(
+            await queue.cancel(
+                "g1",
+                "user cancelled",
+                before_transition=before_transition,
+            )
+        )
+
+        self.assertEqual(observed, [("pending", "", None)])
+        self.assertEqual(item.status, "cancelled")
+        self.assertEqual(item.error, "user cancelled")
+        self.assertIsNotNone(item.finished_at)
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+    async def test_cancel_callback_failure_leaves_pending_item_unchanged(
+        self,
+    ) -> None:
+        queue = RuntimeTaskQueue()
+        item = await queue.submit(
+            goal_id="g1",
+            user_id="u1",
+            chat_id="c1",
+        )
+
+        def fail_before_transition(current) -> None:
+            self.assertIs(current, item)
+            raise RuntimeError("persistence failed")
+
+        with self.assertRaisesRegex(RuntimeError, "persistence failed"):
+            await queue.cancel(
+                "g1",
+                "user cancelled",
+                before_transition=fail_before_transition,
+            )
+
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(item.error, "")
+        self.assertIsNone(item.finished_at)
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(queue._queue.join(), timeout=0.01)
+
     async def test_cancel_running_waits_for_worker_to_finish_item(self) -> None:
         queue = RuntimeTaskQueue()
         await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")

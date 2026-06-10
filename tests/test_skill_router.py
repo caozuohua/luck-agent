@@ -231,6 +231,7 @@ class SkillRouterTests(unittest.TestCase):
         broken = FakeSkill(name="broken", raises=True)
         fallback = LegacyReactSkill()
         registry = SkillRegistry([broken, fallback])
+        calls: list[str] = []
 
         def failing_handler(
             skill: object,
@@ -238,14 +239,78 @@ class SkillRouterTests(unittest.TestCase):
             error: Exception,
         ) -> None:
             self.assertIs(context, broken.context)
+            calls.append("failing")
             raise RuntimeError("handler failed")
 
-        result = SkillRouter(
+        router = SkillRouter(
             registry,
             match_error_handler=failing_handler,
-        ).route(self.context)
+        )
+        router.add_match_error_handler(
+            lambda skill, context, error: calls.append("healthy")
+        )
+
+        result = router.route(self.context)
 
         self.assertIs(result.skill, fallback)
+        self.assertEqual(calls, ["failing", "healthy"])
+
+    def test_router_calls_constructor_and_added_handlers_once_each(self) -> None:
+        broken = FakeSkill(name="broken", raises=True)
+        registry = SkillRegistry([broken, LegacyReactSkill()])
+        calls: list[str] = []
+        router = SkillRouter(
+            registry,
+            match_error_handler=lambda skill, context, error: calls.append(
+                "constructor"
+            ),
+        )
+        router.add_match_error_handler(
+            lambda skill, context, error: calls.append("added")
+        )
+
+        router.route(self.context)
+
+        self.assertEqual(calls, ["constructor", "added"])
+
+    def test_add_match_error_handler_deduplicates_same_handler(self) -> None:
+        broken = FakeSkill(name="broken", raises=True)
+        registry = SkillRegistry([broken, LegacyReactSkill()])
+        calls: list[str] = []
+
+        def handler(skill, context, error) -> None:
+            calls.append(skill.metadata.name)
+
+        router = SkillRouter(registry, match_error_handler=handler)
+        router.add_match_error_handler(handler)
+
+        router.route(self.context)
+
+        self.assertEqual(calls, ["broken"])
+
+    def test_route_uses_per_call_handler_without_persisting_it(self) -> None:
+        broken = FakeSkill(name="broken", raises=True)
+        registry = SkillRegistry([broken, LegacyReactSkill()])
+        calls: list[str] = []
+        router = SkillRouter(
+            registry,
+            match_error_handler=lambda skill, context, error: calls.append(
+                "persistent"
+            ),
+        )
+
+        router.route(
+            self.context,
+            match_error_handler=lambda skill, context, error: calls.append(
+                "per-call"
+            ),
+        )
+        router.route(self.context)
+
+        self.assertEqual(
+            calls,
+            ["per-call", "persistent", "persistent"],
+        )
 
     def test_router_normalizes_context_text_before_matching(self) -> None:
         skill = ContextCapturingSkill()

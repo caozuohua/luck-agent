@@ -220,9 +220,11 @@ class AgentApp:
         from handlers.message   import AgentMessageHandler
         from handlers.file_handler import FileMessageHandler
         from controllers.blog_controller import BlogController
+        from controllers.content_generator import ModelContentGenerator
         from core.execution_engine import ExecutionEngine
         from core.goal import GoalManager
         from core.supervisor import Supervisor
+        from runtime.notifications import RuntimeGoalNotifier
         from runtime.runtime_manager import RuntimeManager
         from runtime.task_queue import RuntimeTaskQueue
         from runtime.worker import WorkerManager
@@ -309,16 +311,19 @@ class AgentApp:
             goal_manager=goal_manager,
             supervisor=Supervisor(memory=self._memory),
         )
-        execution_engine.register_controller(BlogController())
+        generator = ModelContentGenerator(router=self._router, model_name=cfg.MODEL_PRO)
+        execution_engine.register_controller(BlogController(generator=generator))
         self._runtime_manager = RuntimeManager(
             goal_manager=goal_manager,
             execution_engine=execution_engine,
             queue=runtime_queue,
         )
+        notifier = RuntimeGoalNotifier(sender=self._sender, card_builder=CardBuilder)
         self._runtime_workers = WorkerManager(
             queue=runtime_queue,
             execution_engine=execution_engine,
             worker_count=1,
+            terminal_callback=notifier.notify,
         )
 
         # 调度器：定时任务触发 → 注入 AgentMessageHandler

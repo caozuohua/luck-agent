@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from core.goal import GoalManager
+from core.memory import Memory
 from runtime.task_queue import RuntimeQueueItem, RuntimeTaskQueue
 from runtime.worker import RuntimeWorker, WorkerManager
 
@@ -50,6 +54,7 @@ class FakeGoalManager:
         self.raises = raises
         self.calls: list[tuple[str, str]] = []
         self.pause_calls: list[tuple[str, str]] = []
+        self.cancel_calls: list[tuple[str, str]] = []
 
     def fail_goal(self, goal_id: str, error: str) -> dict:
         self.calls.append((goal_id, error))
@@ -64,6 +69,17 @@ class FakeGoalManager:
             "user_id": "u1",
             "chat_id": "c1",
             "status": "interrupted",
+            "error": reason,
+            "artifacts": [],
+        }
+
+    def cancel_goal(self, goal_id: str, reason: str = "user_cancelled") -> dict:
+        self.cancel_calls.append((goal_id, reason))
+        return {
+            "goal_id": goal_id,
+            "user_id": "u1",
+            "chat_id": "c1",
+            "status": "cancelled",
             "error": reason,
             "artifacts": [],
         }
@@ -396,6 +412,100 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.state.processed, 0)
         self.assertEqual(worker.state.failed, 0)
         self.assertEqual(notified, [])
+
+    async def test_queue_cancel_persists_cancelled_goal_without_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            goal_id = goal_manager.create_goal(
+                user_id="u1",
+                chat_id="c1",
+                title="cancel running goal",
+            )
+            queue = RuntimeTaskQueue()
+            await queue.submit(goal_id=goal_id, user_id="u1", chat_id="c1")
+            engine = ControlledEngine(
+                {"status": "done", "artifacts": []},
+                goal_manager=goal_manager,
+            )
+            notified: list[dict] = []
+
+            async def notify(goal: dict) -> None:
+                notified.append(goal)
+
+            worker = RuntimeWorker(
+                worker_id="w1",
+                queue=queue,
+                execution_engine=engine,
+                terminal_callback=notify,
+            )
+            worker.start()
+            try:
+                await asyncio.wait_for(engine.started.wait(), timeout=1)
+                self.assertTrue(await queue.cancel(goal_id, "user cancelled"))
+                engine.release.set()
+                await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+                goal = goal_manager.get_goal(goal_id)
+                item = await queue.get_item(goal_id)
+                self.assertEqual(goal["status"], "cancelled")
+                self.assertEqual(goal["error"], "user cancelled")
+                self.assertIsNotNone(item)
+                self.assertEqual(item.status, "cancelled")
+                self.assertEqual(item.error, "user cancelled")
+                self.assertEqual(notified, [])
+            finally:
+                await worker.stop()
+                memory._local.conn.close()
+
+    async def test_queue_cancel_respects_goal_already_done(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            goal_id = goal_manager.create_goal(
+                user_id="u1",
+                chat_id="c1",
+                title="already done goal",
+            )
+            queue = RuntimeTaskQueue()
+            await queue.submit(goal_id=goal_id, user_id="u1", chat_id="c1")
+            engine = ControlledEngine(
+                {"status": "done", "artifacts": []},
+                goal_manager=goal_manager,
+            )
+            notified: list[dict] = []
+
+            async def notify(goal: dict) -> None:
+                notified.append(goal)
+
+            worker = RuntimeWorker(
+                worker_id="w1",
+                queue=queue,
+                execution_engine=engine,
+                terminal_callback=notify,
+            )
+            worker.start()
+            try:
+                await asyncio.wait_for(engine.started.wait(), timeout=1)
+                goal_manager.complete_goal(goal_id)
+                self.assertTrue(await queue.cancel(goal_id, "late cancellation"))
+                engine.release.set()
+                await asyncio.wait_for(queue._queue.join(), timeout=1)
+                for _ in range(100):
+                    if notified:
+                        break
+                    await asyncio.sleep(0.01)
+
+                goal = goal_manager.get_goal(goal_id)
+                item = await queue.get_item(goal_id)
+                self.assertEqual(goal["status"], "done")
+                self.assertIsNotNone(item)
+                self.assertEqual(item.status, "done")
+                self.assertEqual(len(notified), 1)
+                self.assertEqual(notified[0]["status"], "done")
+            finally:
+                await worker.stop()
+                memory._local.conn.close()
 
     async def test_worker_counts_only_successful_queue_transition(self) -> None:
         queue = FakeQueue()

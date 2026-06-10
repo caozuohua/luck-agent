@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent import AgentApp
 from controllers.blog_controller import BlogController
@@ -66,6 +68,14 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("terminal_callback=notifier.notify", source)
 
+    def test_agent_recovers_runtime_goals_before_starting_workers(self) -> None:
+        source = inspect.getsource(AgentApp.run)
+
+        recover_call = "await self._runtime_manager.recover_goals()"
+        worker_start = "self._runtime_workers.start()"
+        self.assertIn(recover_call, source)
+        self.assertLess(source.index(recover_call), source.index(worker_start))
+
     async def test_runtime_manager_submits_goal_without_inline_execution(self) -> None:
         goal_manager = FakeGoalManager()
         queue = RuntimeTaskQueue(max_active=1)
@@ -86,6 +96,37 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(goal_manager.created[0]["intent"], "blog_write")
         snapshot = await queue.snapshot()
         self.assertEqual(snapshot["counts"]["pending"], 1)
+
+    async def test_runtime_manager_cancels_pending_goal_in_sqlite_and_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            queue = RuntimeTaskQueue(max_active=1)
+            manager = RuntimeManager(goal_manager=goal_manager, queue=queue)
+            goal_id = goal_manager.create_goal(
+                user_id="cancel-user",
+                chat_id="cancel-chat",
+                title="cancel pending goal",
+                intent="blog_write",
+            )
+            await queue.submit(
+                goal_id=goal_id,
+                user_id="cancel-user",
+                chat_id="cancel-chat",
+            )
+
+            try:
+                goal = await manager.cancel_goal(goal_id, "user cancelled")
+                snapshot = await queue.snapshot()
+
+                self.assertEqual(goal["status"], "cancelled")
+                self.assertEqual(goal["error"], "user cancelled")
+                self.assertEqual(goal_manager.get_goal(goal_id)["status"], "cancelled")
+                self.assertEqual(snapshot["counts"], {"cancelled": 1})
+                self.assertEqual(snapshot["items"][0]["error"], "user cancelled")
+                await asyncio.wait_for(queue._queue.join(), timeout=1)
+            finally:
+                memory._local.conn.close()
 
     async def test_blog_topic_request_reaches_persisted_final_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -154,6 +195,136 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(snapshot["counts"].get("done"), 1)
             finally:
                 await workers.stop()
+                memory._local.conn.close()
+
+    async def test_recover_persisted_goals_requeues_and_completes_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            pending_id = goal_manager.create_goal(
+                user_id="pending-user",
+                chat_id="pending-chat",
+                title="pending goal",
+                intent="blog_write",
+            )
+            interrupted_id = goal_manager.create_goal(
+                user_id="interrupted-user",
+                chat_id="interrupted-chat",
+                title="interrupted goal",
+                intent="blog_write",
+                status="interrupted",
+            )
+            done_id = goal_manager.create_goal(
+                user_id="done-user",
+                chat_id="done-chat",
+                title="done goal",
+                intent="blog_write",
+                status="done",
+            )
+            queue = RuntimeTaskQueue(max_active=1)
+            engine = ExecutionEngine(
+                goal_manager=goal_manager,
+                supervisor=Supervisor(memory=memory),
+            )
+            engine.register_controller(BlogController(generator=EndToEndGenerator()))
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                execution_engine=engine,
+                queue=queue,
+            )
+            terminal_goals: list[dict] = []
+
+            async def collect_terminal_goal(goal: dict) -> None:
+                terminal_goals.append(goal)
+
+            workers = WorkerManager(
+                queue=queue,
+                execution_engine=engine,
+                terminal_callback=collect_terminal_goal,
+            )
+            try:
+                with patch("runtime.runtime_manager.log") as runtime_log:
+                    recovered = await manager.recover_goals()
+                    duplicate_recovery = await manager.recover_goals()
+
+                self.assertEqual(recovered, 2)
+                self.assertEqual(duplicate_recovery, 2)
+                snapshot = await queue.snapshot()
+                self.assertEqual(snapshot["counts"], {"pending": 2})
+                recovered_items = {
+                    item["goal_id"]: item
+                    for item in snapshot["items"]
+                }
+                self.assertEqual(
+                    set(recovered_items),
+                    {pending_id, interrupted_id},
+                )
+                self.assertEqual(
+                    recovered_items[pending_id]["meta"]["intent"],
+                    "blog_write",
+                )
+                self.assertEqual(
+                    (
+                        recovered_items[pending_id]["user_id"],
+                        recovered_items[pending_id]["chat_id"],
+                    ),
+                    ("pending-user", "pending-chat"),
+                )
+                self.assertNotIn(done_id, recovered_items)
+                runtime_log.info.assert_any_call(
+                    "runtime_goals_recovered",
+                    count=2,
+                )
+
+                workers.start()
+                for _ in range(200):
+                    snapshot = await queue.snapshot()
+                    if (
+                        snapshot["counts"].get("done") == 2
+                        and len(terminal_goals) == 2
+                    ):
+                        break
+                    await asyncio.sleep(0.01)
+
+                self.assertEqual(snapshot["counts"], {"done": 2})
+                self.assertEqual(
+                    {goal["goal_id"] for goal in terminal_goals},
+                    {pending_id, interrupted_id},
+                )
+                self.assertEqual(goal_manager.get_goal(done_id)["status"], "done")
+            finally:
+                await workers.stop()
+                memory._local.conn.close()
+
+    async def test_recover_marks_stale_running_goal_interrupted_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            stale_id = goal_manager.create_goal(
+                user_id="stale-user",
+                chat_id="stale-chat",
+                title="stale goal",
+                intent="blog_write",
+                status="running",
+            )
+            with memory._conn() as conn:
+                conn.execute(
+                    "UPDATE goals SET updated_at=? WHERE goal_id=?",
+                    (time.time() - 600, stale_id),
+                )
+            queue = RuntimeTaskQueue(max_active=1)
+            manager = RuntimeManager(goal_manager=goal_manager, queue=queue)
+
+            try:
+                self.assertEqual(await manager.recover_goals(), 1)
+                snapshot = await queue.snapshot()
+                self.assertEqual(snapshot["counts"], {"pending": 1})
+                self.assertEqual(snapshot["items"][0]["goal_id"], stale_id)
+                self.assertEqual(
+                    goal_manager.get_goal(stale_id)["status"],
+                    "interrupted",
+                )
+            finally:
                 memory._local.conn.close()
 
 

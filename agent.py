@@ -531,6 +531,7 @@ class AgentApp:
         await self._queue.start()
         await self._scheduler.start()
         await self._health.start()
+        await self._runtime_manager.recover_goals()
         self._runtime_workers.start()
 
         # 构建 WS 事件分发

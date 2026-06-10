@@ -85,7 +85,11 @@ class RuntimeTaskQueue:
             return self._items.get(goal_id)
 
     async def mark_done(self, goal_id: str) -> bool:
-        return await self._mark_terminal(goal_id, status="done")
+        return await self._mark_terminal(
+            goal_id,
+            status="done",
+            allowed_statuses={"pending", "running", "cancelled"},
+        )
 
     async def mark_failed(self, goal_id: str, error: str) -> bool:
         return await self._mark_terminal(goal_id, status="failed", error=error)

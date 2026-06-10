@@ -191,15 +191,10 @@ class RuntimeWorker:
         queue_item = await self.queue.get_item(item.goal_id)
         if not queue_item or queue_item.status != "cancelled":
             return goal
-        return {
-            **goal,
-            "goal_id": item.goal_id,
-            "user_id": goal.get("user_id") or item.user_id,
-            "chat_id": goal.get("chat_id") or item.chat_id,
-            "status": "cancelled",
-            "error": queue_item.error or "goal cancelled",
-            "artifacts": goal.get("artifacts") or [],
-        }
+        return self.execution_engine.goal_manager.cancel_goal(
+            item.goal_id,
+            queue_item.error or "goal cancelled",
+        )
 
     async def _goal_after_worker_cancel(
         self,

@@ -361,7 +361,6 @@ class GoalManager:
     def recover_interrupted_goals(self, stale_after_seconds: int = 300) -> list[dict]:
         """Mark stale running goals as interrupted and return recoverable goals."""
         now = time.time()
-        recoverable: list[dict] = []
         for goal in self.memory.list_goals(status="running", limit=100):
             updated_at = float(goal.get("updated_at") or 0)
             if now - updated_at >= stale_after_seconds:
@@ -370,9 +369,11 @@ class GoalManager:
                     status="interrupted",
                     error=f"stale running goal after {stale_after_seconds}s",
                 )
-                recoverable.append(self.get_goal(goal["goal_id"]))
-        recoverable.extend(self.memory.list_goals(status="interrupted", limit=100))
-        return recoverable
+        recoverable: dict[str, dict] = {}
+        for status in ("pending", "interrupted"):
+            for goal in self.memory.list_goals(status=status, limit=100):
+                recoverable[goal["goal_id"]] = goal
+        return list(recoverable.values())
 
     @staticmethod
     def default_success_criteria(intent: str) -> list[str]:

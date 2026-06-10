@@ -82,6 +82,34 @@ class RuntimeManager:
     async def queue_snapshot(self) -> dict:
         return await self.queue.snapshot()
 
+    async def recover_goals(self) -> int:
+        goals = self.goal_manager.recover_interrupted_goals()
+        for goal in goals:
+            intent = str(goal.get("intent") or "general")
+            await self.queue.submit(
+                goal_id=goal["goal_id"],
+                user_id=goal["user_id"],
+                chat_id=goal["chat_id"],
+                priority=self._priority_for_intent(intent),
+                meta={"intent": intent, "reason": "startup_recovery"},
+            )
+        log.info("runtime_goals_recovered", count=len(goals))
+        return len(goals)
+
+    async def cancel_goal(self, goal_id: str, reason: str = "user_cancelled") -> dict:
+        goal = self.goal_manager.cancel_goal(goal_id, reason)
+        status = goal.get("status")
+        if status == "cancelled":
+            await self.queue.cancel(goal_id, str(goal.get("error") or reason))
+        elif status == "done":
+            await self.queue.mark_done(goal_id)
+        elif status == "failed":
+            await self.queue.mark_failed(
+                goal_id,
+                str(goal.get("error") or "goal failed"),
+            )
+        return goal
+
     @staticmethod
     def _priority_for_intent(intent: str) -> int:
         if intent == "blog_write":

@@ -91,10 +91,34 @@ class RuntimeGoalNotifierTests(unittest.IsolatedAsyncioTestCase):
             "task_id": "g1",
         })
 
+    async def test_done_skips_invalid_artifacts_after_valid_content(self) -> None:
+        await self.notifier.notify({
+            "goal_id": "g1",
+            "chat_id": "c1",
+            "status": "done",
+            "artifacts": [
+                {
+                    "type": "generated_content",
+                    "content": "valid answer",
+                    "model": "m-valid",
+                },
+                None,
+                "bad",
+            ],
+        })
+
+        self.assertEqual(FakeCardBuilder.agent_reply_calls[0], {
+            "text": "valid answer",
+            "model": "m-valid",
+            "task_id": "g1",
+        })
+
     async def test_done_without_nonempty_generated_content_raises(self) -> None:
         for artifacts in (
             [],
+            [None, "bad", 42],
             [{"type": "log", "content": "trace"}],
+            [None, {"type": "generated_content", "content": ""}, "bad"],
             [{"type": "generated_content", "content": ""}],
             [{"type": "generated_content", "content": "  "}],
         ):

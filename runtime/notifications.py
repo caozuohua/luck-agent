@@ -21,7 +21,8 @@ class RuntimeGoalNotifier:
                 (
                     item
                     for item in reversed(goal.get("artifacts") or [])
-                    if item.get("type") == "generated_content"
+                    if isinstance(item, dict)
+                    and item.get("type") == "generated_content"
                     and str(item.get("content") or "").strip()
                 ),
                 None,

@@ -289,7 +289,7 @@ class RuntimeWorker:
                 if get_goal:
                     try:
                         goal = get_goal(item.goal_id)
-                        if goal.get("status") == "cancelled":
+                        if goal.get("status") in {"done", "failed", "cancelled"}:
                             return goal
                     except Exception:
                         pass

@@ -327,6 +327,46 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 memory._local.conn.close()
 
+    async def test_recover_scans_more_than_one_page_of_pending_goals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            pending_ids: set[str] = set()
+            with patch("core.goal.log"):
+                for index in range(125):
+                    pending_ids.add(
+                        goal_manager.create_goal(
+                            user_id=f"user-{index}",
+                            chat_id=f"chat-{index}",
+                            title=f"pending goal {index}",
+                            intent="blog_write",
+                        )
+                    )
+                done_id = goal_manager.create_goal(
+                    user_id="done-user",
+                    chat_id="done-chat",
+                    title="done goal",
+                    intent="blog_write",
+                    status="done",
+                )
+            queue = RuntimeTaskQueue(max_active=1)
+            manager = RuntimeManager(goal_manager=goal_manager, queue=queue)
+
+            try:
+                self.assertEqual(await manager.recover_goals(), 125)
+                self.assertEqual(await manager.recover_goals(), 125)
+
+                snapshot = await queue.snapshot()
+                self.assertEqual(snapshot["counts"], {"pending": 125})
+                recovered_ids = {
+                    item["goal_id"]
+                    for item in snapshot["items"]
+                }
+                self.assertEqual(recovered_ids, pending_ids)
+                self.assertNotIn(done_id, recovered_ids)
+            finally:
+                memory._local.conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

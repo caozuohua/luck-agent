@@ -125,9 +125,19 @@ class GoalManager:
             raise GoalError(f"goal not found: {goal_id}")
         return goal
 
-    def list_goals(self, user_id: str | None = None, status: str | None = None,
-                   limit: int = 20) -> list[dict]:
-        return self.memory.list_goals(user_id=user_id, status=status, limit=limit)
+    def list_goals(
+        self,
+        user_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+        return self.memory.list_goals(
+            user_id=user_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
 
     def list_active_goals(self, user_id: str | None = None, limit: int = 20) -> list[dict]:
         goals: list[dict] = []
@@ -149,7 +159,17 @@ class GoalManager:
         goal = self.get_goal(goal_id)
         if goal["status"] not in PAUSABLE_STATUSES:
             raise GoalError(f"goal status cannot be paused: {goal['status']}")
-        self.memory.update_goal(goal_id, status="interrupted", error=reason)
+        updated = self.memory.update_goal_if_status(
+            goal_id,
+            PAUSABLE_STATUSES,
+            status="interrupted",
+            error=reason,
+        )
+        if not updated:
+            current = self.get_goal(goal_id)
+            if current["status"] in TERMINAL_STATUSES:
+                return current
+            raise GoalError(f"goal status cannot be paused: {current['status']}")
         log.info("goal_paused", goal_id=goal_id, reason=reason[:120])
         return self.get_goal(goal_id)
 
@@ -361,7 +381,15 @@ class GoalManager:
     def recover_interrupted_goals(self, stale_after_seconds: int = 300) -> list[dict]:
         """Mark stale running goals as interrupted and return recoverable goals."""
         now = time.time()
-        for goal in self.memory.list_goals(status="running", limit=100):
+        running_goals = self._list_all_goals(status="running")
+        pending_goals = self._list_all_goals(status="pending")
+        interrupted_goals = self._list_all_goals(status="interrupted")
+
+        recoverable = {
+            goal["goal_id"]: goal
+            for goal in pending_goals + interrupted_goals
+        }
+        for goal in running_goals:
             updated_at = float(goal.get("updated_at") or 0)
             if now - updated_at >= stale_after_seconds:
                 self.memory.update_goal(
@@ -369,11 +397,22 @@ class GoalManager:
                     status="interrupted",
                     error=f"stale running goal after {stale_after_seconds}s",
                 )
-        recoverable: dict[str, dict] = {}
-        for status in ("pending", "interrupted"):
-            for goal in self.memory.list_goals(status=status, limit=100):
-                recoverable[goal["goal_id"]] = goal
+                recoverable[goal["goal_id"]] = self.get_goal(goal["goal_id"])
         return list(recoverable.values())
+
+    def _list_all_goals(self, *, status: str, page_size: int = 100) -> list[dict]:
+        goals: list[dict] = []
+        offset = 0
+        while True:
+            page = self.memory.list_goals(
+                status=status,
+                limit=page_size,
+                offset=offset,
+            )
+            goals.extend(page)
+            if len(page) < page_size:
+                return goals
+            offset += len(page)
 
     @staticmethod
     def default_success_criteria(intent: str) -> list[str]:

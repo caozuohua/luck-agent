@@ -355,6 +355,15 @@ class Memory:
 
     def update_goal(self, goal_id: str, **updates: Any) -> bool:
         """Update mutable goal fields. JSON fields accept native Python objects."""
+        return self.update_goal_if_status(goal_id, None, **updates)
+
+    def update_goal_if_status(
+        self,
+        goal_id: str,
+        expected_statuses: set[str] | None,
+        **updates: Any,
+    ) -> bool:
+        """Update a goal only when its current status matches the expected set."""
         allowed = {
             "title", "intent", "status", "success_criteria", "current_step",
             "plan", "artifacts", "error",
@@ -370,12 +379,24 @@ class Memory:
 
         set_clause = ", ".join(f"{k}=?" for k in values)
         params = list(values.values()) + [goal_id]
+        where = "goal_id=?"
+        if expected_statuses is not None:
+            if not expected_statuses:
+                return False
+            placeholders = ", ".join("?" for _ in expected_statuses)
+            where += f" AND status IN ({placeholders})"
+            params.extend(sorted(expected_statuses))
         with self._conn() as conn:
-            cur = conn.execute(f"UPDATE goals SET {set_clause} WHERE goal_id=?", params)
+            cur = conn.execute(f"UPDATE goals SET {set_clause} WHERE {where}", params)
         return cur.rowcount > 0
 
-    def list_goals(self, user_id: str | None = None, status: str | None = None,
-                   limit: int = 20) -> list[dict]:
+    def list_goals(
+        self,
+        user_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
         clauses, params = [], []
         if user_id:
             clauses.append("user_id=?")
@@ -384,11 +405,12 @@ class Memory:
             clauses.append("status=?")
             params.append(status)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(limit)
+        params.extend((limit, offset))
         with self._conn() as conn:
             rows = conn.execute(
                 f"""SELECT * FROM goals {where}
-                    ORDER BY updated_at DESC LIMIT ?""",
+                    ORDER BY updated_at DESC, goal_id DESC
+                    LIMIT ? OFFSET ?""",
                 params,
             ).fetchall()
         return [self._decode_json_fields(r, ("success_criteria", "plan", "artifacts")) for r in rows]

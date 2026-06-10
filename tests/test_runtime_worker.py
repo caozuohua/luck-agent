@@ -351,6 +351,111 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.state.failed, 0)
         self.assertEqual(notified, [])
 
+    async def test_stop_preserves_goal_completed_before_pause(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            goal_id = goal_manager.create_goal(
+                user_id="u1",
+                chat_id="c1",
+                title="completed during shutdown",
+            )
+            queue = RuntimeTaskQueue()
+            await queue.submit(goal_id=goal_id, user_id="u1", chat_id="c1")
+            engine = BlockingEngine(goal_manager)
+            notified: list[dict] = []
+
+            async def notify(goal: dict) -> None:
+                notified.append(goal)
+
+            worker = RuntimeWorker(
+                worker_id="w1",
+                queue=queue,
+                execution_engine=engine,
+                terminal_callback=notify,
+            )
+            worker.start()
+            try:
+                await asyncio.wait_for(engine.started.wait(), timeout=1)
+                goal_manager.complete_goal(goal_id)
+
+                await asyncio.wait_for(worker.stop(), timeout=1)
+                await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+                goal = goal_manager.get_goal(goal_id)
+                item = await queue.get_item(goal_id)
+                self.assertEqual(goal["status"], "done")
+                self.assertEqual(goal["error"], "")
+                self.assertIsNotNone(item)
+                self.assertEqual(item.status, "done")
+                self.assertEqual(worker.state.processed, 1)
+                self.assertEqual(worker.state.failed, 0)
+                self.assertEqual(worker.state.last_error, "")
+                self.assertEqual(len(notified), 1)
+                self.assertEqual(notified[0]["status"], "done")
+            finally:
+                await worker.stop()
+                memory._local.conn.close()
+
+    async def test_stop_preserves_terminal_goal_won_during_pause(self) -> None:
+        for terminal_status in ("done", "failed", "cancelled"):
+            with self.subTest(status=terminal_status):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    memory = Memory(str(Path(temp_dir) / "runtime.db"))
+                    goal_manager = GoalManager(memory)
+                    goal_id = goal_manager.create_goal(
+                        user_id="u1",
+                        chat_id="c1",
+                        title=f"{terminal_status} during shutdown",
+                    )
+                    queue = RuntimeTaskQueue()
+                    await queue.submit(goal_id=goal_id, user_id="u1", chat_id="c1")
+                    engine = BlockingEngine(goal_manager)
+                    original_update = memory.update_goal_if_status
+
+                    def win_terminal_race(
+                        current_goal_id: str,
+                        expected_statuses: set[str] | None,
+                        **updates,
+                    ) -> bool:
+                        original_update(
+                            current_goal_id,
+                            None,
+                            status=terminal_status,
+                            error="" if terminal_status == "done" else terminal_status,
+                        )
+                        return original_update(
+                            current_goal_id,
+                            expected_statuses,
+                            **updates,
+                        )
+
+                    worker = RuntimeWorker(
+                        worker_id="w1",
+                        queue=queue,
+                        execution_engine=engine,
+                    )
+                    worker.start()
+                    try:
+                        await asyncio.wait_for(engine.started.wait(), timeout=1)
+                        with patch.object(
+                            memory,
+                            "update_goal_if_status",
+                            side_effect=win_terminal_race,
+                        ):
+                            await asyncio.wait_for(worker.stop(), timeout=1)
+                        await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+                        goal = goal_manager.get_goal(goal_id)
+                        item = await queue.get_item(goal_id)
+                        self.assertEqual(goal["status"], terminal_status)
+                        self.assertNotEqual(goal["error"], "worker stopped")
+                        self.assertIsNotNone(item)
+                        self.assertEqual(item.status, terminal_status)
+                    finally:
+                        await worker.stop()
+                        memory._local.conn.close()
+
     async def test_stop_interrupts_running_goal_and_finishes_real_queue_item(self) -> None:
         notified: list[dict] = []
         queue = RuntimeTaskQueue()

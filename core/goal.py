@@ -20,6 +20,7 @@ from core.protocols import (
     Goal,
     GoalStep,
     new_id,
+    normalize_goal_title,
     validate_json,
 )
 
@@ -420,12 +421,7 @@ class GoalManager:
 
     @staticmethod
     def _title_from_message(text: str, limit: int = 60) -> str:
-        title = " ".join((text or "").strip().split())
-        if not title:
-            return "未命名目标"
-        if len(title) <= limit:
-            return title
-        return title[:limit].rstrip() + "…"
+        return normalize_goal_title(text, limit=limit)
 
     @staticmethod
     def _ensure_not_terminal(goal: dict) -> None:

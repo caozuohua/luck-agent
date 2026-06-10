@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from handlers.command import AGENT_REPO, CommandHandler
+from handlers.command import AGENT_REPO, AGENT_REPO_DIR, CommandHandler
 
 
 class FakeShell:
@@ -82,7 +82,9 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
             "git pull --ff-only",
             "sudo systemctl restart luck-agent",
         ])
-        self.assertTrue(all(cwd and cwd.endswith("luck-agent") for _command, cwd in handler.shell.calls))
+        self.assertTrue(
+            all(cwd == str(AGENT_REPO_DIR) for _command, cwd in handler.shell.calls)
+        )
         self.assertIn(AGENT_REPO, replies[-1]["text"])
 
     async def test_upgrade_stops_when_origin_is_not_luck_agent(self) -> None:

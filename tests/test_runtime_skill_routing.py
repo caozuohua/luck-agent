@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import gc
 import weakref
@@ -364,9 +365,48 @@ class RuntimeSkillRoutingTests(unittest.IsolatedAsyncioTestCase):
             [
                 "route.matched",
                 "goal.created",
-                "queue.submitted",
                 "goal.accepted",
+                "queue.submitted",
             ],
+        )
+
+    async def test_goal_acceptance_gate_waits_until_marked_then_cleans_up(
+        self,
+    ) -> None:
+        manager, _, _, _ = self._manager(FakeGoalSkill())
+        result = await manager.handle_message(
+            user_id="user",
+            chat_id="chat",
+            text="request",
+        )
+
+        waiter = asyncio.create_task(
+            manager.wait_until_accepted(result["goal_id"], timeout=1)
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(waiter.done())
+
+        manager.mark_accepted(result["goal_id"])
+        await waiter
+
+        self.assertNotIn(result["goal_id"], manager._acceptance_gates)
+
+    async def test_legacy_and_recovery_goals_have_no_acceptance_gate(
+        self,
+    ) -> None:
+        manager, goals, _, _ = self._manager(FakeGoalSkill(matched=False))
+        goals.recoverable = []
+
+        result = await manager.handle_message(
+            user_id="user",
+            chat_id="chat",
+            text="ordinary chat",
+        )
+
+        self.assertFalse(result["handled"])
+        await asyncio.wait_for(
+            manager.wait_until_accepted("legacy-or-recovered", timeout=0.01),
+            timeout=0.1,
         )
 
     async def test_legacy_fallback_creates_no_goal_and_submits_nothing(self) -> None:
@@ -600,6 +640,24 @@ class RuntimeSkillRoutingTests(unittest.IsolatedAsyncioTestCase):
             {"error_type": "RuntimeError"},
         )
         self.assertNotIn("provider secret", repr(recorder.events))
+        self.assertNotIn("goal-1", manager._acceptance_gates)
+
+    async def test_cancel_releases_and_cleans_acceptance_gate(self) -> None:
+        manager, _, _, _ = self._manager(FakeGoalSkill())
+        result = await manager.handle_message(
+            user_id="user",
+            chat_id="chat",
+            text="request",
+        )
+        waiter = asyncio.create_task(
+            manager.wait_until_accepted(result["goal_id"], timeout=1)
+        )
+        await asyncio.sleep(0)
+
+        await manager.cancel_goal(result["goal_id"], "user cancelled")
+        await waiter
+
+        self.assertNotIn(result["goal_id"], manager._acceptance_gates)
 
     async def test_recovery_uses_resolved_skill_priority_identity_and_intent_fallback(self) -> None:
         persisted = FakeGoalSkill(

@@ -6,6 +6,7 @@ their IDs to RuntimeTaskQueue. Background workers own execution.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from core.log import get_logger
@@ -30,11 +31,14 @@ class RuntimeManager:
         skill_registry: SkillRegistry | None = None,
         skill_router: SkillRouter | None = None,
         event_recorder=None,
+        acceptance_timeout: float = 300.0,
     ) -> None:
         self.goal_manager = goal_manager
         self.execution_engine = execution_engine  # compatibility only
         self.queue = queue or RuntimeTaskQueue(max_active=1)
         self.event_recorder = event_recorder or NoopRuntimeEventRecorder()
+        self.acceptance_timeout = acceptance_timeout
+        self._acceptance_gates: dict[str, asyncio.Event] = {}
 
         if skill_registry is None and skill_router is None:
             raise ValueError("skill_registry or skill_router is required")
@@ -128,6 +132,7 @@ class RuntimeManager:
             status="pending",
             payload={"skill_version": metadata.version},
         )
+        self._acceptance_gates[goal_id] = asyncio.Event()
 
         try:
             item = await self.queue.submit(
@@ -153,18 +158,19 @@ class RuntimeManager:
                 status="failed",
                 payload={"error_type": type(error).__name__},
             )
+            self._acceptance_gates.pop(goal_id, None)
             raise
-        self._record(
-            "queue.submitted",
-            **event_fields,
-            status=item.status,
-            payload={"priority": metadata.priority},
-        )
         self._record(
             "goal.accepted",
             **event_fields,
             status="accepted",
             payload={"queue_status": item.status},
+        )
+        self._record(
+            "queue.submitted",
+            **event_fields,
+            status=item.status,
+            payload={"priority": metadata.priority},
         )
         log.info(
             "runtime_goal_accepted",
@@ -186,6 +192,32 @@ class RuntimeManager:
 
     async def queue_snapshot(self) -> dict:
         return await self.queue.snapshot()
+
+    def mark_accepted(self, goal_id: str) -> None:
+        gate = self._acceptance_gates.pop(goal_id, None)
+        if gate is not None:
+            gate.set()
+
+    async def wait_until_accepted(
+        self,
+        goal_id: str,
+        timeout: float | None = None,
+    ) -> None:
+        gate = self._acceptance_gates.get(goal_id)
+        if gate is None:
+            return
+        wait_timeout = self.acceptance_timeout if timeout is None else timeout
+        try:
+            await asyncio.wait_for(gate.wait(), timeout=wait_timeout)
+        except TimeoutError:
+            log.warning(
+                "runtime_acceptance_wait_timeout",
+                goal_id=goal_id,
+                timeout=wait_timeout,
+            )
+        finally:
+            if self._acceptance_gates.get(goal_id) is gate:
+                self._acceptance_gates.pop(goal_id, None)
 
     async def recover_goals(self) -> int:
         goals = self.goal_manager.recover_interrupted_goals()
@@ -282,6 +314,7 @@ class RuntimeManager:
         goal_id: str,
         reason: str = "user_cancelled",
     ) -> dict:
+        self._release_acceptance_gate(goal_id)
         goal = self.goal_manager.get_goal(goal_id)
         status = goal.get("status")
         item = await self.queue.get_item(goal_id)
@@ -354,6 +387,11 @@ class RuntimeManager:
             },
         )
         return persisted_goal
+
+    def _release_acceptance_gate(self, goal_id: str) -> None:
+        gate = self._acceptance_gates.pop(goal_id, None)
+        if gate is not None:
+            gate.set()
 
     async def _align_queue_to_terminal_goal(
         self,

@@ -224,7 +224,7 @@ class AgentApp:
         from core.goal import GoalManager
         from core.supervisor import Supervisor
         from runtime.events import RuntimeEventRecorder
-        from runtime.notifications import RuntimeGoalNotifier
+        from runtime.notifications import AcceptanceGatedNotifier, RuntimeGoalNotifier
         from runtime.runtime_manager import RuntimeManager
         from runtime.task_queue import RuntimeTaskQueue
         from runtime.worker import WorkerManager
@@ -330,11 +330,17 @@ class AgentApp:
             event_recorder=event_recorder,
         )
         notifier = RuntimeGoalNotifier(sender=self._sender, card_builder=CardBuilder)
+        terminal_notifier = AcceptanceGatedNotifier(
+            wait_until_accepted=self._runtime_manager.wait_until_accepted,
+            notifier=notifier,
+        )
+
         self._runtime_workers = WorkerManager(
             queue=runtime_queue,
             execution_engine=execution_engine,
             worker_count=1,
-            terminal_callback=notifier.notify,
+            terminal_callback=terminal_notifier.notify,
+            event_recorder=event_recorder,
         )
 
         # 调度器：定时任务触发 → 注入 AgentMessageHandler
@@ -509,14 +515,19 @@ class AgentApp:
                 text=text,
             )
             if runtime_result["handled"]:
-                await self._sender.send(
-                    chat_id,
-                    text=(
-                        f"任务已接受：`{runtime_result['goal_id']}`\n"
-                        f"{runtime_result['summary']}"
-                    ),
-                    reply_to=message_id,
-                )
+                try:
+                    await self._sender.send(
+                        chat_id,
+                        text=(
+                            f"任务已接受：`{runtime_result['goal_id']}`\n"
+                            f"{runtime_result['summary']}"
+                        ),
+                        reply_to=message_id,
+                    )
+                finally:
+                    self._runtime_manager.mark_accepted(
+                        runtime_result["goal_id"]
+                    )
                 return
 
             # 转给 AI

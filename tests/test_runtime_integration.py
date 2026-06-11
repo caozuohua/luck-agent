@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent import AgentApp
@@ -14,6 +15,7 @@ from core.execution_engine import ExecutionEngine
 from core.goal import GoalManager
 from core.memory import Memory
 from core.supervisor import Supervisor
+from runtime.notifications import AcceptanceGatedNotifier
 from runtime.runtime_manager import RuntimeManager
 from runtime.task_queue import RuntimeTaskQueue
 from runtime.worker import WorkerManager
@@ -47,6 +49,43 @@ class EndToEndGenerator:
             text="选题：用 SQLite 构建可靠的轻量任务运行时",
             model="end-to-end-model",
             tokens=12,
+        )
+
+
+class ControlledSender:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+        self.accepted_started = asyncio.Event()
+        self.release_accepted = asyncio.Event()
+
+    async def send(self, chat_id: str, **kwargs) -> None:
+        self.calls.append("accepted_start")
+        self.accepted_started.set()
+        await self.release_accepted.wait()
+        self.calls.append("accepted_done")
+
+
+class RecordingNotifier:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def notify(self, goal: dict) -> None:
+        self.calls.append("final")
+
+
+class ImmediateEngine:
+    def __init__(self, goal_manager: GoalManager) -> None:
+        self.goal_manager = goal_manager
+
+    async def run_goal(self, goal_id: str) -> dict:
+        return self.goal_manager.complete_goal(
+            goal_id,
+            artifacts=[{
+                "type": "generated_content",
+                "content": "fast result",
+                "model": "fast-engine",
+                "tokens": 1,
+            }],
         )
 
 
@@ -97,19 +136,20 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             source,
         )
         self.assertIn("skill_registry=registry", source)
-        self.assertEqual(source.count("event_recorder=event_recorder"), 2)
+        self.assertEqual(source.count("event_recorder=event_recorder"), 3)
         runtime_manager_source = source[
             source.index("self._runtime_manager = RuntimeManager("):
             source.index("notifier = RuntimeGoalNotifier(")
         ]
         self.assertIn("skill_router=skill_router", runtime_manager_source)
         worker_source = source[source.index("self._runtime_workers = WorkerManager("):]
-        self.assertNotIn("event_recorder=", worker_source)
+        self.assertIn("event_recorder=event_recorder", worker_source)
         self.assertIn(
             "RuntimeGoalNotifier(sender=self._sender, card_builder=CardBuilder)",
             source,
         )
-        self.assertIn("terminal_callback=notifier.notify", source)
+        self.assertIn("terminal_notifier = AcceptanceGatedNotifier(", source)
+        self.assertIn("terminal_callback=terminal_notifier.notify", source)
 
     def test_agent_recovers_runtime_goals_before_starting_workers(self) -> None:
         source = inspect.getsource(AgentApp.run)
@@ -142,6 +182,83 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(goal_manager.created[0]["intent"], "blog_write")
         snapshot = await queue.snapshot()
         self.assertEqual(snapshot["counts"]["pending"], 1)
+
+    async def test_fast_runtime_sends_accepted_before_final_notification(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            queue = RuntimeTaskQueue(max_active=1)
+            registry, router = blog_runtime_dependencies()
+            engine = ImmediateEngine(goal_manager)
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                execution_engine=engine,
+                queue=queue,
+                skill_registry=registry,
+                skill_router=router,
+            )
+            calls: list[str] = []
+            sender = ControlledSender(calls)
+            notifier = RecordingNotifier(calls)
+            app = AgentApp.__new__(AgentApp)
+            app.cfg = SimpleNamespace(ADMIN_USERS=set(), MODEL_PRO="", MODEL_FLASH="", MODEL_LITE="")
+            app._sender = sender
+            app._runtime_manager = manager
+            app._health = SimpleNamespace(mark_ws_ok=lambda: None)
+            app._memory = SimpleNamespace(set_profile=lambda *args: None)
+
+            async def no_command(*args) -> bool:
+                return False
+
+            app._cmd_handler = SimpleNamespace(handle=no_command)
+            app._msg_handler = SimpleNamespace()
+            app._file_handler = SimpleNamespace()
+            terminal_notifier = AcceptanceGatedNotifier(
+                wait_until_accepted=manager.wait_until_accepted,
+                notifier=notifier,
+            )
+            workers = WorkerManager(
+                queue=queue,
+                execution_engine=engine,
+                terminal_callback=terminal_notifier.notify,
+            )
+            workers.start()
+            message_task = asyncio.create_task(app._on_message({
+                "event": {
+                    "message": {
+                        "chat_id": "chat-fast",
+                        "message_id": "message-fast",
+                        "message_type": "text",
+                        "chat_type": "p2p",
+                        "content": '{"text":"帮我整理一个博客选题"}',
+                    },
+                    "sender": {"sender_id": {"open_id": "user-fast"}},
+                },
+            }))
+            try:
+                await asyncio.wait_for(sender.accepted_started.wait(), timeout=1)
+                await asyncio.sleep(0.05)
+                self.assertEqual(calls, ["accepted_start"])
+
+                sender.release_accepted.set()
+                await asyncio.wait_for(message_task, timeout=1)
+                for _ in range(100):
+                    if calls == ["accepted_start", "accepted_done", "final"]:
+                        break
+                    await asyncio.sleep(0.01)
+
+                self.assertEqual(
+                    calls,
+                    ["accepted_start", "accepted_done", "final"],
+                )
+                self.assertEqual(calls.count("accepted_start"), 1)
+                self.assertEqual(calls.count("final"), 1)
+            finally:
+                sender.release_accepted.set()
+                await workers.stop()
+                memory._local.conn.close()
 
     async def test_runtime_manager_cancels_pending_goal_in_sqlite_and_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

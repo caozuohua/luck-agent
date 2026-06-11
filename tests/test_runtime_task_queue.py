@@ -7,6 +7,58 @@ from runtime.task_queue import RuntimeTaskQueue
 
 
 class RuntimeTaskQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_settle_from_goal_reads_status_and_transitions_under_lock(
+        self,
+    ) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        await queue.get()
+        lock_was_held = False
+
+        def status_provider() -> dict:
+            nonlocal lock_was_held
+            lock_was_held = queue._lock.locked()
+            return {
+                "goal_id": "g1",
+                "status": "cancelled",
+                "error": "user cancelled",
+            }
+
+        result = await queue.settle_from_goal("g1", status_provider)
+
+        self.assertTrue(lock_was_held)
+        self.assertEqual(result.status, "cancelled")
+        self.assertTrue(result.transitioned)
+        self.assertEqual(result.goal["error"], "user cancelled")
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+
+    async def test_settle_from_goal_finishes_manager_cancel_without_reowning_it(
+        self,
+    ) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        await queue.get()
+        self.assertTrue(
+            await queue.cancel(
+                "g1",
+                "user cancelled",
+                before_transition=lambda item: None,
+            )
+        )
+
+        result = await queue.settle_from_goal(
+            "g1",
+            lambda: {
+                "goal_id": "g1",
+                "status": "cancelled",
+                "error": "user cancelled",
+            },
+        )
+
+        self.assertEqual(result.status, "cancelled")
+        self.assertFalse(result.transitioned)
+        await asyncio.wait_for(queue._queue.join(), timeout=1)
+
     async def test_cancel_runs_callback_before_transition(self) -> None:
         queue = RuntimeTaskQueue()
         item = await queue.submit(

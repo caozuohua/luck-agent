@@ -3,6 +3,17 @@ from __future__ import annotations
 from typing import Any
 
 
+class AcceptanceGatedNotifier:
+    def __init__(self, *, wait_until_accepted: Any, notifier: Any) -> None:
+        self.wait_until_accepted = wait_until_accepted
+        self.notifier = notifier
+
+    async def notify(self, goal: dict[str, Any]) -> None:
+        goal_id = str(goal.get("goal_id") or "")
+        await self.wait_until_accepted(goal_id)
+        await self.notifier.notify(goal)
+
+
 class RuntimeGoalNotifier:
     def __init__(self, *, sender: Any, card_builder: Any) -> None:
         self.sender = sender

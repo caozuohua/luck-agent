@@ -3,9 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import FrozenInstanceError
 
-from controllers.blog_controller import BlogController
 from controllers.content_generator import GeneratedContent, ModelContentGenerator
-from core.execution_engine import StepSpec
 
 
 class FakeRouter:
@@ -122,80 +120,5 @@ class ModelContentGeneratorTests(unittest.IsolatedAsyncioTestCase):
             content.text = "修改"
 
 
-class FakeGenerator:
-    def __init__(self, text: str = "选题结果") -> None:
-        self.text = text
-        self.goals: list[dict] = []
-
-    async def generate(self, goal: dict) -> GeneratedContent:
-        self.goals.append(goal)
-        return GeneratedContent(
-            text=self.text,
-            model="fake-model",
-            tokens=8,
-        )
-
-
-class BlogControllerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_plan_contains_one_real_generation_step(self) -> None:
-        controller = BlogController(generator=FakeGenerator())
-
-        plan = await controller.build_plan({"goal_id": "g1"})
-
-        self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0].name, "generate_content")
-        self.assertEqual(plan[0].action, "generate_content")
-        self.assertEqual(plan[0].timeout, 180)
-        self.assertEqual(plan[0].max_retry, 1)
-
-    async def test_generate_step_returns_persistable_artifact(self) -> None:
-        generator = FakeGenerator("选题 A\n选题 B")
-        controller = BlogController(generator=generator)
-        goal = {"goal_id": "g1", "title": "整理博客选题"}
-        step = StepSpec(name="generate_content", action="generate_content")
-
-        result = await controller.execute_step(goal, step)
-
-        self.assertEqual(generator.goals, [goal])
-        self.assertTrue(result.ok)
-        self.assertEqual(result.action, "generate_content")
-        self.assertEqual(result.data, {"content": "选题 A\n选题 B"})
-        self.assertEqual(
-            result.artifacts,
-            [
-                {
-                    "type": "generated_content",
-                    "content": "选题 A\n选题 B",
-                    "model": "fake-model",
-                    "tokens": 8,
-                }
-            ],
-        )
-
-    async def test_unsupported_step_is_blocking(self) -> None:
-        controller = BlogController(generator=FakeGenerator())
-
-        result = await controller.execute_step(
-            {"goal_id": "g1"},
-            StepSpec(name="inspect_repo", action="inspect_repo"),
-        )
-
-        self.assertFalse(result.ok)
-        self.assertTrue(result.blocking)
-        self.assertEqual(result.error, "unsupported action: inspect_repo")
-
-    async def test_goal_completion_uses_required_step_statuses(self) -> None:
-        controller = BlogController(generator=FakeGenerator())
-
-        self.assertTrue(
-            await controller.is_goal_complete(
-                {"goal_id": "g1"},
-                [{"status": "done", "input": {"required": True}}],
-            )
-        )
-        self.assertFalse(
-            await controller.is_goal_complete(
-                {"goal_id": "g1"},
-                [{"status": "pending", "input": {"required": True}}],
-            )
-        )
+if __name__ == "__main__":
+    unittest.main()

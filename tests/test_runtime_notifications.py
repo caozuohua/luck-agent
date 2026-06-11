@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
-from runtime.notifications import RuntimeGoalNotifier
+from runtime.notifications import AcceptanceGatedNotifier, RuntimeGoalNotifier
 
 
 class FakeSender:
@@ -190,6 +191,30 @@ class RuntimeGoalNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Current step: draft", detail)
         self.assertIn("cancelled by user", detail)
         self.assertEqual(self.sender.calls[0][1]["card"]["kind"], "error")
+
+    async def test_acceptance_gated_notifier_waits_before_delegating(self) -> None:
+        accepted = asyncio.Event()
+        calls: list[str] = []
+
+        async def wait_until_accepted(goal_id: str) -> None:
+            calls.append(f"wait:{goal_id}")
+            await accepted.wait()
+
+        class Delegate:
+            async def notify(self, goal: dict) -> None:
+                calls.append(f"notify:{goal['goal_id']}")
+
+        notifier = AcceptanceGatedNotifier(
+            wait_until_accepted=wait_until_accepted,
+            notifier=Delegate(),
+        )
+        task = asyncio.create_task(notifier.notify({"goal_id": "g1"}))
+        await asyncio.sleep(0)
+
+        self.assertEqual(calls, ["wait:g1"])
+        accepted.set()
+        await task
+        self.assertEqual(calls, ["wait:g1", "notify:g1"])
 
 
 if __name__ == "__main__":

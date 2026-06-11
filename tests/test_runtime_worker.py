@@ -48,6 +48,17 @@ class FakeQueue:
         return True
 
 
+class RecordingEventRecorder:
+    def __init__(self, events: list[tuple] | None = None) -> None:
+        self.records: list[tuple[str, dict]] = []
+        self.events = events
+
+    def record(self, event_type: str, **kwargs) -> None:
+        self.records.append((event_type, kwargs))
+        if self.events is not None:
+            self.events.append(("event", event_type))
+
+
 class FakeGoalManager:
     def __init__(self, failed_goal: dict | None = None, *, raises: bool = False) -> None:
         self.failed_goal = failed_goal
@@ -150,6 +161,190 @@ def queue_item() -> RuntimeQueueItem:
 
 
 class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authoritative_cancel_wins_after_engine_returns_before_settle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            goal_id = goal_manager.create_goal(
+                user_id="u1",
+                chat_id="c1",
+                title="race",
+            )
+            queue = RuntimeTaskQueue()
+            await queue.submit(goal_id=goal_id, user_id="u1", chat_id="c1")
+            engine = ControlledEngine(
+                {
+                    "status": "done",
+                    "user_id": "u1",
+                    "chat_id": "c1",
+                    "artifacts": [{"type": "generated_content", "content": "stale"}],
+                },
+                goal_manager=goal_manager,
+            )
+            recorder = RecordingEventRecorder()
+            notified: list[dict] = []
+
+            async def notify(goal: dict) -> None:
+                notified.append(goal)
+
+            worker = RuntimeWorker(
+                worker_id="w1",
+                queue=queue,
+                execution_engine=engine,
+                terminal_callback=notify,
+                event_recorder=recorder,
+            )
+            worker.start()
+            try:
+                await asyncio.wait_for(engine.started.wait(), timeout=1)
+                await queue._lock.acquire()
+                try:
+                    def persist_cancel(_item: RuntimeQueueItem) -> None:
+                        goal_manager.cancel_goal(goal_id, "user cancelled")
+
+                    cancel_task = asyncio.create_task(
+                        queue.cancel(
+                            goal_id,
+                            "user cancelled",
+                            before_transition=persist_cancel,
+                        )
+                    )
+                    await asyncio.sleep(0)
+                    engine.release.set()
+                    await asyncio.wait_for(engine.returning.wait(), timeout=1)
+                    await asyncio.sleep(0)
+                finally:
+                    queue._lock.release()
+
+                self.assertTrue(await cancel_task)
+                await asyncio.wait_for(queue._queue.join(), timeout=1)
+                await asyncio.sleep(0)
+
+                item = await queue.get_item(goal_id)
+                self.assertEqual(goal_manager.get_goal(goal_id)["status"], "cancelled")
+                self.assertIsNotNone(item)
+                self.assertEqual(item.status, "cancelled")
+                self.assertEqual(worker.state.processed, 0)
+                self.assertEqual(notified, [])
+                self.assertNotIn(
+                    "queue.cancelled",
+                    [event_type for event_type, _ in recorder.records],
+                )
+            finally:
+                await worker.stop()
+                memory._local.conn.close()
+
+    async def test_notification_does_not_block_processing_next_goal(self) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        await queue.submit(goal_id="g2", user_id="u1", chat_id="c1")
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        notified: list[str] = []
+
+        async def notify(goal: dict) -> None:
+            notified.append(goal["goal_id"])
+            if goal["goal_id"] == "g1":
+                first_started.set()
+                await release_first.wait()
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            terminal_callback=notify,
+        )
+        worker.start()
+        try:
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+            for _ in range(100):
+                second = await queue.get_item("g2")
+                if second and second.status == "done":
+                    break
+                await asyncio.sleep(0.01)
+
+            self.assertIsNotNone(second)
+            self.assertEqual(second.status, "done")
+            self.assertEqual(worker.state.processed, 2)
+        finally:
+            release_first.set()
+            await worker.stop()
+
+    async def test_hung_notification_times_out_and_stop_is_bounded(self) -> None:
+        queue = RuntimeTaskQueue()
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        callback_started = asyncio.Event()
+        recorder = RecordingEventRecorder()
+
+        async def notify(goal: dict) -> None:
+            callback_started.set()
+            await asyncio.Event().wait()
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            terminal_callback=notify,
+            event_recorder=recorder,
+            notification_timeout=0.05,
+        )
+        worker.start()
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+
+        await asyncio.wait_for(worker.stop(), timeout=0.5)
+
+        failed = [
+            fields
+            for event_type, fields in recorder.records
+            if event_type == "notification.failed"
+        ]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["payload"], {"error_type": "TimeoutError"})
+        self.assertEqual(worker._notification_tasks, set())
+
+    async def test_pickup_is_recorded_before_engine_execution(self) -> None:
+        events: list[tuple] = []
+        recorder = RecordingEventRecorder(events)
+
+        class OrderedEngine(FakeEngine):
+            async def run_goal(self, goal_id: str) -> dict:
+                events.append(("engine", goal_id))
+                return await super().run_goal(goal_id)
+
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=FakeQueue(events),
+            execution_engine=OrderedEngine({"status": "done", "artifacts": []}),
+            event_recorder=recorder,
+        )
+        item = RuntimeQueueItem(
+            goal_id="g1",
+            user_id="u1",
+            chat_id="c1",
+            meta={"skill": "blog_write", "intent": "blog_write"},
+        )
+
+        await worker._process_item(item)
+
+        self.assertEqual(events[0:2], [
+            ("event", "worker.pickup"),
+            ("engine", "g1"),
+        ])
+        self.assertEqual(recorder.records[0], (
+            "worker.pickup",
+            {
+                "goal_id": "g1",
+                "skill": "blog_write",
+                "intent": "blog_write",
+                "status": "running",
+                "user_id": "u1",
+                "chat_id": "c1",
+                "payload": {"worker_id": "w1"},
+            },
+        ))
+
     async def test_concurrent_stop_calls_share_one_shutdown(self) -> None:
         queue = RuntimeTaskQueue()
         await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
@@ -276,7 +471,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
             "runtime_terminal_notify_failed",
             goal_id="g1",
             status="done",
-            error="delivery failed",
+            error="RuntimeError",
         )
         self.assertTrue(worker._task.done())
 
@@ -640,6 +835,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_done_goal_marks_queue_done_then_notifies_once(self) -> None:
         events: list[tuple] = []
         queue = FakeQueue(events)
+        recorder = RecordingEventRecorder(events)
 
         async def notify(goal: dict) -> None:
             events.append(("notify", goal["goal_id"], goal["status"]))
@@ -649,12 +845,19 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
             queue=queue,
             execution_engine=FakeEngine({"status": "done", "artifacts": []}),
             terminal_callback=notify,
+            event_recorder=recorder,
         )
 
         with patch("runtime.worker.log") as runtime_log:
             await worker._process_item(queue_item())
 
-        self.assertEqual(events, [("done", "g1"), ("notify", "g1", "done")])
+        self.assertEqual(events, [
+            ("event", "worker.pickup"),
+            ("done", "g1"),
+            ("event", "queue.completed"),
+            ("notify", "g1", "done"),
+            ("event", "notification.sent"),
+        ])
         self.assertEqual(queue.failed, [])
         self.assertEqual(worker.state.processed, 1)
         self.assertEqual(worker.state.failed, 0)
@@ -667,6 +870,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_blocked_goal_marks_queue_failed_then_notifies_once(self) -> None:
         events: list[tuple] = []
         queue = FakeQueue(events)
+        recorder = RecordingEventRecorder(events)
 
         async def notify(goal: dict) -> None:
             events.append(("notify", goal["goal_id"], goal["status"]))
@@ -682,6 +886,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
             terminal_callback=notify,
+            event_recorder=recorder,
         )
 
         with patch("runtime.worker.log") as runtime_log:
@@ -690,10 +895,19 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             events,
             [
+                ("event", "worker.pickup"),
                 ("failed", "g1", "model unavailable"),
+                ("event", "queue.failed"),
                 ("notify", "g1", "blocked"),
+                ("event", "notification.sent"),
             ],
         )
+        queue_failed = next(
+            fields
+            for event_type, fields in recorder.records
+            if event_type == "queue.failed"
+        )
+        self.assertEqual(queue_failed["payload"], {"goal_status": "blocked"})
         self.assertEqual(queue.done, [])
         self.assertEqual(worker.state.processed, 0)
         self.assertEqual(worker.state.failed, 1)
@@ -712,7 +926,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                 "user_id": "u1",
                 "chat_id": "c1",
                 "status": "failed",
-                "error": "ValueError: exploded",
+                "error": "execution failed: ValueError",
                 "artifacts": [{"kind": "log"}],
             }
         )
@@ -733,8 +947,14 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         await worker._process_item(queue_item())
 
-        self.assertEqual(goal_manager.calls, [("g1", "ValueError: exploded")])
-        self.assertEqual(queue.failed, [("g1", "ValueError: exploded")])
+        self.assertEqual(
+            goal_manager.calls,
+            [("g1", "execution failed: ValueError")],
+        )
+        self.assertEqual(
+            queue.failed,
+            [("g1", "execution failed: ValueError")],
+        )
         self.assertEqual(len(notified), 1)
         self.assertEqual(notified[0]["status"], "failed")
         self.assertEqual(notified[0]["artifacts"], [{"kind": "log"}])
@@ -767,7 +987,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                     "user_id": "u1",
                     "chat_id": "c1",
                     "status": "failed",
-                    "error": "ValueError: exploded",
+                    "error": "execution failed: ValueError",
                     "artifacts": [],
                 }
             ],
@@ -776,11 +996,12 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
             "runtime_goal_persist_failed",
             goal_id="g1",
             error="RuntimeError: persistence unavailable",
-            original_error="ValueError: exploded",
+            original_error="execution failed: ValueError",
         )
 
     async def test_cancelled_goal_preserves_queue_state_without_notification(self) -> None:
         notified: list[dict] = []
+        recorder = RecordingEventRecorder()
         queue = RuntimeTaskQueue()
         await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
         item = await queue.get()
@@ -799,6 +1020,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
             terminal_callback=notify,
+            event_recorder=recorder,
         )
 
         with patch("runtime.worker.log") as runtime_log:
@@ -811,12 +1033,60 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.state.processed, 0)
         self.assertEqual(worker.state.failed, 0)
         self.assertEqual(notified, [])
+        self.assertEqual(
+            [event_type for event_type, _ in recorder.records],
+            ["worker.pickup", "queue.cancelled"],
+        )
         failed_logs = [
             call
             for call in runtime_log.error.call_args_list
             if call.args and call.args[0] == "runtime_goal_failed"
         ]
         self.assertEqual(failed_logs, [])
+
+    async def test_worker_stop_records_interruption_after_queue_transition(self) -> None:
+        recorder = RecordingEventRecorder()
+        queue = RuntimeTaskQueue()
+        await queue.submit(
+            goal_id="g1",
+            user_id="u1",
+            chat_id="c1",
+            meta={"skill": "blog_write", "intent": "blog_write"},
+        )
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=BlockingEngine(FakeGoalManager()),
+            event_recorder=recorder,
+        )
+        worker.start()
+        await asyncio.wait_for(worker.execution_engine.started.wait(), timeout=1)
+
+        await worker.stop()
+
+        self.assertEqual(
+            [event_type for event_type, _ in recorder.records],
+            ["worker.pickup", "worker.interrupted"],
+        )
+        interrupted = recorder.records[-1][1]
+        self.assertEqual(
+            {
+                "goal_id": interrupted["goal_id"],
+                "skill": interrupted["skill"],
+                "intent": interrupted["intent"],
+                "user_id": interrupted["user_id"],
+                "chat_id": interrupted["chat_id"],
+                "status": interrupted["status"],
+            },
+            {
+                "goal_id": "g1",
+                "skill": "blog_write",
+                "intent": "blog_write",
+                "user_id": "u1",
+                "chat_id": "c1",
+                "status": "interrupted",
+            },
+        )
 
     async def test_mark_cancelled_is_idempotent_for_running_item(self) -> None:
         queue = RuntimeTaskQueue()
@@ -845,6 +1115,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_callback_exception_does_not_change_terminal_state(self) -> None:
         queue = FakeQueue()
         calls = 0
+        recorder = RecordingEventRecorder()
 
         async def notify(goal: dict) -> None:
             nonlocal calls
@@ -856,6 +1127,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
             queue=queue,
             execution_engine=FakeEngine({"status": "done", "artifacts": []}),
             terminal_callback=notify,
+            event_recorder=recorder,
         )
 
         with patch("runtime.worker.log") as runtime_log:
@@ -867,26 +1139,60 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.state.processed, 1)
         self.assertEqual(worker.state.failed, 0)
         self.assertEqual(worker.state.last_error, "")
+        self.assertEqual(
+            [event_type for event_type, _ in recorder.records],
+            ["worker.pickup", "queue.completed", "notification.failed"],
+        )
+        self.assertEqual(
+            recorder.records[-1][1]["payload"],
+            {"error_type": "RuntimeError"},
+        )
+        self.assertNotIn("delivery failed", repr(recorder.records))
         runtime_log.error.assert_called_once_with(
             "runtime_terminal_notify_failed",
             goal_id="g1",
             status="done",
-            error="delivery failed",
+            error="RuntimeError",
         )
 
     def test_worker_manager_propagates_terminal_callback(self) -> None:
         async def notify(goal: dict) -> None:
             return None
 
+        recorder = RecordingEventRecorder()
         manager = WorkerManager(
             queue=FakeQueue(),
             execution_engine=FakeEngine(),
             worker_count=2,
             terminal_callback=notify,
+            event_recorder=recorder,
         )
 
         self.assertEqual(len(manager.workers), 2)
         self.assertTrue(all(worker.terminal_callback is notify for worker in manager.workers))
+        self.assertTrue(all(worker.event_recorder is recorder for worker in manager.workers))
+
+    async def test_rejected_queue_transition_records_no_terminal_event(self) -> None:
+        queue = FakeQueue()
+        recorder = RecordingEventRecorder()
+
+        async def reject_done(goal_id: str) -> bool:
+            return False
+
+        queue.mark_done = reject_done
+        worker = RuntimeWorker(
+            worker_id="w1",
+            queue=queue,
+            execution_engine=FakeEngine({"status": "done", "artifacts": []}),
+            event_recorder=recorder,
+        )
+
+        await worker._process_item(queue_item())
+
+        self.assertEqual(
+            [event_type for event_type, _ in recorder.records],
+            ["worker.pickup"],
+        )
 
 
 if __name__ == "__main__":

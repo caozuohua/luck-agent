@@ -33,6 +33,14 @@ class RuntimeQueueItem:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class QueueSettleResult:
+    goal: dict[str, Any]
+    status: str
+    queue_status: QueueStatus
+    transitioned: bool
+
+
 class RuntimeTaskQueue:
     """Small async priority queue for goal execution."""
 
@@ -86,11 +94,7 @@ class RuntimeTaskQueue:
             return self._items.get(goal_id)
 
     async def mark_done(self, goal_id: str) -> bool:
-        return await self._mark_terminal(
-            goal_id,
-            status="done",
-            allowed_statuses={"pending", "running", "cancelled"},
-        )
+        return await self._mark_terminal(goal_id, status="done")
 
     async def mark_failed(self, goal_id: str, error: str) -> bool:
         return await self._mark_terminal(goal_id, status="failed", error=error)
@@ -125,6 +129,97 @@ class RuntimeTaskQueue:
                 item.finished_at = time.time()
                 self._finish_task(goal_id)
             return True
+
+    async def settle_from_goal(
+        self,
+        goal_id: str,
+        status_provider: Callable[[], dict[str, Any]],
+        cancelled_provider: Callable[[str], dict[str, Any]] | None = None,
+        *,
+        cancelled_is_authoritative: bool = False,
+    ) -> QueueSettleResult:
+        async with self._lock:
+            item = self._items.get(goal_id)
+            if item is None:
+                goal = status_provider()
+                return QueueSettleResult(
+                    goal=goal,
+                    status=str(goal.get("status") or "failed"),
+                    queue_status="failed",
+                    transitioned=False,
+                )
+
+            authoritative = status_provider()
+            transitioned = item.status in {"pending", "running"}
+            if item.status == "cancelled":
+                authoritative_status = str(
+                    authoritative.get("status") or "failed"
+                )
+                if (
+                    not cancelled_is_authoritative
+                    and authoritative_status in {"done", "failed", "interrupted"}
+                ):
+                    goal = authoritative
+                    chosen_status = authoritative_status
+                    queue_status = (
+                        authoritative_status
+                        if authoritative_status != "failed"
+                        else "failed"
+                    )
+                    item.status = queue_status
+                    item.error = str(authoritative.get("error") or "")
+                    transitioned = True
+                else:
+                    if (
+                        authoritative_status != "cancelled"
+                        and cancelled_provider is not None
+                    ):
+                        authoritative = cancelled_provider(
+                            item.error or "goal cancelled"
+                        )
+                    goal = {
+                        **authoritative,
+                        "status": "cancelled",
+                        "error": (
+                            item.error
+                            or authoritative.get("error")
+                            or "goal cancelled"
+                        ),
+                    }
+                    chosen_status = "cancelled"
+                    queue_status = "cancelled"
+                    transitioned = False
+            else:
+                goal = authoritative
+                chosen_status = str(goal.get("status") or "failed")
+                if chosen_status == "done":
+                    queue_status = "done"
+                    error = ""
+                elif chosen_status == "cancelled":
+                    queue_status = "cancelled"
+                    error = str(goal.get("error") or "goal cancelled")
+                elif chosen_status == "interrupted":
+                    queue_status = "interrupted"
+                    error = str(goal.get("error") or "goal interrupted")
+                else:
+                    queue_status = "failed"
+                    error = str(
+                        goal.get("error")
+                        or f"goal ended with status {chosen_status}"
+                    )
+                if transitioned:
+                    item.status = queue_status
+                    item.error = error
+
+            if goal_id not in self._finished_tasks:
+                item.finished_at = time.time()
+                self._finish_task(goal_id)
+            return QueueSettleResult(
+                goal=goal,
+                status=chosen_status,
+                queue_status=queue_status,
+                transitioned=transitioned,
+            )
 
     async def _mark_terminal(
         self,

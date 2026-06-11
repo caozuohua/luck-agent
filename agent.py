@@ -12,6 +12,7 @@ from typing import Any
 
 import lark_oapi as lark
 from core.auth import is_authorized_user
+from core.lark_ws_runner import LarkWebSocketRunner
 from core.log import get_logger
 from handlers.message import forward_to_pkb_result, parse_note_message
 
@@ -184,6 +185,8 @@ class LarkSender:
 # ─── 主 Agent 应用 ────────────────────────────────────────────────────────────
 class AgentApp:
     """组装所有组件，驱动 WebSocket 事件循环。"""
+
+    SHUTDOWN_TIMEOUT = 15.0
 
     def __init__(self) -> None:
         from config import cfg
@@ -540,6 +543,53 @@ class AgentApp:
             log.error("on_message_error", error=str(e))
 
     # ── 启动 ──────────────────────────────────────────────────────────
+    async def _shutdown_components(
+        self,
+        *,
+        ws_runner: LarkWebSocketRunner,
+        timeout: float,
+    ) -> list[str]:
+        components = {
+            "websocket": ws_runner.stop,
+            "workers": self._runtime_workers.stop,
+            "queue": self._queue.stop,
+            "scheduler": self._scheduler.stop,
+            "health": self._health.stop,
+        }
+        tasks = {
+            name: asyncio.create_task(stop(), name=f"shutdown-{name}")
+            for name, stop in components.items()
+        }
+        _, pending = await asyncio.wait(
+            tasks.values(),
+            timeout=timeout,
+        )
+        timed_out = [
+            name for name, task in tasks.items()
+            if task in pending
+        ]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        for name, task in tasks.items():
+            if name in timed_out or task.cancelled():
+                continue
+            error = task.exception()
+            if error is not None:
+                log.warning(
+                    "shutdown_component_failed",
+                    component=name,
+                    error_type=type(error).__name__,
+                )
+        if timed_out:
+            log.warning(
+                "shutdown_timeout",
+                components=timed_out,
+                timeout=timeout,
+            )
+        return timed_out
+
     async def run(self) -> None:
         log.info("agent_starting")
 
@@ -587,6 +637,11 @@ class AgentApp:
             log_level=lark.LogLevel.INFO,
             domain=self.cfg.LARK_DOMAIN,
         )
+        from lark_oapi.ws.client import loop as lark_sdk_loop
+        ws_runner = LarkWebSocketRunner(
+            client=ws_client,
+            sdk_loop=lark_sdk_loop,
+        )
 
         # 优雅退出
         stop_event = asyncio.Event()
@@ -594,8 +649,7 @@ class AgentApp:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop_event.set)
 
-        # 在线程池里启动 WS（阻塞调用）
-        ws_task = loop.run_in_executor(None, ws_client.start)
+        ws_runner.start()
 
         log.info("agent_running", mode="websocket",
                  hugo_repo=self.cfg.HUGO_REPO,
@@ -604,15 +658,10 @@ class AgentApp:
         await stop_event.wait()
 
         log.info("shutting_down")
-        await self._runtime_workers.stop()
-        await self._queue.stop()
-        await self._scheduler.stop()
-        await self._health.stop()
-
-        # 等待进行中任务
-        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        await self._shutdown_components(
+            ws_runner=ws_runner,
+            timeout=self.SHUTDOWN_TIMEOUT,
+        )
 
         log.info("agent_stopped")
 

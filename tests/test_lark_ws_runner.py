@@ -11,16 +11,29 @@ class FakeLarkClient:
     def __init__(self, sdk_loop: asyncio.AbstractEventLoop) -> None:
         self.sdk_loop = sdk_loop
         self.started = threading.Event()
+        self.background_cancelled = False
+        self.disconnect_after_background_cancelled = False
         self.disconnected = False
 
     def start(self) -> None:
         self.started.set()
-        self.sdk_loop.run_until_complete(self._serve_forever())
+        self.sdk_loop.create_task(self._background_loop())
+        self.sdk_loop.run_until_complete(self._select_forever())
 
-    async def _serve_forever(self) -> None:
+    async def _select_forever(self) -> None:
         await asyncio.Future()
 
+    async def _background_loop(self) -> None:
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.background_cancelled = True
+            raise
+
     async def _disconnect(self) -> None:
+        self.disconnect_after_background_cancelled = (
+            self.background_cancelled
+        )
         self.disconnected = True
 
 
@@ -41,6 +54,8 @@ class LarkWebSocketRunnerTests(unittest.IsolatedAsyncioTestCase):
         await runner.stop()
         await runner.stop()
 
+        self.assertTrue(client.background_cancelled)
+        self.assertTrue(client.disconnect_after_background_cancelled)
         self.assertTrue(client.disconnected)
         self.assertFalse(runner.is_alive)
         sdk_loop.close()

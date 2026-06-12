@@ -13,7 +13,7 @@ from typing import Any
 import lark_oapi as lark
 from core.auth import is_authorized_user
 from core.lark_ws_runner import LarkWebSocketRunner
-from core.log import get_logger
+from core.log import configure_redaction_secrets, get_logger
 from handlers.message import forward_to_pkb_result, parse_note_message
 
 log = get_logger()
@@ -595,6 +595,12 @@ class AgentApp:
 
         # 加载 .env 配置
         self.cfg.load()
+        configure_redaction_secrets(
+            (
+                self.cfg.LARK_APP_SECRET,
+                self.cfg.GITHUB_TOKEN,
+            )
+        )
 
         # 初始化组件
         self._init_components()
@@ -634,7 +640,7 @@ class AgentApp:
             self.cfg.LARK_APP_ID,
             self.cfg.LARK_APP_SECRET,
             event_handler=event_handler,
-            log_level=lark.LogLevel.INFO,
+            log_level=lark.LogLevel.WARNING,
             domain=self.cfg.LARK_DOMAIN,
         )
         from lark_oapi.ws.client import loop as lark_sdk_loop

@@ -7,6 +7,7 @@ from typing import Any
 
 from core.log import get_logger
 from core.protocols import new_id
+from core.redaction import redact_text, redact_value
 
 log = get_logger()
 
@@ -105,7 +106,12 @@ class RuntimeEventRecorder:
         return str(value)[:self._max_string_length]
 
     def _bounded_payload(self, value: Any) -> Any:
-        cleaned = self._clean_payload(value)
+        redacted = redact_value(
+            value,
+            max_depth=self._max_depth,
+            max_nodes=self._max_nodes,
+        )
+        cleaned = self._clean_payload(redacted)
         serialized = self._json_dumps(cleaned)
         if len(serialized.encode("utf-8")) <= self._max_payload_bytes:
             return cleaned
@@ -148,15 +154,29 @@ class RuntimeEventRecorder:
         try:
             self._memory.append_runtime_event(
                 {
-                    "event_id": event_id or new_id("event"),
-                    "goal_id": goal_id,
-                    "step_id": step_id,
-                    "skill": skill,
-                    "intent": intent,
-                    "event_type": event_type,
-                    "status": status,
-                    "user_id": user_id,
-                    "chat_id": chat_id,
+                    "event_id": redact_text(
+                        event_id or new_id("event")
+                    )[:self._max_string_length],
+                    "goal_id": redact_text(goal_id)[
+                        :self._max_string_length
+                    ],
+                    "step_id": redact_text(step_id)[
+                        :self._max_string_length
+                    ],
+                    "skill": redact_text(skill)[:self._max_string_length],
+                    "intent": redact_text(intent)[:self._max_string_length],
+                    "event_type": redact_text(event_type)[
+                        :self._max_string_length
+                    ],
+                    "status": redact_text(status)[
+                        :self._max_string_length
+                    ],
+                    "user_id": redact_text(user_id)[
+                        :self._max_string_length
+                    ],
+                    "chat_id": redact_text(chat_id)[
+                        :self._max_string_length
+                    ],
                     "payload": self._bounded_payload(
                         {} if payload is None else payload
                     ),

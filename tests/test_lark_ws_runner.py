@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
+from unittest.mock import patch
 
 from core.lark_ws_runner import LarkWebSocketRunner
 
@@ -47,7 +48,9 @@ class LarkWebSocketRunnerTests(unittest.IsolatedAsyncioTestCase):
             stop_timeout=1.0,
         )
 
-        runner.start()
+        with patch("core.lark_ws_runner.log") as log:
+            runner.start()
+            log.info.assert_called_once_with("lark_websocket_started")
         started = await asyncio.to_thread(client.started.wait, 1.0)
         self.assertTrue(started)
 

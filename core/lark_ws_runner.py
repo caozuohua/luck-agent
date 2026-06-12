@@ -48,6 +48,7 @@ class LarkWebSocketRunner:
             daemon=True,
         )
         self._thread.start()
+        log.info("lark_websocket_started")
 
     async def stop(self) -> None:
         if self._stop_task is None:

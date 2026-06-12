@@ -246,7 +246,7 @@ class RuntimeEventsTestCase(unittest.TestCase):
         RuntimeEventRecorder(self.memory).record("goal.created", payload=circular)
 
         stored = self.memory.list_runtime_events()[0]["payload"]
-        self.assertEqual(stored, ["<circular>"])
+        self.assertEqual(stored, ["[CIRCULAR]"])
 
     def test_recorder_bounds_total_nodes(self) -> None:
         RuntimeEventRecorder(self.memory, max_nodes=5).record(
@@ -288,6 +288,32 @@ class RuntimeEventsTestCase(unittest.TestCase):
 
         self.assertLessEqual(len(raw_payload.encode("utf-8")), 18)
         self.assertEqual(json.loads(raw_payload), {"truncated": True})
+
+    def test_recorder_redacts_before_payload_truncation(self) -> None:
+        secret = "runtime-event-secret"
+        RuntimeEventRecorder(
+            self.memory,
+            max_string_length=1000,
+            max_payload_bytes=100,
+        ).record(
+            "goal.created",
+            skill=f"token={secret}",
+            payload={
+                "token": secret,
+                "text": (
+                    f"access_key={secret} "
+                    + ("x" * 1000)
+                ),
+            },
+        )
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT skill, payload FROM runtime_events"
+            ).fetchone()
+
+        self.assertNotIn(secret, repr(row))
+        self.assertIn("[REDACTED]", repr(row))
 
     def test_recorder_normalizes_non_finite_floats_to_strict_json(self) -> None:
         RuntimeEventRecorder(self.memory).record(
@@ -358,7 +384,7 @@ class RuntimeEventsTestCase(unittest.TestCase):
         )
         self.assertNotIn("secret-token", repr(log.error.call_args))
 
-    def test_recorder_logs_serialization_failure_and_does_not_raise(self) -> None:
+    def test_recorder_persists_safe_marker_when_redaction_fails(self) -> None:
         class BrokenString:
             def __str__(self) -> str:
                 raise ValueError("cannot stringify")
@@ -370,13 +396,13 @@ class RuntimeEventsTestCase(unittest.TestCase):
                 payload={"broken": BrokenString()},
             )
 
-        self.assertEqual(self.memory.list_runtime_events(), [])
-        log.error.assert_called_once_with(
-            "runtime_event_write_failed",
-            event_type="goal.created",
-            goal_id="g1",
-            error="ValueError",
+        events = self.memory.list_runtime_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["payload"],
+            {"broken": "[REDACTION_FAILED]"},
         )
+        log.error.assert_not_called()
 
     def test_noop_recorder_accepts_the_full_signature(self) -> None:
         NoopRuntimeEventRecorder().record(

@@ -159,6 +159,12 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(recover_call, source)
         self.assertLess(source.index(recover_call), source.index(worker_start))
 
+    def test_agent_uses_warning_level_for_lark_sdk_logs(self) -> None:
+        source = inspect.getsource(AgentApp.run)
+
+        self.assertIn("log_level=lark.LogLevel.WARNING", source)
+        self.assertNotIn("log_level=lark.LogLevel.INFO", source)
+
     async def test_runtime_manager_submits_goal_without_inline_execution(self) -> None:
         goal_manager = FakeGoalManager()
         queue = RuntimeTaskQueue(max_active=1)

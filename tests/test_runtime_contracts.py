@@ -79,6 +79,38 @@ class RuntimeHandleResultTests(unittest.TestCase):
                 ):
                     RuntimeHandleResult(**values)
 
+    def test_handled_result_requires_accepted_status(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "handled result requires accepted status",
+        ):
+            RuntimeHandleResult(
+                handled=True,
+                skill="blog_write",
+                goal_id="goal-1",
+                intent="blog_write",
+                status="fallback",
+                queue_status="pending",
+                summary="pending",
+                reason="matched",
+            )
+
+    def test_handled_result_requires_queue_status(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "handled result requires queue_status",
+        ):
+            RuntimeHandleResult(
+                handled=True,
+                skill="blog_write",
+                goal_id="goal-1",
+                intent="blog_write",
+                status="accepted",
+                queue_status="",
+                summary="pending",
+                reason="matched",
+            )
+
     def test_fallback_result_rejects_goal_id(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -94,6 +126,44 @@ class RuntimeHandleResultTests(unittest.TestCase):
                 summary="",
                 reason="legacy fallback",
             )
+
+    def test_fallback_result_requires_fallback_status(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "fallback result requires fallback status",
+        ):
+            RuntimeHandleResult(
+                handled=False,
+                skill="legacy_react",
+                goal_id="",
+                intent="general",
+                status="accepted",
+                queue_status="",
+                summary="",
+                reason="legacy fallback",
+            )
+
+    def test_fallback_result_requires_empty_queue_status_and_summary(
+        self,
+    ) -> None:
+        for field in ("queue_status", "summary"):
+            with self.subTest(field=field):
+                values = {
+                    "handled": False,
+                    "skill": "legacy_react",
+                    "goal_id": "",
+                    "intent": "general",
+                    "status": "fallback",
+                    "queue_status": "",
+                    "summary": "",
+                    "reason": "legacy fallback",
+                }
+                values[field] = "unexpected"
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "fallback result requires empty queue_status and summary",
+                ):
+                    RuntimeHandleResult(**values)
 
 
 if __name__ == "__main__":

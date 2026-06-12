@@ -576,6 +576,11 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             step_id = goal_manager.create_step(
                 goal_id=goal_id,
                 name="generate_content",
+                input={
+                    "name": "generate_content",
+                    "action": "generate_content",
+                    "replay_safe": True,
+                },
             )
             _step, claimed = goal_manager.start_step(step_id)
             self.assertTrue(claimed)
@@ -598,6 +603,48 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     goal_manager.get_steps(goal_id)[0]["status"],
                     "pending",
                 )
+            finally:
+                memory._local.conn.close()
+
+    async def test_startup_recovery_blocks_unsafe_running_step(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            goal_id = goal_manager.create_goal(
+                user_id="crash-user",
+                chat_id="crash-chat",
+                title="unsafe crashed goal",
+                intent="blog_write",
+                status="running",
+            )
+            step_id = goal_manager.create_step(
+                goal_id=goal_id,
+                name="publish_content",
+                input={
+                    "name": "publish_content",
+                    "action": "publish_content",
+                },
+            )
+            _step, claimed = goal_manager.start_step(step_id)
+            self.assertTrue(claimed)
+            queue = RuntimeTaskQueue(max_active=1)
+            registry, router = blog_runtime_dependencies()
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                queue=queue,
+                skill_registry=registry,
+                skill_router=router,
+            )
+
+            try:
+                self.assertEqual(await manager.recover_goals(), 0)
+                self.assertEqual(
+                    goal_manager.get_goal(goal_id)["status"],
+                    "blocked",
+                )
+                step = goal_manager.get_steps(goal_id)[0]
+                self.assertEqual(step["status"], "blocked")
+                self.assertIn("replay", step["error"])
             finally:
                 memory._local.conn.close()
 

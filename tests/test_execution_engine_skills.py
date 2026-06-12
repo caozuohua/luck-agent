@@ -483,6 +483,12 @@ class ExecutionEngineSkillTests(unittest.IsolatedAsyncioTestCase):
             self.goal_manager.get_goal(goal_id)["current_step"],
             "first",
         )
+        for step in self.goal_manager.get_steps(goal_id):
+            self.assertEqual(
+                step["input"]["idempotency_key"],
+                step["step_id"],
+            )
+            self.assertFalse(step["input"]["replay_safe"])
         other_conn = getattr(other_memory._local, "conn", None)
         if other_conn is not None:
             other_conn.close()

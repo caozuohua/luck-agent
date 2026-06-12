@@ -33,7 +33,11 @@ log = get_logger()
 
 @dataclass
 class StepSpec:
-    """Declarative step definition produced by a Goal Skill."""
+    """Declarative step definition produced by a Goal Skill.
+
+    External-effect Skills must pass idempotency_key to downstream APIs.
+    Set replay_safe only when repeating an interrupted call is harmless.
+    """
 
     name: str
     action: str
@@ -41,6 +45,8 @@ class StepSpec:
     required: bool = True
     max_retry: int = 1
     timeout: int = 120
+    replay_safe: bool = False
+    idempotency_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -709,4 +715,8 @@ class ExecutionEngine:
             required=bool(raw.get("required", True)),
             max_retry=int(raw.get("max_retry", 1)),
             timeout=int(raw.get("timeout", 120)),
+            replay_safe=bool(raw.get("replay_safe", False)),
+            idempotency_key=str(
+                raw.get("idempotency_key") or step_record.get("step_id") or ""
+            ),
         )

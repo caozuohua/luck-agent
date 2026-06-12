@@ -108,6 +108,7 @@ class BlogSkill:
                 action="generate_content",
                 timeout=180,
                 max_retry=1,
+                replay_safe=True,
             )
         ]
 

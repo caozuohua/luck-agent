@@ -345,6 +345,7 @@ class AgentApp:
             worker_count=1,
             terminal_callback=terminal_notifier.notify,
             event_recorder=event_recorder,
+            notification_store=self._memory,
         )
         self._cmd_handler.runtime_observability = RuntimeObservability(
             goal_manager=goal_manager,
@@ -633,6 +634,7 @@ class AgentApp:
         await self._health.start()
         await self._runtime_manager.recover_goals()
         self._runtime_workers.start()
+        await self._runtime_workers.recover_notifications()
 
         # 构建 WS 事件分发
         def _make_lark_handler():

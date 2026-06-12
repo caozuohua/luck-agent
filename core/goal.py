@@ -243,12 +243,16 @@ class GoalManager:
         status: str = "pending",
     ) -> str:
         self.get_goal(goal_id)
+        step_id = new_id("step")
+        step_input = dict(input or {})
+        step_input.setdefault("idempotency_key", step_id)
+        step_input.setdefault("replay_safe", False)
         step = GoalStep(
-            step_id=new_id("step"),
+            step_id=step_id,
             goal_id=goal_id,
             name=name,
             status=status,  # type: ignore[arg-type]
-            input=input or {},
+            input=step_input,
         )
         payload = step.to_dict()
         ok, err = validate_json(payload, STEP_SCHEMA)
@@ -268,8 +272,13 @@ class GoalManager:
         payloads: list[dict[str, Any]] = []
         for raw_step in steps:
             spec = raw_step.to_dict() if hasattr(raw_step, "to_dict") else dict(raw_step)
+            step_id = new_id("step")
+            spec["idempotency_key"] = str(
+                spec.get("idempotency_key") or step_id
+            )
+            spec["replay_safe"] = bool(spec.get("replay_safe", False))
             step = GoalStep(
-                step_id=new_id("step"),
+                step_id=step_id,
                 goal_id=goal_id,
                 name=str(spec.get("name") or "unnamed_step"),
                 status="pending",
@@ -482,6 +491,7 @@ class GoalManager:
                     goal["goal_id"],
                     reason=f"stale running goal after {stale_after_seconds}s",
                     expected_statuses={"running"},
+                    require_replay_safe=True,
                 )
                 if interrupted:
                     recoverable[goal["goal_id"]] = self.get_goal(

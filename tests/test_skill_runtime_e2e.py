@@ -396,6 +396,7 @@ class SkillRuntimeEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 "action": "generate_content",
                 "timeout": 180,
                 "max_retry": 1,
+                "replay_safe": True,
             },
         )
         _step, claimed = self.goal_manager.start_step(step_id)

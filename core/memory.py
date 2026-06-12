@@ -6,6 +6,7 @@ core/memory.py — SQLite 持久化记忆系统
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -120,6 +121,20 @@ CREATE INDEX IF NOT EXISTS idx_runtime_events_skill
 CREATE INDEX IF NOT EXISTS idx_runtime_events_type
     ON runtime_events(event_type, id);
 
+-- Goal Runtime：终态通知 outbox，跨进程原子领取避免重复发送
+CREATE TABLE IF NOT EXISTS goal_notifications (
+    goal_id     TEXT PRIMARY KEY,
+    status      TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'pending', -- pending/claimed/sent/failed
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    claimed_at  REAL,
+    error_type  TEXT DEFAULT '',
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goal_notifications_state
+    ON goal_notifications(state, updated_at);
+
 -- Lessons Learned：失败经验 / 修复经验
 CREATE TABLE IF NOT EXISTS lessons (
     lesson_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,6 +207,14 @@ class Memory:
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError as error:
+            log.warning(
+                "memory_permission_hardening_failed",
+                path=self.db_path,
+                error_type=type(error).__name__,
+            )
 
     @contextmanager
     def _conn(self):
@@ -529,6 +552,7 @@ class Memory:
         *,
         reason: str,
         expected_statuses: set[str],
+        require_replay_safe: bool = False,
     ) -> bool:
         """Atomically pause a goal and make its active step retryable."""
         if not expected_statuses:
@@ -537,6 +561,43 @@ class Memory:
         statuses = sorted(expected_statuses)
         placeholders = ", ".join("?" for _ in statuses)
         with self._conn() as conn:
+            running_steps = conn.execute(
+                """SELECT step_id, input FROM goal_steps
+                   WHERE goal_id=? AND status='running'""",
+                (goal_id,),
+            ).fetchall()
+            unsafe_step_ids = [
+                str(row["step_id"])
+                for row in running_steps
+                if not bool(
+                    (self._json_loads(row["input"], {}) or {}).get(
+                        "replay_safe",
+                        False,
+                    )
+                )
+            ]
+            if require_replay_safe and unsafe_step_ids:
+                blocked_reason = (
+                    "unsafe step replay requires manual review"
+                )
+                blocked = conn.execute(
+                    f"""UPDATE goals
+                        SET status='blocked', error=?, updated_at=?
+                        WHERE goal_id=?
+                          AND status IN ({placeholders})""",
+                    [blocked_reason, now, goal_id, *statuses],
+                )
+                if blocked.rowcount <= 0:
+                    return False
+                step_placeholders = ", ".join("?" for _ in unsafe_step_ids)
+                conn.execute(
+                    f"""UPDATE goal_steps
+                        SET status='blocked', error=?, finished_at=?
+                        WHERE step_id IN ({step_placeholders})
+                          AND status='running'""",
+                    [blocked_reason, now, *unsafe_step_ids],
+                )
+                return False
             interrupted = conn.execute(
                 f"""UPDATE goals
                     SET status='interrupted', error=?, updated_at=?
@@ -773,6 +834,94 @@ class Memory:
             for row in rows
         ]
         return list(reversed(decoded))
+
+    # ── Goal Runtime terminal notification outbox ────────────────
+    def ensure_goal_notification(self, goal_id: str, status: str) -> None:
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO goal_notifications
+                   (goal_id, status, state, attempts, created_at, updated_at)
+                   VALUES (?, ?, 'pending', 0, ?, ?)""",
+                (goal_id, status, now, now),
+            )
+
+    def claim_goal_notification(
+        self,
+        goal_id: str,
+        *,
+        stale_after_seconds: float = 300.0,
+    ) -> bool:
+        now = time.time()
+        stale_before = now - max(0.0, stale_after_seconds)
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """UPDATE goal_notifications
+                   SET state='claimed',
+                       attempts=attempts + 1,
+                       claimed_at=?,
+                       error_type='',
+                       updated_at=?
+                   WHERE goal_id=?
+                     AND (
+                         state IN ('pending', 'failed')
+                         OR (state='claimed' AND claimed_at <= ?)
+                     )""",
+                (now, now, goal_id, stale_before),
+            )
+            return cursor.rowcount == 1
+
+    def mark_goal_notification_sent(self, goal_id: str) -> bool:
+        now = time.time()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """UPDATE goal_notifications
+                   SET state='sent', error_type='', updated_at=?
+                   WHERE goal_id=? AND state='claimed'""",
+                (now, goal_id),
+            )
+            return cursor.rowcount == 1
+
+    def mark_goal_notification_failed(
+        self,
+        goal_id: str,
+        error_type: str,
+    ) -> bool:
+        now = time.time()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """UPDATE goal_notifications
+                   SET state='failed', error_type=?, updated_at=?
+                   WHERE goal_id=? AND state='claimed'""",
+                (error_type, now, goal_id),
+            )
+            return cursor.rowcount == 1
+
+    def get_goal_notification(self, goal_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM goal_notifications WHERE goal_id=?",
+                (goal_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_recoverable_goal_notifications(
+        self,
+        *,
+        stale_after_seconds: float = 300.0,
+        limit: int = 100,
+    ) -> list[dict]:
+        stale_before = time.time() - max(0.0, stale_after_seconds)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM goal_notifications
+                   WHERE state IN ('pending', 'failed')
+                      OR (state='claimed' AND claimed_at <= ?)
+                   ORDER BY updated_at ASC
+                   LIMIT ?""",
+                (stale_before, max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ── Lessons Learned ───────────────────────────────────────────
     def save_lesson(self, lesson: dict) -> int:

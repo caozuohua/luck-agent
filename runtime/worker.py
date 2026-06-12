@@ -50,8 +50,10 @@ class RuntimeWorker:
         execution_engine,
         terminal_callback: TerminalCallback | None = None,
         event_recorder=None,
+        notification_store=None,
         notification_timeout: float = 30.0,
         notification_stop_timeout: float | None = None,
+        notification_claim_timeout: float = 300.0,
     ) -> None:
         self.worker_id = worker_id
         self.queue = queue
@@ -62,6 +64,8 @@ class RuntimeWorker:
             if event_recorder is not None
             else NoopRuntimeEventRecorder()
         )
+        self.notification_store = notification_store
+        self.notification_claim_timeout = max(0.0, notification_claim_timeout)
         self.notification_timeout = notification_timeout
         self.notification_stop_timeout = (
             notification_timeout + 0.1
@@ -347,12 +351,24 @@ class RuntimeWorker:
     ) -> None:
         if not self.terminal_callback or status not in {"done", "blocked", "failed"}:
             return
+        if self.notification_store is not None:
+            self.notification_store.ensure_goal_notification(item.goal_id, status)
+            if not self.notification_store.claim_goal_notification(
+                item.goal_id,
+                stale_after_seconds=self.notification_claim_timeout,
+            ):
+                return
         try:
             await asyncio.wait_for(
                 self.terminal_callback(goal),
                 timeout=self.notification_timeout,
             )
         except Exception as notify_error:
+            if self.notification_store is not None:
+                self.notification_store.mark_goal_notification_failed(
+                    item.goal_id,
+                    type(notify_error).__name__,
+                )
             self._record(
                 "notification.failed",
                 item,
@@ -366,6 +382,8 @@ class RuntimeWorker:
                 error=type(notify_error).__name__,
             )
         else:
+            if self.notification_store is not None:
+                self.notification_store.mark_goal_notification_sent(item.goal_id)
             self._record("notification.sent", item, status=status)
 
     def _start_terminal_notification(
@@ -498,12 +516,25 @@ class WorkerManager:
         worker_count: int = 1,
         terminal_callback: TerminalCallback | None = None,
         event_recorder=None,
+        notification_store=None,
         notification_timeout: float = 30.0,
         notification_stop_timeout: float | None = None,
+        notification_recovery_interval: float = 60.0,
+        notification_claim_timeout: float = 300.0,
     ) -> None:
         self.queue = queue
         self.execution_engine = execution_engine
         self.worker_count = max(1, worker_count)
+        self.notification_store = notification_store
+        self.notification_recovery_interval = max(
+            0.01,
+            notification_recovery_interval,
+        )
+        self.notification_claim_timeout = max(
+            0.0,
+            notification_claim_timeout,
+        )
+        self._notification_recovery_task: asyncio.Task[None] | None = None
         self.workers: list[RuntimeWorker] = [
             RuntimeWorker(
                 worker_id=f"worker-{i+1}",
@@ -511,8 +542,10 @@ class WorkerManager:
                 execution_engine=execution_engine,
                 terminal_callback=terminal_callback,
                 event_recorder=event_recorder,
+                notification_store=notification_store,
                 notification_timeout=notification_timeout,
                 notification_stop_timeout=notification_stop_timeout,
+                notification_claim_timeout=self.notification_claim_timeout,
             )
             for i in range(self.worker_count)
         ]
@@ -520,9 +553,83 @@ class WorkerManager:
     def start(self) -> None:
         for worker in self.workers:
             worker.start()
+        if (
+            self.notification_store is not None
+            and self.workers
+            and self.workers[0].terminal_callback is not None
+            and (
+                self._notification_recovery_task is None
+                or self._notification_recovery_task.done()
+            )
+        ):
+            self._notification_recovery_task = asyncio.create_task(
+                self._notification_recovery_loop(),
+                name="runtime-notification-recovery",
+            )
         log.info("runtime_worker_manager_started", worker_count=len(self.workers))
 
+    async def _notification_recovery_loop(self) -> None:
+        while True:
+            try:
+                await self.recover_notifications(
+                    stale_after_seconds=self.notification_claim_timeout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                log.warning(
+                    "runtime_notification_recovery_failed",
+                    error=type(error).__name__,
+                )
+            await asyncio.sleep(self.notification_recovery_interval)
+
+    async def recover_notifications(
+        self,
+        *,
+        stale_after_seconds: float = 300.0,
+    ) -> int:
+        if self.notification_store is None or not self.workers:
+            return 0
+        rows = self.notification_store.list_recoverable_goal_notifications(
+            stale_after_seconds=stale_after_seconds,
+        )
+        worker = self.workers[0]
+        recovered = 0
+        for row in rows:
+            goal_id = str(row.get("goal_id") or "")
+            try:
+                goal = self.execution_engine.goal_manager.get_goal(goal_id)
+            except Exception as error:
+                log.warning(
+                    "runtime_notification_recovery_skipped",
+                    goal_id=goal_id,
+                    error=type(error).__name__,
+                )
+                continue
+            status = str(goal.get("status") or row.get("status") or "")
+            if status not in {"done", "blocked", "failed"}:
+                continue
+            plan = goal.get("plan")
+            skill = str(plan.get("skill") or "") if isinstance(plan, dict) else ""
+            item = RuntimeQueueItem(
+                goal_id=goal_id,
+                user_id=str(goal.get("user_id") or ""),
+                chat_id=str(goal.get("chat_id") or ""),
+                meta={"skill": skill, "intent": str(goal.get("intent") or "")},
+            )
+            if worker._start_terminal_notification(item, goal, status) is not None:
+                recovered += 1
+        if recovered:
+            await asyncio.sleep(0)
+            log.info("runtime_notifications_recovered", count=recovered)
+        return recovered
+
     async def stop(self) -> None:
+        recovery_task = self._notification_recovery_task
+        self._notification_recovery_task = None
+        if recovery_task is not None:
+            recovery_task.cancel()
+            await asyncio.gather(recovery_task, return_exceptions=True)
         await asyncio.gather(*(worker.stop() for worker in self.workers), return_exceptions=True)
         log.info("runtime_worker_manager_stopped")
 

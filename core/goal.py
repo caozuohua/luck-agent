@@ -34,30 +34,11 @@ PAUSABLE_STATUSES = {"pending", "running", "interrupted", "blocked"}
 RESUMABLE_STATUSES = {"pending", "blocked", "interrupted"}
 
 
-DEFAULT_SUCCESS_CRITERIA: dict[str, list[str]] = {
-    "blog_write": [
-        "内容已生成或更新",
-        "目标文件已写入",
-        "本地构建或基础检查通过",
-        "变更已提交并推送",
-        "发布结果已验证或明确给出阻塞原因",
-    ],
-    "github_code": [
-        "目标文件已读取或修改",
-        "变更内容已持久化",
-        "操作结果已验证",
-    ],
-    "shell_run": [
-        "命令已执行",
-        "返回码和关键输出已记录",
-        "失败时已记录错误和后续建议",
-    ],
-    "general": [
-        "任务目标已明确",
-        "必要步骤已记录",
-        "完成、失败或阻塞状态已明确",
-    ],
-}
+GENERIC_SUCCESS_CRITERIA = (
+    "任务目标已明确",
+    "必要步骤已记录",
+    "完成、失败或阻塞状态已明确",
+)
 
 
 class GoalError(RuntimeError):
@@ -89,7 +70,11 @@ class GoalManager:
             title=title.strip() or "未命名目标",
             intent=intent.strip() or "general",
             status=status,  # type: ignore[arg-type]
-            success_criteria=success_criteria or self.default_success_criteria(intent),
+            success_criteria=(
+                self.default_success_criteria(intent)
+                if success_criteria is None
+                else list(success_criteria)
+            ),
             plan=plan or {},
             artifacts=artifacts or [],
         )
@@ -517,7 +502,8 @@ class GoalManager:
 
     @staticmethod
     def default_success_criteria(intent: str) -> list[str]:
-        return list(DEFAULT_SUCCESS_CRITERIA.get(intent, DEFAULT_SUCCESS_CRITERIA["general"]))
+        del intent
+        return list(GENERIC_SUCCESS_CRITERIA)
 
     @staticmethod
     def _title_from_message(text: str, limit: int = 60) -> str:

@@ -517,19 +517,19 @@ class AgentApp:
                 chat_id=chat_id,
                 text=text,
             )
-            if runtime_result["handled"]:
+            if runtime_result.handled:
                 try:
                     await self._sender.send(
                         chat_id,
                         text=(
-                            f"任务已接受：`{runtime_result['goal_id']}`\n"
-                            f"{runtime_result['summary']}"
+                            f"任务已接受：`{runtime_result.goal_id}`\n"
+                            f"{runtime_result.summary}"
                         ),
                         reply_to=message_id,
                     )
                 finally:
                     self._runtime_manager.mark_accepted(
-                        runtime_result["goal_id"]
+                        runtime_result.goal_id
                     )
                 return
 

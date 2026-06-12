@@ -10,6 +10,7 @@ import asyncio
 from typing import Any
 
 from core.log import get_logger
+from runtime.contracts import RuntimeHandleResult
 from runtime.events import NoopRuntimeEventRecorder
 from runtime.task_queue import RuntimeTaskQueue
 from skills.base import SkillContext
@@ -62,7 +63,7 @@ class RuntimeManager:
         text: str,
         message_id: str = "",
         model_override: str = "",
-    ) -> dict[str, Any]:
+    ) -> RuntimeHandleResult:
         context = SkillContext(
             user_id=user_id,
             chat_id=chat_id,
@@ -86,13 +87,16 @@ class RuntimeManager:
                 chat_id=chat_id,
                 payload={"reason": route.reason},
             )
-            return {
-                "handled": False,
-                "skill": metadata.name,
-                "goal_id": "",
-                "intent": route.intent,
-                "reason": route.reason,
-            }
+            return RuntimeHandleResult(
+                handled=False,
+                skill=metadata.name,
+                goal_id="",
+                intent=route.intent,
+                status="fallback",
+                queue_status="",
+                summary="",
+                reason=route.reason,
+            )
 
         self._record(
             "route.matched",
@@ -180,15 +184,16 @@ class RuntimeManager:
             queue_status=item.status,
         )
 
-        return {
-            "handled": True,
-            "skill": metadata.name,
-            "goal_id": goal_id,
-            "intent": request.intent,
-            "status": "accepted",
-            "queue_status": item.status,
-            "summary": self.goal_manager.summary(goal_id),
-        }
+        return RuntimeHandleResult(
+            handled=True,
+            skill=metadata.name,
+            goal_id=goal_id,
+            intent=request.intent,
+            status="accepted",
+            queue_status=item.status,
+            summary=self.goal_manager.summary(goal_id),
+            reason=route.reason,
+        )
 
     async def queue_snapshot(self) -> dict:
         return await self.queue.snapshot()

@@ -7,6 +7,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Any
 
+from runtime.contracts import RuntimeHandleResult
 from runtime.events import RuntimeEventRecorder
 from runtime.runtime_manager import RuntimeManager
 from runtime.task_queue import RuntimeTaskQueue
@@ -318,6 +319,7 @@ class RuntimeSkillRoutingTests(unittest.IsolatedAsyncioTestCase):
             model_override="model-pro",
         )
 
+        self.assertIsInstance(result, RuntimeHandleResult)
         self.assertEqual(
             result,
             {
@@ -328,6 +330,7 @@ class RuntimeSkillRoutingTests(unittest.IsolatedAsyncioTestCase):
                 "status": "accepted",
                 "queue_status": "pending",
                 "summary": "summary:goal-1",
+                "reason": "test match",
             },
         )
         self.assertEqual(
@@ -419,6 +422,7 @@ class RuntimeSkillRoutingTests(unittest.IsolatedAsyncioTestCase):
             text="ordinary chat",
         )
 
+        self.assertIsInstance(result, RuntimeHandleResult)
         self.assertEqual(
             result,
             {
@@ -426,6 +430,9 @@ class RuntimeSkillRoutingTests(unittest.IsolatedAsyncioTestCase):
                 "skill": "legacy_react",
                 "goal_id": "",
                 "intent": "general",
+                "status": "fallback",
+                "queue_status": "",
+                "summary": "",
                 "reason": "legacy fallback",
             },
         )

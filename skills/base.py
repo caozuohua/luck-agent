@@ -9,6 +9,30 @@ if TYPE_CHECKING:
 ExecutionMode = Literal["goal_runtime", "legacy_inline"]
 
 
+class SkillExecutionError(RuntimeError):
+    retryable = False
+    blocking = False
+
+    def __init__(self, message: str, *, hint: str = "") -> None:
+        message = " ".join(message.split())
+        if not message:
+            raise ValueError("skill execution error message is required")
+        super().__init__(message)
+        self.hint = hint
+
+
+class RetryableSkillError(SkillExecutionError):
+    retryable = True
+
+
+class BlockingSkillError(SkillExecutionError):
+    blocking = True
+
+
+class FatalSkillError(SkillExecutionError):
+    pass
+
+
 @dataclass(frozen=True)
 class SkillMetadata:
     name: str

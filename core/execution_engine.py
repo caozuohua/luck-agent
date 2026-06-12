@@ -19,7 +19,13 @@ from core.log import get_logger
 from core.protocols import ToolResult
 from core.supervisor import Supervisor, SupervisorDecision
 from runtime.events import NoopRuntimeEventRecorder
-from skills.base import GoalSkill
+from skills.base import (
+    BlockingSkillError,
+    FatalSkillError,
+    GoalSkill,
+    RetryableSkillError,
+    SkillExecutionError,
+)
 from skills.registry import SkillNotFoundError, SkillRegistry
 
 log = get_logger()
@@ -72,6 +78,13 @@ class StepResult:
 
 class ExecutionEngineError(RuntimeError):
     """Execution engine error."""
+
+
+@dataclass(frozen=True)
+class _FatalSkillOutcome:
+    reason: str
+    error_type: str
+    elapsed_ms: int
 
 
 class ExecutionEngine:
@@ -330,12 +343,45 @@ class ExecutionEngine:
             status="running",
             payload={"name": started_step.get("name", ""), "action": step.action},
         )
-        result = await self._execute_skill_step(skill, goal, step)
+        outcome = await self._execute_skill_step(skill, goal, step)
 
         current_goal = self.goal_manager.get_goal(goal_id)
         if self._is_terminal(current_goal):
             return self._aborted_step_decision(current_goal)
 
+        if isinstance(outcome, _FatalSkillOutcome):
+            committed = await self.goal_manager.commit_step_result(
+                step_id,
+                status="failed",
+                output={
+                    "error_type": outcome.error_type,
+                    "error_class": "fatal",
+                },
+                error=outcome.reason,
+            )
+            if not committed:
+                return self._aborted_step_decision(
+                    self.goal_manager.get_goal(goal_id)
+                )
+            self._record(
+                "step.failed",
+                goal=goal,
+                skill=skill,
+                step_id=step_id,
+                status="failed",
+                payload={
+                    "error_type": outcome.error_type,
+                    "error_class": "fatal",
+                    "action": step.action,
+                },
+            )
+            return SupervisorDecision(
+                decision="fail",
+                verification={},
+                reason=outcome.reason,
+            )
+
+        result = outcome
         retry_count = int(step_record.get("retry_count") or 0)
         max_retry = int((step_record.get("input") or {}).get("max_retry") or step.max_retry)
         try:
@@ -488,34 +534,56 @@ class ExecutionEngine:
         skill: GoalSkill,
         goal: dict,
         step: StepSpec,
-    ) -> StepResult:
+    ) -> StepResult | _FatalSkillOutcome:
         started = time.monotonic()
         try:
             result = await asyncio.wait_for(
                 skill.execute_step(goal, step),
                 timeout=step.timeout or self.default_step_timeout,
             )
+            if result.elapsed_ms <= 0:
+                result.elapsed_ms = int((time.monotonic() - started) * 1000)
+            return result
         except asyncio.TimeoutError:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return StepResult(
                 ok=False,
                 action=step.action,
                 error=f"step timeout after {step.timeout or self.default_step_timeout}s",
-                blocking=True,
+                blocking=False,
                 elapsed_ms=elapsed_ms,
             )
-        except Exception as error:
-            elapsed_ms = int((time.monotonic() - started) * 1000)
+        except RetryableSkillError as error:
             return StepResult(
                 ok=False,
                 action=step.action,
-                error=f"skill execute failed: {type(error).__name__}",
-                blocking=True,
-                elapsed_ms=elapsed_ms,
+                error=str(error),
+                hint=error.hint,
+                blocking=False,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
             )
-        if result.elapsed_ms <= 0:
-            result.elapsed_ms = int((time.monotonic() - started) * 1000)
-        return result
+        except BlockingSkillError as error:
+            return StepResult(
+                ok=False,
+                action=step.action,
+                error=str(error),
+                hint=error.hint,
+                blocking=True,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+        except (FatalSkillError, SkillExecutionError) as error:
+            return _FatalSkillOutcome(
+                reason=str(error),
+                error_type=type(error).__name__,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+        except Exception as error:
+            error_type = type(error).__name__
+            return _FatalSkillOutcome(
+                reason=f"skill execute failed: {error_type}",
+                error_type=error_type,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
 
     async def _ensure_plan(self, goal: dict, skill: GoalSkill) -> bool | None:
         """Create persisted goal steps if the goal has no step records yet."""

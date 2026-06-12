@@ -14,7 +14,13 @@ from core.execution_engine import ExecutionEngine, StepResult, StepSpec
 from core.goal import GoalManager
 from core.memory import Memory
 from core.supervisor import Supervisor, SupervisorDecision
-from skills.base import SkillMatch, SkillMetadata
+from skills.base import (
+    BlockingSkillError,
+    FatalSkillError,
+    RetryableSkillError,
+    SkillMatch,
+    SkillMetadata,
+)
 from skills.legacy_react import LegacyReactSkill
 from skills.registry import SkillRegistry
 
@@ -541,7 +547,118 @@ class ExecutionEngineSkillTests(unittest.IsolatedAsyncioTestCase):
             ["step.blocked", "goal.blocked"],
         )
 
-    async def test_timeout_and_execution_exception_are_blocked(self) -> None:
+    async def test_retryable_skill_error_retries_then_completes(self) -> None:
+        skill = FakeGoalSkill(
+            results=[
+                RetryableSkillError("provider busy", hint="retry later"),
+                StepResult(ok=True, action="work"),
+            ],
+        )
+        recorder = RecordingEventRecorder()
+        goal_id = self.create_goal(plan={"skill": "test_skill"})
+
+        goal = await self.engine(skill, recorder=recorder).run_goal(goal_id)
+
+        self.assertEqual(goal["status"], "done")
+        self.assertEqual(skill.execute_calls, 2)
+        step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(step["retry_count"], 1)
+        self.assertEqual(step["status"], "done")
+        self.assertEqual(self.event_types(recorder).count("step.retry"), 1)
+
+    async def test_retryable_skill_error_exhausts_budget_and_blocks(self) -> None:
+        skill = FakeGoalSkill(
+            results=[RetryableSkillError("provider busy", hint="retry later")],
+        )
+        recorder = RecordingEventRecorder()
+        goal_id = self.create_goal(plan={"skill": "test_skill"})
+
+        goal = await self.engine(skill, recorder=recorder).run_goal(goal_id)
+
+        self.assertEqual(goal["status"], "blocked")
+        self.assertEqual(skill.execute_calls, 2)
+        step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(step["retry_count"], 1)
+        self.assertEqual(step["status"], "blocked")
+        self.assertEqual(step["error"], "provider busy")
+
+    async def test_blocking_skill_error_blocks_without_retry(self) -> None:
+        skill = FakeGoalSkill(
+            results=[
+                BlockingSkillError(
+                    "permission required",
+                    hint="grant permission",
+                )
+            ],
+        )
+        recorder = RecordingEventRecorder()
+        goal_id = self.create_goal(plan={"skill": "test_skill"})
+
+        goal = await self.engine(skill, recorder=recorder).run_goal(goal_id)
+
+        self.assertEqual(goal["status"], "blocked")
+        self.assertEqual(skill.execute_calls, 1)
+        step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(step["retry_count"], 0)
+        self.assertEqual(step["status"], "blocked")
+        self.assertEqual(step["error"], "permission required")
+
+    async def test_fatal_skill_error_fails_without_supervisor_decision(self) -> None:
+        skill = FakeGoalSkill(
+            results=[FatalSkillError("invalid skill state")],
+        )
+        recorder = RecordingEventRecorder()
+        goal_id = self.create_goal(plan={"skill": "test_skill"})
+
+        goal = await self.engine(skill, recorder=recorder).run_goal(goal_id)
+
+        self.assertEqual(goal["status"], "failed")
+        self.assertEqual(goal["error"], "invalid skill state")
+        step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(step["status"], "failed")
+        self.assertEqual(step["error"], "invalid skill state")
+        self.assertNotIn("supervisor.decision", self.event_types(recorder))
+        self.assertEqual(
+            self.event_types(recorder)[-2:],
+            ["step.failed", "goal.failed"],
+        )
+        failed_event = recorder.events[-2]
+        self.assertEqual(failed_event["payload"]["error_type"], "FatalSkillError")
+        self.assertEqual(failed_event["payload"]["error_class"], "fatal")
+
+    async def test_unknown_skill_error_fails_with_sanitized_type(self) -> None:
+        secret = "private failure"
+        skill = FakeGoalSkill(results=[ValueError(secret)])
+        recorder = RecordingEventRecorder()
+        goal_id = self.create_goal(plan={"skill": "test_skill"})
+
+        goal = await self.engine(skill, recorder=recorder).run_goal(goal_id)
+
+        expected = "skill execute failed: ValueError"
+        self.assertEqual(goal["status"], "failed")
+        self.assertEqual(goal["error"], expected)
+        step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(step["status"], "failed")
+        self.assertEqual(step["error"], expected)
+        self.assertNotIn("supervisor.decision", self.event_types(recorder))
+        failed_event = next(
+            event
+            for event in recorder.events
+            if event["event_type"] == "step.failed"
+        )
+        self.assertEqual(failed_event["payload"]["error_type"], "ValueError")
+        self.assertEqual(failed_event["payload"]["error_class"], "fatal")
+        self.assertNotIn(
+            secret,
+            repr({
+                "goal": goal,
+                "steps": self.goal_manager.get_steps(goal_id),
+                "events": recorder.events,
+                "lessons": self.memory.search_lessons(task_type="test_intent"),
+            }),
+        )
+
+    async def test_timeout_retries_once_before_blocking(self) -> None:
         async def raise_timeout(awaitable, *, timeout):
             awaitable.close()
             raise asyncio.TimeoutError
@@ -559,33 +676,18 @@ class ExecutionEngineSkillTests(unittest.IsolatedAsyncioTestCase):
             ).run_goal(timeout_id)
 
         self.assertEqual(timeout_goal["status"], "blocked")
+        timeout_step = self.goal_manager.get_steps(timeout_id)[0]
+        self.assertEqual(timeout_step["retry_count"], 1)
+        self.assertEqual(timeout_step["status"], "blocked")
         self.assertEqual(
-            self.event_types(timeout_recorder)[-2:],
-            ["step.blocked", "goal.blocked"],
+            self.event_types(timeout_recorder)[-4:],
+            [
+                "step.started",
+                "supervisor.decision",
+                "step.blocked",
+                "goal.blocked",
+            ],
         )
-
-        error_skill = FakeGoalSkill(results=[RuntimeError("private failure")])
-        error_recorder = RecordingEventRecorder()
-        error_id = self.create_goal(plan={"skill": "test_skill"})
-
-        error_goal = await self.engine(
-            error_skill,
-            recorder=error_recorder,
-        ).run_goal(error_id)
-
-        self.assertEqual(error_goal["status"], "blocked")
-        self.assertEqual(
-            self.event_types(error_recorder)[-2:],
-            ["step.blocked", "goal.blocked"],
-        )
-        persisted = {
-            "goal": error_goal,
-            "steps": self.goal_manager.get_steps(error_id),
-            "events": error_recorder.events,
-            "lessons": self.memory.search_lessons(task_type="test_intent"),
-        }
-        self.assertNotIn("private failure", repr(persisted))
-        self.assertIn("skill execute failed: RuntimeError", repr(persisted))
 
     async def test_cancel_during_execute_keeps_goal_cancelled(self) -> None:
         execute_started = asyncio.Event()

@@ -5,7 +5,16 @@ import sys
 import unittest
 from dataclasses import FrozenInstanceError
 
-from skills.base import GoalRequest, SkillContext, SkillMatch, SkillMetadata
+from skills.base import (
+    BlockingSkillError,
+    FatalSkillError,
+    GoalRequest,
+    RetryableSkillError,
+    SkillContext,
+    SkillExecutionError,
+    SkillMatch,
+    SkillMetadata,
+)
 from skills.legacy_react import LegacyReactSkill
 from skills.registry import (
     SkillNotFoundError,
@@ -55,6 +64,41 @@ class FakeSkill:
 
 
 class SkillContractTests(unittest.TestCase):
+    def test_skill_execution_errors_expose_classification_and_hint(self) -> None:
+        retryable = RetryableSkillError(
+            "  provider   busy ",
+            hint="retry later",
+        )
+        blocking = BlockingSkillError(
+            "permission required",
+            hint="grant permission",
+        )
+        fatal = FatalSkillError("invalid skill state")
+
+        self.assertEqual(str(retryable), "provider busy")
+        self.assertTrue(retryable.retryable)
+        self.assertFalse(retryable.blocking)
+        self.assertEqual(retryable.hint, "retry later")
+        self.assertFalse(blocking.retryable)
+        self.assertTrue(blocking.blocking)
+        self.assertEqual(blocking.hint, "grant permission")
+        self.assertFalse(fatal.retryable)
+        self.assertFalse(fatal.blocking)
+
+    def test_skill_execution_errors_require_non_empty_safe_message(self) -> None:
+        for error_type in (
+            SkillExecutionError,
+            RetryableSkillError,
+            BlockingSkillError,
+            FatalSkillError,
+        ):
+            with self.subTest(error_type=error_type.__name__):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "skill execution error message is required",
+                ):
+                    error_type(" \t\n ")
+
     def test_importing_base_does_not_import_execution_engine_at_runtime(self) -> None:
         script = """
 import builtins

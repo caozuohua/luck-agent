@@ -7,6 +7,23 @@ from runtime.task_queue import RuntimeTaskQueue
 
 
 class RuntimeTaskQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_max_active_limits_concurrent_running_items(self) -> None:
+        queue = RuntimeTaskQueue(max_active=1)
+        await queue.submit(goal_id="g1", user_id="u1", chat_id="c1")
+        await queue.submit(goal_id="g2", user_id="u2", chat_id="c2")
+
+        first = await queue.get()
+        second_get = asyncio.create_task(queue.get())
+        await asyncio.sleep(0)
+
+        self.assertEqual(first.goal_id, "g1")
+        self.assertFalse(second_get.done())
+
+        await queue.mark_done("g1")
+        second = await asyncio.wait_for(second_get, timeout=1)
+        self.assertEqual(second.goal_id, "g2")
+        await queue.mark_done("g2")
+
     async def test_settle_from_goal_reads_status_and_transitions_under_lock(
         self,
     ) -> None:

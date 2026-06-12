@@ -34,11 +34,15 @@ class FakeGenerator:
 class BlockingGenerator:
     def __init__(self) -> None:
         self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
 
     async def generate(self, goal: dict) -> GeneratedContent:
         self.started.set()
-        await asyncio.Future()
-        raise AssertionError("unreachable")
+        try:
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+        finally:
+            self.cancelled.set()
 
 
 class SkillRuntimeEndToEndTests(unittest.IsolatedAsyncioTestCase):
@@ -323,6 +327,54 @@ class SkillRuntimeEndToEndTests(unittest.IsolatedAsyncioTestCase):
             ),
             1,
         )
+
+    async def test_cancelling_running_goal_stops_skill_execution(self) -> None:
+        blocking_generator = BlockingGenerator()
+        registry = SkillRegistry([
+            BlogSkill(generator=blocking_generator),
+            LegacyReactSkill(),
+        ])
+        engine = ExecutionEngine(
+            goal_manager=self.goal_manager,
+            supervisor=Supervisor(memory=self.memory),
+            skill_registry=registry,
+            event_recorder=self.recorder,
+        )
+        manager = RuntimeManager(
+            goal_manager=self.goal_manager,
+            execution_engine=engine,
+            queue=self.queue,
+            skill_registry=registry,
+            skill_router=SkillRouter(registry),
+            event_recorder=self.recorder,
+        )
+        self.workers = WorkerManager(
+            queue=self.queue,
+            execution_engine=engine,
+            event_recorder=self.recorder,
+        )
+        self.workers.start()
+
+        result = await manager.handle_message(
+            user_id="user-cancel",
+            chat_id="chat-cancel",
+            text="帮我整理一个博客选题",
+        )
+        await asyncio.wait_for(blocking_generator.started.wait(), timeout=1)
+
+        goal = await manager.cancel_goal(
+            result["goal_id"],
+            "user cancelled",
+        )
+
+        await asyncio.wait_for(blocking_generator.cancelled.wait(), timeout=1)
+        await asyncio.wait_for(self.queue._queue.join(), timeout=1)
+        self.assertEqual(goal["status"], "cancelled")
+        self.assertEqual(
+            self.goal_manager.get_goal(result["goal_id"])["status"],
+            "cancelled",
+        )
+        self.assertTrue(self.workers.workers[0].state.running)
 
     async def test_hard_crash_running_step_is_reset_and_recovered(self) -> None:
         goal_id = self.goal_manager.create_goal(

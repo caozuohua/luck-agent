@@ -45,10 +45,13 @@ class RuntimeTaskQueue:
     """Small async priority queue for goal execution."""
 
     def __init__(self, max_active: int = 1) -> None:
-        self.max_active = max_active
+        self.max_active = max(1, int(max_active))
         self._queue: asyncio.PriorityQueue[tuple[int, float, str]] = asyncio.PriorityQueue()
         self._items: dict[str, RuntimeQueueItem] = {}
         self._finished_tasks: set[str] = set()
+        self._execution_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._active_slots: set[str] = set()
+        self._slots = asyncio.Semaphore(self.max_active)
         self._lock = asyncio.Lock()
 
     async def submit(
@@ -78,20 +81,50 @@ class RuntimeTaskQueue:
         return item
 
     async def get(self) -> RuntimeQueueItem:
-        while True:
-            _, _, goal_id = await self._queue.get()
-            async with self._lock:
-                item = self._items.get(goal_id)
-                if not item or item.status != "pending":
-                    self._finish_task(goal_id)
-                    continue
-                item.status = "running"
-                item.started_at = time.time()
-                return item
+        await self._slots.acquire()
+        claimed = False
+        try:
+            while True:
+                _, _, goal_id = await self._queue.get()
+                async with self._lock:
+                    item = self._items.get(goal_id)
+                    if not item or item.status != "pending":
+                        self._finish_task(goal_id)
+                        continue
+                    item.status = "running"
+                    item.started_at = time.time()
+                    self._active_slots.add(goal_id)
+                    claimed = True
+                    return item
+        finally:
+            if not claimed:
+                self._slots.release()
 
     async def get_item(self, goal_id: str) -> RuntimeQueueItem | None:
         async with self._lock:
             return self._items.get(goal_id)
+
+    async def register_execution_task(
+        self,
+        goal_id: str,
+        task: asyncio.Task[Any],
+    ) -> bool:
+        async with self._lock:
+            item = self._items.get(goal_id)
+            if item is None or item.status == "cancelled":
+                task.cancel()
+                return False
+            self._execution_tasks[goal_id] = task
+            return True
+
+    async def unregister_execution_task(
+        self,
+        goal_id: str,
+        task: asyncio.Task[Any],
+    ) -> None:
+        async with self._lock:
+            if self._execution_tasks.get(goal_id) is task:
+                self._execution_tasks.pop(goal_id, None)
 
     async def mark_done(self, goal_id: str) -> bool:
         return await self._mark_terminal(goal_id, status="done")
@@ -125,6 +158,9 @@ class RuntimeTaskQueue:
             previous_status = item.status
             item.status = "cancelled"
             item.error = reason
+            execution_task = self._execution_tasks.get(goal_id)
+            if execution_task is not None:
+                execution_task.cancel()
             if previous_status == "pending":
                 item.finished_at = time.time()
                 self._finish_task(goal_id)
@@ -247,6 +283,9 @@ class RuntimeTaskQueue:
         if goal_id in self._finished_tasks:
             return
         self._finished_tasks.add(goal_id)
+        if goal_id in self._active_slots:
+            self._active_slots.remove(goal_id)
+            self._slots.release()
         self._queue.task_done()
 
     async def snapshot(self) -> dict[str, Any]:

@@ -61,7 +61,10 @@ class FakeGoalManager:
     def get_goal(self, goal_id: str) -> dict[str, Any]:
         return dict(self.goals[goal_id])
 
-    def recover_interrupted_goals(self) -> list[dict[str, Any]]:
+    def recover_interrupted_goals(
+        self,
+        stale_after_seconds: int = 300,
+    ) -> list[dict[str, Any]]:
         return self.recoverable
 
     def block_goal(self, goal_id: str, reason: str) -> dict[str, Any]:

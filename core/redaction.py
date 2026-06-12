@@ -147,10 +147,15 @@ def redact_value(
                 try:
                     result: dict[Any, Any] = {}
                     for key, nested in item.items():
+                        safe_key = (
+                            redact_text(key, secrets=secret_values)
+                            if isinstance(key, str)
+                            else key
+                        )
                         if _is_sensitive_key(key):
-                            result[key] = REDACTED
+                            result[safe_key] = REDACTED
                         else:
-                            result[key] = clean(nested, depth + 1)
+                            result[safe_key] = clean(nested, depth + 1)
                         if nodes[0] > max_nodes:
                             break
                     return result

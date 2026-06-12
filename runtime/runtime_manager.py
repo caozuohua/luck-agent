@@ -224,8 +224,10 @@ class RuntimeManager:
             if self._acceptance_gates.get(goal_id) is gate:
                 self._acceptance_gates.pop(goal_id, None)
 
-    async def recover_goals(self) -> int:
-        goals = self.goal_manager.recover_interrupted_goals()
+    async def recover_goals(self, stale_after_seconds: int = 0) -> int:
+        goals = self.goal_manager.recover_interrupted_goals(
+            stale_after_seconds=stale_after_seconds,
+        )
         submitted = 0
         for goal in goals:
             existing = await self.queue.get_item(goal["goal_id"])

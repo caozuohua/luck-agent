@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.redaction import redact_text, redact_value
+
 
 class AcceptanceGatedNotifier:
     def __init__(self, *, wait_until_accepted: Any, notifier: Any) -> None:
@@ -28,30 +30,54 @@ class RuntimeGoalNotifier:
         status = str(goal.get("status") or "failed")
 
         if status == "done":
+            artifacts = goal.get("artifacts") or []
             artifact = next(
                 (
                     item
-                    for item in reversed(goal.get("artifacts") or [])
+                    for item in reversed(artifacts)
                     if isinstance(item, dict)
                     and item.get("type") == "generated_content"
                     and str(item.get("content") or "").strip()
                 ),
                 None,
             )
-            if artifact is None:
-                raise ValueError("completed goal has no generated content")
-
-            card = self.card_builder.agent_reply(
-                text=str(artifact["content"]),
-                model=str(artifact.get("model") or ""),
-                task_id=goal_id,
-            )
+            if artifact is not None:
+                card = self.card_builder.agent_reply(
+                    text=redact_text(artifact["content"]),
+                    model=redact_text(artifact.get("model") or ""),
+                    task_id=goal_id,
+                )
+            else:
+                plan = goal.get("plan")
+                skill = (
+                    str(plan.get("skill") or "")
+                    if isinstance(plan, dict)
+                    else ""
+                )
+                task_type = redact_text(
+                    skill or str(goal.get("intent") or "goal_runtime")
+                )
+                result = (
+                    {"artifacts": redact_value(artifacts)}
+                    if artifacts
+                    else {"summary": "Goal completed"}
+                )
+                card = self.card_builder.task_status(
+                    task_id=goal_id,
+                    task_type=task_type,
+                    status="done",
+                    result=result,
+                )
         else:
             detail_parts = [f"Goal ID: {goal_id}"]
-            current_step = str(goal.get("current_step") or "").strip()
+            current_step = redact_text(
+                goal.get("current_step") or ""
+            ).strip()
             if current_step:
                 detail_parts.append(f"Current step: {current_step}")
-            error = str(goal.get("error") or f"goal ended with status {status}")
+            error = redact_text(
+                goal.get("error") or f"goal ended with status {status}"
+            )
             detail_parts.append(f"Error: {error}")
             card = self.card_builder.error(
                 f"任务 {status}",

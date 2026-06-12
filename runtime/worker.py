@@ -127,7 +127,47 @@ class RuntimeWorker:
         terminal_error = ""
         try:
             try:
-                goal = await self.execution_engine.run_goal(item.goal_id)
+                execution_task = asyncio.create_task(
+                    self.execution_engine.run_goal(item.goal_id),
+                    name=f"runtime-goal-{item.goal_id}",
+                )
+                register_execution = getattr(
+                    self.queue,
+                    "register_execution_task",
+                    None,
+                )
+                unregister_execution = getattr(
+                    self.queue,
+                    "unregister_execution_task",
+                    None,
+                )
+                if callable(register_execution):
+                    await register_execution(
+                        item.goal_id,
+                        execution_task,
+                    )
+                try:
+                    goal = await execution_task
+                except asyncio.CancelledError:
+                    queue_item = await self.queue.get_item(item.goal_id)
+                    worker_task = asyncio.current_task()
+                    if (
+                        queue_item is not None
+                        and queue_item.status == "cancelled"
+                        and worker_task is not None
+                        and worker_task.cancelling() == 0
+                    ):
+                        goal = self.execution_engine.goal_manager.get_goal(
+                            item.goal_id
+                        )
+                    else:
+                        raise
+                finally:
+                    if callable(unregister_execution):
+                        await unregister_execution(
+                            item.goal_id,
+                            execution_task,
+                        )
             except Exception as exc:
                 error = f"execution failed: {type(exc).__name__}"
                 try:

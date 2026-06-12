@@ -17,11 +17,13 @@ class FakeSender:
 class FakeCardBuilder:
     agent_reply_calls: list[dict] = []
     error_calls: list[tuple[str, str]] = []
+    task_status_calls: list[dict] = []
 
     @classmethod
     def reset(cls) -> None:
         cls.agent_reply_calls = []
         cls.error_calls = []
+        cls.task_status_calls = []
 
     @classmethod
     def agent_reply(cls, **kwargs) -> dict:
@@ -32,6 +34,11 @@ class FakeCardBuilder:
     def error(cls, title: str, detail: str = "") -> dict:
         cls.error_calls.append((title, detail))
         return {"kind": "error", "title": title, "detail": detail}
+
+    @classmethod
+    def task_status(cls, **kwargs) -> dict:
+        cls.task_status_calls.append(kwargs)
+        return {"kind": "task_status", **kwargs}
 
 
 class RuntimeGoalNotifierTests(unittest.IsolatedAsyncioTestCase):
@@ -72,6 +79,30 @@ class RuntimeGoalNotifierTests(unittest.IsolatedAsyncioTestCase):
             },
         )])
         self.assertNotIn("reply_to", self.sender.calls[0][1])
+
+    async def test_terminal_cards_redact_content_model_and_errors(self) -> None:
+        await self.notifier.notify({
+            "goal_id": "goal-secret",
+            "chat_id": "chat-1",
+            "status": "done",
+            "artifacts": [{
+                "type": "generated_content",
+                "content": "token=content-secret",
+                "model": "model?access_key=model-secret",
+            }],
+        })
+        self.assertNotIn("content-secret", repr(self.sender.calls))
+        self.assertNotIn("model-secret", repr(self.sender.calls))
+
+        FakeCardBuilder.reset()
+        self.sender.calls.clear()
+        await self.notifier.notify({
+            "goal_id": "goal-failed",
+            "chat_id": "chat-1",
+            "status": "failed",
+            "error": "Authorization: Bearer failure-secret",
+        })
+        self.assertNotIn("failure-secret", repr(self.sender.calls))
 
     async def test_done_uses_last_nonempty_generated_content_artifact(self) -> None:
         await self.notifier.notify({
@@ -114,7 +145,9 @@ class RuntimeGoalNotifierTests(unittest.IsolatedAsyncioTestCase):
             "task_id": "g1",
         })
 
-    async def test_done_without_nonempty_generated_content_raises(self) -> None:
+    async def test_done_without_generated_content_uses_generic_result_card(
+        self,
+    ) -> None:
         for artifacts in (
             [],
             [None, "bad", 42],
@@ -124,15 +157,25 @@ class RuntimeGoalNotifierTests(unittest.IsolatedAsyncioTestCase):
             [{"type": "generated_content", "content": "  "}],
         ):
             with self.subTest(artifacts=artifacts):
-                with self.assertRaises(ValueError):
-                    await self.notifier.notify({
-                        "goal_id": "g1",
-                        "chat_id": "c1",
-                        "status": "done",
-                        "artifacts": artifacts,
-                    })
+                FakeCardBuilder.reset()
+                self.sender.calls.clear()
+                await self.notifier.notify({
+                    "goal_id": "g1",
+                    "chat_id": "c1",
+                    "intent": "data_export",
+                    "plan": {"skill": "export_data"},
+                    "status": "done",
+                    "artifacts": artifacts,
+                })
 
-        self.assertEqual(self.sender.calls, [])
+                call = FakeCardBuilder.task_status_calls[0]
+                self.assertEqual(call["task_id"], "g1")
+                self.assertEqual(call["task_type"], "export_data")
+                self.assertEqual(call["status"], "done")
+                self.assertEqual(
+                    self.sender.calls[0][1]["card"]["kind"],
+                    "task_status",
+                )
 
     async def test_empty_chat_id_raises(self) -> None:
         for chat_id in (None, "", "   "):

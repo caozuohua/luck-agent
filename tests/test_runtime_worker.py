@@ -700,10 +700,9 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(engine.started.wait(), timeout=1)
 
         self.assertTrue(await queue.cancel("g1", "user cancelled"))
-        with self.assertRaises(TimeoutError):
-            await asyncio.wait_for(queue._queue.join(), timeout=0.01)
-        engine.release.set()
         await asyncio.wait_for(queue._queue.join(), timeout=1)
+        self.assertFalse(engine.returning.is_set())
+        self.assertTrue(worker.state.running)
         await worker.stop()
 
         item = await queue.get_item("g1")

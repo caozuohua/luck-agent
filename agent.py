@@ -464,6 +464,19 @@ class AgentApp:
             log.info("message_in", user_id=user_id[:8], type=msg_type,
                      chat_type=chat_type, length=len(text))
 
+            if chat_type == "group" and self._cmd_handler.is_command(text):
+                log.warning(
+                    "group_command_rejected",
+                    user_id=user_id[:8],
+                    chat_id=chat_id[:8],
+                )
+                await self._sender.send(
+                    chat_id,
+                    text="运维指令仅支持与机器人私聊。",
+                    reply_to=message_id,
+                )
+                return
+
             # PKB 录入：以 # 开头的消息优先作为个人知识库笔记处理
             note = parse_note_message(text)
             if note:
@@ -606,6 +619,8 @@ class AgentApp:
             (
                 self.cfg.LARK_APP_SECRET,
                 self.cfg.GITHUB_TOKEN,
+                self.cfg.TAVILY_API_KEY,
+                self.cfg.API_SECRET,
             )
         )
 

@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from agent import AgentApp
 from controllers.content_generator import GeneratedContent
@@ -165,6 +165,14 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("log_level=lark.LogLevel.WARNING", source)
         self.assertNotIn("log_level=lark.LogLevel.INFO", source)
 
+    def test_agent_registers_all_configured_application_secrets(self) -> None:
+        source = inspect.getsource(AgentApp.run)
+
+        self.assertIn("self.cfg.LARK_APP_SECRET", source)
+        self.assertIn("self.cfg.GITHUB_TOKEN", source)
+        self.assertIn("self.cfg.TAVILY_API_KEY", source)
+        self.assertIn("self.cfg.API_SECRET", source)
+
     async def test_runtime_manager_submits_goal_without_inline_execution(self) -> None:
         goal_manager = FakeGoalManager()
         queue = RuntimeTaskQueue(max_active=1)
@@ -209,7 +217,12 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             sender = ControlledSender(calls)
             notifier = RecordingNotifier(calls)
             app = AgentApp.__new__(AgentApp)
-            app.cfg = SimpleNamespace(ADMIN_USERS=set(), MODEL_PRO="", MODEL_FLASH="", MODEL_LITE="")
+            app.cfg = SimpleNamespace(
+                ADMIN_USERS={"user-fast"},
+                MODEL_PRO="",
+                MODEL_FLASH="",
+                MODEL_LITE="",
+            )
             app._sender = sender
             app._runtime_manager = manager
             app._health = SimpleNamespace(mark_ws_ok=lambda: None)
@@ -265,6 +278,43 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 sender.release_accepted.set()
                 await workers.stop()
                 memory._local.conn.close()
+
+    async def test_group_chat_rejects_direct_commands_before_dispatch(self) -> None:
+        app = AgentApp.__new__(AgentApp)
+        app.cfg = SimpleNamespace(
+            ADMIN_USERS={"admin-user"},
+            MODEL_PRO="",
+            MODEL_FLASH="",
+            MODEL_LITE="",
+        )
+        app._health = SimpleNamespace(mark_ws_ok=lambda: None)
+        app._memory = SimpleNamespace(set_profile=lambda *args: None)
+        app._sender = SimpleNamespace(send=AsyncMock())
+        app._cmd_handler = SimpleNamespace(
+            is_command=lambda text: text.startswith("/"),
+            handle=AsyncMock(return_value=True),
+        )
+
+        await app._on_message({
+            "event": {
+                "message": {
+                    "chat_id": "group-chat",
+                    "message_id": "group-message",
+                    "message_type": "text",
+                    "chat_type": "group",
+                    "mentions": [{"key": "@_user_1"}],
+                    "content": '{"text":"@bot /runtime"}',
+                },
+                "sender": {"sender_id": {"open_id": "admin-user"}},
+            },
+        })
+
+        app._cmd_handler.handle.assert_not_awaited()
+        app._sender.send.assert_awaited_once()
+        self.assertIn(
+            "私聊",
+            app._sender.send.await_args.kwargs["text"],
+        )
 
     async def test_runtime_manager_cancels_pending_goal_in_sqlite_and_queue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -508,6 +558,45 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     goal_manager.get_goal(stale_id)["status"],
                     "interrupted",
+                )
+            finally:
+                memory._local.conn.close()
+
+    async def test_startup_recovery_immediately_requeues_running_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "runtime.db"))
+            goal_manager = GoalManager(memory)
+            goal_id = goal_manager.create_goal(
+                user_id="crash-user",
+                chat_id="crash-chat",
+                title="recent crashed goal",
+                intent="blog_write",
+                status="running",
+            )
+            step_id = goal_manager.create_step(
+                goal_id=goal_id,
+                name="generate_content",
+            )
+            _step, claimed = goal_manager.start_step(step_id)
+            self.assertTrue(claimed)
+            queue = RuntimeTaskQueue(max_active=1)
+            registry, router = blog_runtime_dependencies()
+            manager = RuntimeManager(
+                goal_manager=goal_manager,
+                queue=queue,
+                skill_registry=registry,
+                skill_router=router,
+            )
+
+            try:
+                self.assertEqual(await manager.recover_goals(), 1)
+                self.assertEqual(
+                    goal_manager.get_goal(goal_id)["status"],
+                    "interrupted",
+                )
+                self.assertEqual(
+                    goal_manager.get_steps(goal_id)[0]["status"],
+                    "pending",
                 )
             finally:
                 memory._local.conn.close()

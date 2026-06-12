@@ -76,6 +76,16 @@ class RedactionTests(unittest.TestCase):
         self.assertIsInstance(redacted["nested"][1], tuple)
         self.assertNotIn("tuple-secret", redacted["nested"][1][0])
 
+    def test_redact_value_redacts_configured_secrets_used_as_keys(self) -> None:
+        secret = "configured-secret-key"
+
+        redacted = redact_value(
+            {secret: "ordinary-value"},
+            secrets=(secret,),
+        )
+
+        self.assertNotIn(secret, repr(redacted))
+
     def test_redact_value_is_cycle_safe_and_non_throwing(self) -> None:
         cyclic: list[object] = []
         cyclic.append(cyclic)

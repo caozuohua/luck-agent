@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -319,6 +320,62 @@ class SkillRuntimeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [event["event_type"] for event in events].count(
                 "notification.sent"
+            ),
+            1,
+        )
+
+    async def test_hard_crash_running_step_is_reset_and_recovered(self) -> None:
+        goal_id = self.goal_manager.create_goal(
+            user_id="user-crash",
+            chat_id="chat-crash",
+            title="崩溃恢复博客 Goal",
+            intent="blog_write",
+            plan={
+                "source_message": "帮我整理一个博客选题",
+                "skill": "blog_write",
+                "skill_version": "1.0.0",
+            },
+            status="running",
+        )
+        step_id = self.goal_manager.create_step(
+            goal_id=goal_id,
+            name="generate_content",
+            input={
+                "action": "generate_content",
+                "timeout": 180,
+                "max_retry": 1,
+            },
+        )
+        _step, claimed = self.goal_manager.start_step(step_id)
+        self.assertTrue(claimed)
+        with self.memory._conn() as conn:
+            conn.execute(
+                "UPDATE goals SET updated_at=? WHERE goal_id=?",
+                (time.time() - 600, goal_id),
+            )
+
+        self.workers = WorkerManager(
+            queue=self.queue,
+            execution_engine=self.engine,
+            event_recorder=self.recorder,
+        )
+
+        self.assertEqual(await self.manager.recover_goals(), 1)
+        recovered_step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(recovered_step["status"], "pending")
+        self.assertIsNone(recovered_step["started_at"])
+
+        self.workers.start()
+        await self._wait_for_event(goal_id, "queue.completed")
+
+        goal = self.goal_manager.get_goal(goal_id)
+        step = self.goal_manager.get_steps(goal_id)[0]
+        events = self.memory.list_runtime_events(goal_id=goal_id)
+        self.assertEqual(goal["status"], "done")
+        self.assertEqual(step["status"], "done")
+        self.assertEqual(
+            [event["event_type"] for event in events].count(
+                "goal.recovered"
             ),
             1,
         )

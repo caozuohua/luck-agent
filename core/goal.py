@@ -478,12 +478,15 @@ class GoalManager:
         for goal in running_goals:
             updated_at = float(goal.get("updated_at") or 0)
             if now - updated_at >= stale_after_seconds:
-                self.memory.update_goal(
+                interrupted = self.memory.interrupt_goal_execution(
                     goal["goal_id"],
-                    status="interrupted",
-                    error=f"stale running goal after {stale_after_seconds}s",
+                    reason=f"stale running goal after {stale_after_seconds}s",
+                    expected_statuses={"running"},
                 )
-                recoverable[goal["goal_id"]] = self.get_goal(goal["goal_id"])
+                if interrupted:
+                    recoverable[goal["goal_id"]] = self.get_goal(
+                        goal["goal_id"]
+                    )
         return list(recoverable.values())
 
     def _list_all_goals(self, *, status: str, page_size: int = 100) -> list[dict]:

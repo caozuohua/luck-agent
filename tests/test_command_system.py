@@ -68,6 +68,7 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
         handler.card = FakeCard()
         handler.reply = reply
         handler.health = type("Health", (), {"_ws_online": True, "_ws_last_ok": 1000.0})()
+        handler.runtime_observability = None
         return handler
 
     async def test_upgrade_pulls_luck_agent_repo_from_code_directory(self) -> None:
@@ -116,6 +117,55 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["upload_dir"], FakeBridge.storage)
         self.assertEqual(stats["pkb_status"], "ok")
         self.assertEqual(stats["pkb_detail"], "Supabase ok")
+
+    async def test_runtime_command_is_handled_without_model_fallback(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        service = type(
+            "RuntimeObservability",
+            (),
+            {
+                "overview": AsyncMock(return_value="runtime overview"),
+                "goal_timeline": AsyncMock(return_value="goal timeline"),
+            },
+        )()
+        handler.runtime_observability = service
+
+        handled = await handler.handle("admin", "chat", "message", "/runtime")
+        timeline_handled = await handler.handle(
+            "admin",
+            "chat",
+            "message",
+            "/runtime goal-1",
+        )
+
+        self.assertTrue(handled)
+        self.assertTrue(timeline_handled)
+        service.overview.assert_awaited_once_with()
+        service.goal_timeline.assert_awaited_once_with("goal-1")
+        self.assertEqual(
+            [reply["text"] for reply in replies],
+            ["runtime overview", "goal timeline"],
+        )
+
+    async def test_journal_redacts_stdout_and_stderr(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+
+        async def run_journal(command: str, **kwargs) -> dict:
+            return {
+                "stdout": "access_key=journal-secret",
+                "stderr": "Authorization: Bearer journal-secret",
+                "returncode": 0,
+            }
+
+        handler.shell.run = run_journal
+
+        await handler._handle_journal("chat", "")
+
+        response = replies[-1]["text"]
+        self.assertNotIn("journal-secret", response)
+        self.assertIn("[REDACTED]", response)
 
 
 if __name__ == "__main__":

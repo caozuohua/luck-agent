@@ -215,6 +215,7 @@ class AgentApp:
         from core.task_queue   import TaskQueue
         from core.scheduler    import Scheduler, ScheduleStore
         from core.health       import HealthMonitor, DBLogHandler
+        from runtime.observability import RuntimeObservability
         from tools.github_tools import GitHubClient
         from tools.shell_tools  import ShellExecutor, FileManager
         from tools.file_bridge  import FileBridge
@@ -344,6 +345,12 @@ class AgentApp:
             worker_count=1,
             terminal_callback=terminal_notifier.notify,
             event_recorder=event_recorder,
+        )
+        self._cmd_handler.runtime_observability = RuntimeObservability(
+            goal_manager=goal_manager,
+            runtime_manager=self._runtime_manager,
+            worker_manager=self._runtime_workers,
+            memory=self._memory,
         )
 
         # 调度器：定时任务触发 → 注入 AgentMessageHandler

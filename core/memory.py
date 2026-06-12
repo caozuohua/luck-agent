@@ -749,6 +749,31 @@ class Memory:
             ).fetchall()
         return [self._decode_json_fields(row, ("payload",)) for row in rows]
 
+    def list_latest_runtime_events(
+        self,
+        *,
+        goal_id: str | None = None,
+        limit: int = 30,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if goal_id is not None:
+            clauses.append("goal_id=?")
+            params.append(goal_id)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 100)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM runtime_events {where}
+                    ORDER BY id DESC LIMIT ?""",
+                params,
+            ).fetchall()
+        decoded = [
+            self._decode_json_fields(row, ("payload",))
+            for row in rows
+        ]
+        return list(reversed(decoded))
+
     # ── Lessons Learned ───────────────────────────────────────────
     def save_lesson(self, lesson: dict) -> int:
         """Insert or update a lesson by domain/task_type/error_pattern."""

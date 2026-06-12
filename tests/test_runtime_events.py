@@ -315,6 +315,25 @@ class RuntimeEventsTestCase(unittest.TestCase):
         self.assertNotIn(secret, repr(row))
         self.assertIn("[REDACTED]", repr(row))
 
+    def test_memory_lists_latest_runtime_events_in_chronological_order(self) -> None:
+        recorder = RuntimeEventRecorder(self.memory)
+        for index in range(35):
+            recorder.record(
+                "step.reviewed",
+                goal_id="goal-latest",
+                step_id=f"step-{index + 1}",
+                created_at=float(index + 1),
+            )
+
+        events = self.memory.list_latest_runtime_events(
+            goal_id="goal-latest",
+            limit=30,
+        )
+
+        self.assertEqual(len(events), 30)
+        self.assertEqual(events[0]["step_id"], "step-6")
+        self.assertEqual(events[-1]["step_id"], "step-35")
+
     def test_recorder_normalizes_non_finite_floats_to_strict_json(self) -> None:
         RuntimeEventRecorder(self.memory).record(
             "goal.created",

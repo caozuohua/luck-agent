@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.log import get_logger
+from core.redaction import redact_text
 from tools.github_tools import DEFAULT_DEPLOY_WORKFLOW
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ Shell 执行
 
 日志与故障
 /logs [error|warning] [小时数] — 查询错误日志
+/runtime [goal_id] — Runtime 状态或 Goal 事件链
 /task <id> — 查看任务状态
 /tasks — 任务列表
 
@@ -123,6 +125,7 @@ class CommandHandler:
         self.scheduler = None   # 由 agent.py 启动后注入
         self.db_log    = None   # 由 agent.py 启动后注入
         self.health    = None   # 由 agent.py 启动后注入
+        self.runtime_observability = None
         from tools.search_tools import SearchTools
         self.searcher  = SearchTools()
 
@@ -205,6 +208,9 @@ class CommandHandler:
 
             elif cmd == "/logs":
                 await self._handle_logs(chat_id, args)
+
+            elif cmd == "/runtime":
+                await self._handle_runtime(chat_id, args)
 
             elif cmd == "/restart":
                 await self._handle_restart(chat_id)
@@ -587,10 +593,31 @@ class CommandHandler:
         cmd = f"sudo journalctl -u luck-agent -n 120 --since '{hours} hours ago' --no-pager"
         result = await self.shell.run(cmd)
         if result["returncode"] == 0:
-            await self.reply(chat_id, text=f"**systemd 日志（最近 {hours}h）**\n```\n{result['stdout']}\n```")
+            output = redact_text(result["stdout"])
+            await self.reply(chat_id, text=f"**systemd 日志（最近 {hours}h）**\n```\n{output}\n```")
         else:
-            hint = self.shell.explain_permission_issue(result["stderr"])
-            await self.reply(chat_id, text=f"❌ 无法读取 journal：\n```\n{result['stderr']}\n```\n💡 {hint}")
+            error = redact_text(result["stderr"])
+            hint = redact_text(self.shell.explain_permission_issue(error))
+            await self.reply(chat_id, text=f"❌ 无法读取 journal：\n```\n{error}\n```\n💡 {hint}")
+
+    async def _handle_runtime(self, chat_id: str, goal_id: str) -> None:
+        service = self.runtime_observability
+        if service is None:
+            await self.reply(chat_id, text="Runtime 诊断服务尚未初始化。")
+            return
+        try:
+            text = (
+                await service.goal_timeline(goal_id)
+                if goal_id
+                else await service.overview()
+            )
+        except Exception as error:
+            log.error(
+                "runtime_observability_failed",
+                error_type=type(error).__name__,
+            )
+            text = "Runtime 诊断查询失败，请查看脱敏后的服务日志。"
+        await self.reply(chat_id, text=text)
 
     async def _handle_backup(self, chat_id: str) -> None:
         db_path = Path(self.memory.db_path)

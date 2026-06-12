@@ -179,11 +179,10 @@ class GoalManager:
         goal = self.get_goal(goal_id)
         if goal["status"] not in PAUSABLE_STATUSES:
             raise GoalError(f"goal status cannot be paused: {goal['status']}")
-        updated = self.memory.update_goal_if_status(
+        updated = self.memory.interrupt_goal_execution(
             goal_id,
-            PAUSABLE_STATUSES,
-            status="interrupted",
-            error=reason,
+            reason=reason,
+            expected_statuses=PAUSABLE_STATUSES,
         )
         if not updated:
             current = self.get_goal(goal_id)

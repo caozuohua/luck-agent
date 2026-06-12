@@ -523,6 +523,40 @@ class Memory:
             cur = conn.execute(f"UPDATE goal_steps SET {set_clause} WHERE step_id=?", params)
         return cur.rowcount > 0
 
+    def interrupt_goal_execution(
+        self,
+        goal_id: str,
+        *,
+        reason: str,
+        expected_statuses: set[str],
+    ) -> bool:
+        """Atomically pause a goal and make its active step retryable."""
+        if not expected_statuses:
+            return False
+        now = time.time()
+        statuses = sorted(expected_statuses)
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._conn() as conn:
+            interrupted = conn.execute(
+                f"""UPDATE goals
+                    SET status='interrupted', error=?, updated_at=?
+                    WHERE goal_id=?
+                      AND status IN ({placeholders})""",
+                [reason, now, goal_id, *statuses],
+            )
+            if interrupted.rowcount <= 0:
+                return False
+            conn.execute(
+                """UPDATE goal_steps
+                   SET status='pending',
+                       error='',
+                       started_at=NULL,
+                       finished_at=NULL
+                   WHERE goal_id=? AND status='running'""",
+                (goal_id,),
+            )
+        return True
+
     def start_goal_step(self, step_id: str) -> tuple[dict | None, bool]:
         """Atomically start a pending step only while its goal is running."""
         started_at = time.time()

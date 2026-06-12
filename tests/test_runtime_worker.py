@@ -606,23 +606,24 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                     queue = RuntimeTaskQueue()
                     await queue.submit(goal_id=goal_id, user_id="u1", chat_id="c1")
                     engine = BlockingEngine(goal_manager)
-                    original_update = memory.update_goal_if_status
+                    original_interrupt = memory.interrupt_goal_execution
 
                     def win_terminal_race(
                         current_goal_id: str,
-                        expected_statuses: set[str] | None,
-                        **updates,
+                        *,
+                        reason: str,
+                        expected_statuses: set[str],
                     ) -> bool:
-                        original_update(
+                        memory.update_goal_if_status(
                             current_goal_id,
                             None,
                             status=terminal_status,
                             error="" if terminal_status == "done" else terminal_status,
                         )
-                        return original_update(
+                        return original_interrupt(
                             current_goal_id,
-                            expected_statuses,
-                            **updates,
+                            reason=reason,
+                            expected_statuses=expected_statuses,
                         )
 
                     worker = RuntimeWorker(
@@ -635,7 +636,7 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.wait_for(engine.started.wait(), timeout=1)
                         with patch.object(
                             memory,
-                            "update_goal_if_status",
+                            "interrupt_goal_execution",
                             side_effect=win_terminal_race,
                         ):
                             await asyncio.wait_for(worker.stop(), timeout=1)

@@ -30,6 +30,16 @@ class FakeGenerator:
         )
 
 
+class BlockingGenerator:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def generate(self, goal: dict) -> GeneratedContent:
+        self.started.set()
+        await asyncio.Future()
+        raise AssertionError("unreachable")
+
+
 class SkillRuntimeEndToEndTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -212,6 +222,106 @@ class SkillRuntimeEndToEndTests(unittest.IsolatedAsyncioTestCase):
         goal = self.goal_manager.get_goal(goal_id)
         self.assertEqual(goal["status"], "done")
         self.assertEqual(goal["intent"], "blog_write")
+
+    async def test_inflight_goal_is_interrupted_then_recovered_once(
+        self,
+    ) -> None:
+        blocking_generator = BlockingGenerator()
+        first_registry = SkillRegistry([
+            BlogSkill(generator=blocking_generator),
+            LegacyReactSkill(),
+        ])
+        first_engine = ExecutionEngine(
+            goal_manager=self.goal_manager,
+            supervisor=Supervisor(memory=self.memory),
+            skill_registry=first_registry,
+            event_recorder=self.recorder,
+        )
+        first_queue = RuntimeTaskQueue(max_active=1)
+        first_manager = RuntimeManager(
+            goal_manager=self.goal_manager,
+            execution_engine=first_engine,
+            queue=first_queue,
+            skill_registry=first_registry,
+            skill_router=SkillRouter(first_registry),
+            event_recorder=self.recorder,
+        )
+        first_workers = WorkerManager(
+            queue=first_queue,
+            execution_engine=first_engine,
+            event_recorder=self.recorder,
+        )
+        first_workers.start()
+
+        result = await first_manager.handle_message(
+            user_id="user-restart",
+            chat_id="chat-restart",
+            text="帮我整理一个博客选题",
+        )
+        goal_id = result["goal_id"]
+        await asyncio.wait_for(blocking_generator.started.wait(), timeout=1)
+        await first_workers.stop()
+
+        interrupted = self.goal_manager.get_goal(goal_id)
+        interrupted_step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(interrupted["status"], "interrupted")
+        self.assertEqual(interrupted_step["status"], "pending")
+        self.assertEqual(interrupted_step["retry_count"], 0)
+        self.assertIsNone(interrupted_step["started_at"])
+        self.assertIsNone(interrupted_step["finished_at"])
+        await self._wait_for_event(goal_id, "worker.interrupted")
+
+        recovered_notifications: list[str] = []
+
+        async def notify(goal: dict) -> None:
+            recovered_notifications.append(goal["goal_id"])
+
+        second_registry = SkillRegistry([
+            BlogSkill(generator=FakeGenerator()),
+            LegacyReactSkill(),
+        ])
+        second_queue = RuntimeTaskQueue(max_active=1)
+        second_engine = ExecutionEngine(
+            goal_manager=self.goal_manager,
+            supervisor=Supervisor(memory=self.memory),
+            skill_registry=second_registry,
+            event_recorder=self.recorder,
+        )
+        second_manager = RuntimeManager(
+            goal_manager=self.goal_manager,
+            execution_engine=second_engine,
+            queue=second_queue,
+            skill_registry=second_registry,
+            skill_router=SkillRouter(second_registry),
+            event_recorder=self.recorder,
+        )
+        self.workers = WorkerManager(
+            queue=second_queue,
+            execution_engine=second_engine,
+            terminal_callback=notify,
+            event_recorder=self.recorder,
+        )
+
+        self.assertEqual(await second_manager.recover_goals(), 1)
+        self.workers.start()
+        await self._wait_for_event(goal_id, "notification.sent")
+
+        recovered = self.goal_manager.get_goal(goal_id)
+        events = self.memory.list_runtime_events(goal_id=goal_id)
+        self.assertEqual(recovered["status"], "done")
+        self.assertEqual(recovered_notifications, [goal_id])
+        self.assertEqual(
+            [event["event_type"] for event in events].count(
+                "goal.recovered"
+            ),
+            1,
+        )
+        self.assertEqual(
+            [event["event_type"] for event in events].count(
+                "notification.sent"
+            ),
+            1,
+        )
 
     async def test_notification_exception_records_sanitized_failure(self) -> None:
         async def fail_notification(goal: dict) -> None:

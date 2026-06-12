@@ -172,6 +172,7 @@ BLOG_LOCAL_PATH=/var/www/blog
 
 # Tavily 搜索（可选，无则自动 fallback 到 DuckDuckGo）
 TAVILY_API_KEY=tvly-xxxxxxxx
+TAVILY_API_KEY_2=tvly-yyyyyyyy
 
 # 个人知识库（Vercel + Supabase）
 VERCEL_API_URL=https://your-vercel-app.vercel.app/api/pkb

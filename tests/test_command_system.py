@@ -41,6 +41,21 @@ class FakeMemory:
     def get_recent_tasks(self, user_id: str, limit: int = 5) -> list[dict]:
         return []
 
+    def get_task(self, task_id: str) -> dict | None:
+        tasks = {
+            "abcd1234": {"task_id": "abcd1234", "type": "demo", "status": "done"},
+            "abcd5678": {"task_id": "abcd5678", "type": "demo", "status": "done"},
+        }
+        return tasks.get(task_id)
+
+    def find_tasks_by_prefix(self, prefix: str, limit: int = 2) -> list[dict]:
+        return [
+            task for task_id, task in {
+                "abcd1234": {"task_id": "abcd1234", "type": "demo", "status": "done"},
+                "abcd5678": {"task_id": "abcd5678", "type": "demo", "status": "done"},
+            }.items() if task_id.startswith(prefix)
+        ][:limit]
+
 
 class FakeBridge:
     storage = "/opt/luck-agent/uploads"
@@ -166,6 +181,41 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
         response = replies[-1]["text"]
         self.assertNotIn("journal-secret", response)
         self.assertIn("[REDACTED]", response)
+
+    async def test_restart_uses_working_noninteractive_sudo_binary(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "active\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_restart("chat")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-restart"
+        )
+
+    async def test_journal_uses_privileged_wrapper(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "logs\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_journal("chat", "12")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-journal 12"
+        )
+
+    async def test_task_accepts_unique_short_prefix(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.card.task_status = lambda **kwargs: kwargs
+
+        await handler._handle_task("chat", "abcd1")
+
+        self.assertEqual(replies[-1]["card"]["task_id"], "abcd1234")
 
 
 if __name__ == "__main__":

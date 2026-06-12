@@ -501,6 +501,13 @@ class CommandHandler:
             await self.reply(chat_id, text="用法：`/task <id>`")
             return
         info = self.memory.get_task(task_id)
+        if not info and len(task_id) >= 4:
+            matches = self.memory.find_tasks_by_prefix(task_id, limit=2)
+            if len(matches) == 1:
+                info = matches[0]
+            elif len(matches) > 1:
+                await self.reply(chat_id, text=f"任务 ID `{task_id}` 不唯一，请多输入几位。")
+                return
         if not info:
             await self.reply(chat_id, text=f"找不到任务 #{task_id}")
             return
@@ -577,7 +584,9 @@ class CommandHandler:
 
     async def _handle_restart(self, chat_id: str) -> None:
         await self.reply(chat_id, text="⏳ 重启 luck-agent 服务…")
-        result = await self.shell.run("sudo systemctl restart luck-agent && sudo systemctl is-active luck-agent")
+        result = await self.shell.run(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-restart"
+        )
         if result["returncode"] == 0:
             await self.reply(chat_id, text="✅ 已重启，服务状态正常。")
         else:
@@ -590,7 +599,7 @@ class CommandHandler:
         for p in parts:
             if p.isdigit():
                 hours = min(int(p), 168)
-        cmd = f"sudo journalctl -u luck-agent -n 120 --since '{hours} hours ago' --no-pager"
+        cmd = f"/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-journal {hours}"
         result = await self.shell.run(cmd)
         if result["returncode"] == 0:
             output = redact_text(result["stdout"])

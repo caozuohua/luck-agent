@@ -355,6 +355,15 @@ class Memory:
             return None
         return self._decode_json_fields(row, ("payload", "result"))
 
+    def find_tasks_by_prefix(self, prefix: str, limit: int = 2) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM tasks WHERE task_id LIKE ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (f"{prefix}%", limit),
+            ).fetchall()
+        return [self._decode_json_fields(row, ("payload", "result")) for row in rows]
+
     def get_recent_tasks(self, user_id: str, limit: int = 5) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(

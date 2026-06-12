@@ -194,6 +194,7 @@ class Config:
         self.HUGO_BRANCH          = _opt("HUGO_BRANCH",         "main")
         self.HUGO_CONTENT_PATH    = _opt("HUGO_CONTENT_PATH",   "content/posts")
         self.TAVILY_API_KEY       = _opt("TAVILY_API_KEY")
+        self.TAVILY_API_KEY_2     = _opt("TAVILY_API_KEY_2")
         self.API_SECRET           = _opt("API_SECRET")
         self.SHELL_WORK_DIR       = _opt("SHELL_WORK_DIR",      str(Path(__file__).parent))
         self.FILE_UPLOAD_DIR      = _opt("FILE_DIR",            str(Path(__file__).parent / "files"))

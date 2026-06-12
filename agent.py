@@ -18,6 +18,26 @@ from handlers.message import forward_to_pkb_result, parse_note_message
 
 log = get_logger()
 
+MODEL_PREFERENCE_KEY = "preferred_model"
+
+
+def resolve_model_preference(memory, user_id: str, text: str, models: dict[str, str]):
+    """Apply a model prefix and persist the choice for future messages."""
+    normalized = text.strip()
+    lowered = normalized.lower()
+    for prefix, model in models.items():
+        if lowered == prefix or lowered.startswith(prefix + " "):
+            set_profile = getattr(memory, "set_profile", None)
+            if callable(set_profile):
+                set_profile(user_id, MODEL_PREFERENCE_KEY, model)
+            return normalized[len(prefix):].strip(), model, True
+    get_profile = getattr(memory, "get_profile", None)
+    return (
+        normalized,
+        get_profile(user_id, MODEL_PREFERENCE_KEY, "") if callable(get_profile) else "",
+        False,
+    )
+
 
 # ─── Lark 发消息工具函数 ──────────────────────────────────────────────────────
 class LarkSender:
@@ -514,20 +534,24 @@ class AgentApp:
                 return
 
             # 模型前缀解析（/pro /flash /lite 开头，剥离后转 AI）
-            model_override = ""
             model_prefixes = {
                 "/pro":   self.cfg.MODEL_PRO,
                 "/flash": self.cfg.MODEL_FLASH,
                 "/lite":  self.cfg.MODEL_LITE,
             }
-            for prefix, model in model_prefixes.items():
-                if text.lower().startswith(prefix + " ") or text.lower() == prefix:
-                    model_override = model
-                    text = text[len(prefix):].strip()
-                    break
+            text, model_override, model_changed = resolve_model_preference(
+                self._memory, user_id, text, model_prefixes
+            )
+            if model_changed and not text:
+                await self._sender.send(
+                    chat_id,
+                    text=f"已切换模型：`{model_override}`。后续消息会继续使用该模型。",
+                    reply_to=message_id,
+                )
+                return
 
             # 指令优先（大模型无关，且无模型前缀时才走）
-            if not model_override:
+            if not model_changed:
                 handled = await self._cmd_handler.handle(user_id, chat_id, message_id, text)
                 if handled:
                     return
@@ -543,7 +567,7 @@ class AgentApp:
                     await self._sender.send(
                         chat_id,
                         text=(
-                            f"任务已接受：`{runtime_result.goal_id}`\n"
+                            f"任务已接受：`{runtime_result.goal_id[-6:]}`\n"
                             f"{runtime_result.summary}"
                         ),
                         reply_to=message_id,

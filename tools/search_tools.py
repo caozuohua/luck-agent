@@ -1,4 +1,4 @@
-"""多后端免费搜索工具，支持轮询故障切换"""
+"""多后端搜索工具，优先直连 Tavily 并支持故障切换。"""
 from __future__ import annotations
 import asyncio
 import httpx
@@ -21,9 +21,14 @@ class SearchTools:
         self._current_backend = 0
         tavily_keys = [
             os.getenv("TAVILY_API_KEY", "").strip(),
+            os.getenv("TAVILY_API_KEY_2", "").strip(),
         ]
         self._tavily_backends = [
-            {"name": "tavily", "url": "https://egg-search-gamma.vercel.app/search", "key": key}
+            {
+                "name": f"tavily-{idx + 1}",
+                "url": "https://api.tavily.com/search",
+                "key": key,
+            }
             for idx, key in enumerate(tavily_keys)
             if key
         ]
@@ -62,40 +67,34 @@ class SearchTools:
         raise ValueError(f"未知后端: {name}")
     
     async def _tavily_search(self, query: str, url: str, api_key: str) -> dict:
-        """Tavily 搜索（通过 Vercel 代理）"""
-        params = {"q": query}
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        """Direct Tavily search without generated answer summaries."""
+        payload = {
+            "api_key": api_key,
+            "query": query,
+            "search_depth": "advanced",
+            "max_results": 8,
+            "include_answer": False,
+            "include_raw_content": False,
+        }
 
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(url, params=params, headers=headers or None)
+            resp = await client.post(url, json=payload)
             resp.raise_for_status()
             result = self._format_tavily_result(resp.json())
             result["backend"] = "tavily"
             return result
     
     def _format_tavily_result(self, data: dict) -> dict:
-        """格式化 Tavily API 返回结果（兼容官方格式和 Vercel 代理格式）"""
-        result = {"results": [], "summary": ""}
+        """Format official Tavily results without AI-generated summaries."""
+        result = {"results": []}
 
-        # 标准 Tavily 格式：results 数组 + answer 摘要
         items = data.get("results", [])
-        for item in items[:5]:
+        for item in items[:8]:
             result["results"].append({
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
                 "description": item.get("content", ""),
             })
-
-        if data.get("answer"):
-            result["summary"] = data["answer"]
-
-        # Vercel 代理格式：所有结果拼在 result 字符串里，results 数组为空
-        if not result["results"] and not result["summary"]:
-            proxy_result = data.get("result", "")
-            if proxy_result:
-                result["summary"] = proxy_result
 
         return result
     
@@ -210,7 +209,7 @@ class SearchTools:
                 desc = item.get("description", "")
                 line = f"{i}. [{title}]({url})"
                 if desc:
-                    desc = desc[:180]
+                    desc = desc[:600]
                     line += f"\n   {desc}"
                 output.append(line)
         
@@ -221,7 +220,7 @@ class SearchTools:
 SEARCH_TOOL_SCHEMAS = [
     {
         "name": "search_web",
-        "description": "在互联网上搜索最新信息。优先使用单个 Tavily key，通过 Vercel 聚合更多资源；失败时自动 fallback 到 DuckDuckGo、SearXNG、Qwant。适合找最新事实、文档链接、教程和公告。输入要具体，不要只给泛词。",
+        "description": "在互联网上搜索最新信息。优先直连 Tavily，两个 key 自动轮换；失败时 fallback 到 DuckDuckGo、SearXNG、Qwant。返回原始搜索结果，不生成 AI 摘要。",
         "parameters": {
             "type": "object",
             "properties": {

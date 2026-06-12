@@ -270,13 +270,13 @@ class CardBuilder:
             {"tag": "div", "fields": [
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**查询**\n`{query}`"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**后端**\n`{result.get('backend', '') or 'unknown'}`"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{len(result.get('results', [])[:5])} 条"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**结果**\n{len(result.get('results', [])[:8])} 条"}},
             ]},
         ]
 
         summary = result.get("summary", "")
         source = result.get("source", "")
-        items = result.get("results", [])[:5]
+        items = result.get("results", [])[:8]
         if summary:
             elements.append(_divider())
             elements.append({"tag": "markdown", "content": f"📋 {summary[:600]}"})
@@ -288,7 +288,7 @@ class CardBuilder:
             for i, item in enumerate(items, 1):
                 title = item.get("title", "")
                 url = item.get("url", "")
-                desc = item.get("description", "")[:180]
+                desc = item.get("description", "")[:600]
                 content = f"{i}. [{title}]({url})"
                 if desc:
                     content += f"\n   {desc}"

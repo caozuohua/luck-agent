@@ -536,23 +536,35 @@ class ExecutionEngine:
         step: StepSpec,
     ) -> StepResult | _FatalSkillOutcome:
         started = time.monotonic()
+        timeout = step.timeout or self.default_step_timeout
+        execution_task = asyncio.create_task(skill.execute_step(goal, step))
         try:
-            result = await asyncio.wait_for(
-                skill.execute_step(goal, step),
-                timeout=step.timeout or self.default_step_timeout,
+            done, _ = await asyncio.wait(
+                {execution_task},
+                timeout=timeout,
             )
-            if result.elapsed_ms <= 0:
-                result.elapsed_ms = int((time.monotonic() - started) * 1000)
-            return result
-        except asyncio.TimeoutError:
+        except asyncio.CancelledError:
+            execution_task.cancel()
+            await asyncio.gather(execution_task, return_exceptions=True)
+            raise
+
+        if execution_task not in done:
+            execution_task.cancel()
+            await asyncio.gather(execution_task, return_exceptions=True)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             return StepResult(
                 ok=False,
                 action=step.action,
-                error=f"step timeout after {step.timeout or self.default_step_timeout}s",
+                error=f"step timeout after {timeout}s",
                 blocking=False,
                 elapsed_ms=elapsed_ms,
             )
+
+        try:
+            result = execution_task.result()
+            if result.elapsed_ms <= 0:
+                result.elapsed_ms = int((time.monotonic() - started) * 1000)
+            return result
         except RetryableSkillError as error:
             return StepResult(
                 ok=False,

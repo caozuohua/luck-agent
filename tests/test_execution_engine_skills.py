@@ -302,20 +302,24 @@ class ExecutionEngineSkillTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(barrier.wait)
             return await engine.run_goal(goal_id)
 
-        first, second = await asyncio.gather(run(engine_one), run(engine_two))
+        try:
+            first, second = await asyncio.gather(run(engine_one), run(engine_two))
 
-        self.assertEqual(first["status"], "done")
-        self.assertIn(second["status"], {"running", "done"})
-        self.assertEqual(skill.build_calls, 1)
-        self.assertEqual(skill.execute_calls, 1)
-        self.assertEqual(len(self.goal_manager.get_steps(goal_id)), 1)
-        self.assertEqual(self.goal_manager.get_goal(goal_id)["status"], "done")
-        self.assertEqual(self.event_types(recorder).count("goal.started"), 1)
-        self.assertEqual(self.event_types(recorder).count("goal.completed"), 1)
-        other_conn = getattr(other_memory._local, "conn", None)
-        if other_conn is not None:
-            other_conn.close()
-            other_memory._local.conn = None
+            self.assertIn("done", {first["status"], second["status"]})
+            self.assertTrue(
+                {first["status"], second["status"]}.issubset({"running", "done"})
+            )
+            self.assertEqual(skill.build_calls, 1)
+            self.assertEqual(skill.execute_calls, 1)
+            self.assertEqual(len(self.goal_manager.get_steps(goal_id)), 1)
+            self.assertEqual(self.goal_manager.get_goal(goal_id)["status"], "done")
+            self.assertEqual(self.event_types(recorder).count("goal.started"), 1)
+            self.assertEqual(self.event_types(recorder).count("goal.completed"), 1)
+        finally:
+            other_conn = getattr(other_memory._local, "conn", None)
+            if other_conn is not None:
+                other_conn.close()
+                other_memory._local.conn = None
 
     async def test_missing_corrupt_and_legacy_skills_block_without_leaking(self) -> None:
         secret = "secret-api-key"
@@ -658,24 +662,22 @@ class ExecutionEngineSkillTests(unittest.IsolatedAsyncioTestCase):
             }),
         )
 
-    async def test_timeout_retries_once_before_blocking(self) -> None:
-        async def raise_timeout(awaitable, *, timeout):
-            awaitable.close()
-            raise asyncio.TimeoutError
-
-        timeout_skill = FakeGoalSkill()
+    async def test_slow_skill_retries_once_before_timeout_blocks(self) -> None:
+        timeout_skill = FakeGoalSkill(
+            plan=[StepSpec(name="work", action="work", timeout=0)],
+            delay=0.05,
+        )
         timeout_recorder = RecordingEventRecorder()
         timeout_id = self.create_goal(plan={"skill": "test_skill"})
-        with patch(
-            "core.execution_engine.asyncio.wait_for",
-            new=raise_timeout,
-        ):
-            timeout_goal = await self.engine(
-                timeout_skill,
-                recorder=timeout_recorder,
-            ).run_goal(timeout_id)
+
+        timeout_goal = await self.engine(
+            timeout_skill,
+            recorder=timeout_recorder,
+            default_step_timeout=0.01,
+        ).run_goal(timeout_id)
 
         self.assertEqual(timeout_goal["status"], "blocked")
+        self.assertEqual(timeout_skill.execute_calls, 2)
         timeout_step = self.goal_manager.get_steps(timeout_id)[0]
         self.assertEqual(timeout_step["retry_count"], 1)
         self.assertEqual(timeout_step["status"], "blocked")
@@ -687,6 +689,37 @@ class ExecutionEngineSkillTests(unittest.IsolatedAsyncioTestCase):
                 "step.blocked",
                 "goal.blocked",
             ],
+        )
+
+    async def test_skill_raised_timeout_error_is_fatal_and_sanitized(self) -> None:
+        secret = "provider timeout secret"
+        skill = FakeGoalSkill(results=[asyncio.TimeoutError(secret)])
+        recorder = RecordingEventRecorder()
+        goal_id = self.create_goal(plan={"skill": "test_skill"})
+
+        goal = await self.engine(skill, recorder=recorder).run_goal(goal_id)
+
+        expected = "skill execute failed: TimeoutError"
+        self.assertEqual(goal["status"], "failed")
+        self.assertEqual(goal["error"], expected)
+        step = self.goal_manager.get_steps(goal_id)[0]
+        self.assertEqual(step["status"], "failed")
+        self.assertEqual(step["error"], expected)
+        self.assertNotIn("supervisor.decision", self.event_types(recorder))
+        failed_event = next(
+            event
+            for event in recorder.events
+            if event["event_type"] == "step.failed"
+        )
+        self.assertEqual(failed_event["payload"]["error_type"], "TimeoutError")
+        self.assertEqual(failed_event["payload"]["error_class"], "fatal")
+        self.assertNotIn(
+            secret,
+            repr({
+                "goal": goal,
+                "step": step,
+                "events": recorder.events,
+            }),
         )
 
     async def test_cancel_during_execute_keeps_goal_cancelled(self) -> None:

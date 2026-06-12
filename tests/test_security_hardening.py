@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -142,10 +144,36 @@ class SecurityHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("'Add post: title\"; touch /tmp/pwned #'", combined)
         self.assertNotIn("origin main; touch", combined)
 
-    async def test_agent_admin_users_helper_allows_empty_and_matches_exact_user(self) -> None:
-        self.assertTrue(is_authorized_user(SimpleNamespace(ADMIN_USERS=set()), "user-a"))
+    async def test_agent_admin_users_helper_fails_closed_and_matches_exact_user(self) -> None:
+        self.assertFalse(is_authorized_user(SimpleNamespace(ADMIN_USERS=set()), "user-a"))
         self.assertTrue(is_authorized_user(SimpleNamespace(ADMIN_USERS={"user-a"}), "user-a"))
         self.assertFalse(is_authorized_user(SimpleNamespace(ADMIN_USERS={"user-a"}), "user-b"))
+
+    async def test_config_rejects_missing_admin_users(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = os.path.join(temp_dir, ".env")
+            Path(env_file).write_text("", encoding="utf-8")
+            env = {
+                "ENV_FILE": env_file,
+                "GCP_PROJECT": "project",
+                "LARK_APP_ID": "app",
+                "LARK_APP_SECRET": "secret",
+                "GITHUB_TOKEN": "token",
+                "ADMIN_USERS": "",
+                "FILE_DIR": temp_dir,
+                "SHELL_WORK_DIR": temp_dir,
+                "DB_PATH": os.path.join(temp_dir, "memory.db"),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                from config import Config
+
+                with patch.object(
+                    Config,
+                    "_detect_auth",
+                    return_value="test",
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "ADMIN_USERS"):
+                        Config().load()
 
     async def test_ai_search_web_reuses_handler_searcher(self) -> None:
         calls: list[str] = []

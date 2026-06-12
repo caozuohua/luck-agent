@@ -12,7 +12,8 @@ from typing import Any
 
 import lark_oapi as lark
 from core.auth import is_authorized_user
-from core.log import get_logger
+from core.lark_ws_runner import LarkWebSocketRunner
+from core.log import configure_redaction_secrets, get_logger
 from handlers.message import forward_to_pkb_result, parse_note_message
 
 log = get_logger()
@@ -185,6 +186,8 @@ class LarkSender:
 class AgentApp:
     """组装所有组件，驱动 WebSocket 事件循环。"""
 
+    SHUTDOWN_TIMEOUT = 15.0
+
     def __init__(self) -> None:
         from config import cfg
         self.cfg = cfg
@@ -212,6 +215,7 @@ class AgentApp:
         from core.task_queue   import TaskQueue
         from core.scheduler    import Scheduler, ScheduleStore
         from core.health       import HealthMonitor, DBLogHandler
+        from runtime.observability import RuntimeObservability
         from tools.github_tools import GitHubClient
         from tools.shell_tools  import ShellExecutor, FileManager
         from tools.file_bridge  import FileBridge
@@ -219,13 +223,19 @@ class AgentApp:
         from handlers.command   import CommandHandler
         from handlers.message   import AgentMessageHandler
         from handlers.file_handler import FileMessageHandler
-        from controllers.blog_controller import BlogController
+        from controllers.content_generator import ModelContentGenerator
         from core.execution_engine import ExecutionEngine
         from core.goal import GoalManager
         from core.supervisor import Supervisor
+        from runtime.events import RuntimeEventRecorder
+        from runtime.notifications import AcceptanceGatedNotifier, RuntimeGoalNotifier
         from runtime.runtime_manager import RuntimeManager
         from runtime.task_queue import RuntimeTaskQueue
         from runtime.worker import WorkerManager
+        from skills.blog import BlogSkill
+        from skills.legacy_react import LegacyReactSkill
+        from skills.registry import SkillRegistry
+        from skills.router import SkillRouter
 
         cfg = self.cfg
 
@@ -305,20 +315,43 @@ class AgentApp:
         # Goal Runtime: selected intents are persisted and queued for background execution.
         goal_manager = GoalManager(self._memory)
         runtime_queue = RuntimeTaskQueue(max_active=1)
+        generator = ModelContentGenerator(router=self._router, model_name=cfg.MODEL_PRO)
+        registry = SkillRegistry([BlogSkill(generator=generator), LegacyReactSkill()])
+        skill_router = SkillRouter(registry)
+        event_recorder = RuntimeEventRecorder(self._memory)
         execution_engine = ExecutionEngine(
             goal_manager=goal_manager,
             supervisor=Supervisor(memory=self._memory),
+            skill_registry=registry,
+            event_recorder=event_recorder,
         )
-        execution_engine.register_controller(BlogController())
         self._runtime_manager = RuntimeManager(
             goal_manager=goal_manager,
             execution_engine=execution_engine,
             queue=runtime_queue,
+            skill_registry=registry,
+            skill_router=skill_router,
+            event_recorder=event_recorder,
         )
+        notifier = RuntimeGoalNotifier(sender=self._sender, card_builder=CardBuilder)
+        terminal_notifier = AcceptanceGatedNotifier(
+            wait_until_accepted=self._runtime_manager.wait_until_accepted,
+            notifier=notifier,
+        )
+
         self._runtime_workers = WorkerManager(
             queue=runtime_queue,
             execution_engine=execution_engine,
             worker_count=1,
+            terminal_callback=terminal_notifier.notify,
+            event_recorder=event_recorder,
+            notification_store=self._memory,
+        )
+        self._cmd_handler.runtime_observability = RuntimeObservability(
+            goal_manager=goal_manager,
+            runtime_manager=self._runtime_manager,
+            worker_manager=self._runtime_workers,
+            memory=self._memory,
         )
 
         # 调度器：定时任务触发 → 注入 AgentMessageHandler
@@ -432,6 +465,19 @@ class AgentApp:
             log.info("message_in", user_id=user_id[:8], type=msg_type,
                      chat_type=chat_type, length=len(text))
 
+            if chat_type == "group" and self._cmd_handler.is_command(text):
+                log.warning(
+                    "group_command_rejected",
+                    user_id=user_id[:8],
+                    chat_id=chat_id[:8],
+                )
+                await self._sender.send(
+                    chat_id,
+                    text="运维指令仅支持与机器人私聊。",
+                    reply_to=message_id,
+                )
+                return
+
             # PKB 录入：以 # 开头的消息优先作为个人知识库笔记处理
             note = parse_note_message(text)
             if note:
@@ -492,15 +538,20 @@ class AgentApp:
                 chat_id=chat_id,
                 text=text,
             )
-            if runtime_result["handled"]:
-                await self._sender.send(
-                    chat_id,
-                    text=(
-                        f"任务已接受：`{runtime_result['goal_id']}`\n"
-                        f"{runtime_result['summary']}"
-                    ),
-                    reply_to=message_id,
-                )
+            if runtime_result.handled:
+                try:
+                    await self._sender.send(
+                        chat_id,
+                        text=(
+                            f"任务已接受：`{runtime_result.goal_id}`\n"
+                            f"{runtime_result.summary}"
+                        ),
+                        reply_to=message_id,
+                    )
+                finally:
+                    self._runtime_manager.mark_accepted(
+                        runtime_result.goal_id
+                    )
                 return
 
             # 转给 AI
@@ -513,11 +564,66 @@ class AgentApp:
             log.error("on_message_error", error=str(e))
 
     # ── 启动 ──────────────────────────────────────────────────────────
+    async def _shutdown_components(
+        self,
+        *,
+        ws_runner: LarkWebSocketRunner,
+        timeout: float,
+    ) -> list[str]:
+        components = {
+            "websocket": ws_runner.stop,
+            "workers": self._runtime_workers.stop,
+            "queue": self._queue.stop,
+            "scheduler": self._scheduler.stop,
+            "health": self._health.stop,
+        }
+        tasks = {
+            name: asyncio.create_task(stop(), name=f"shutdown-{name}")
+            for name, stop in components.items()
+        }
+        _, pending = await asyncio.wait(
+            tasks.values(),
+            timeout=timeout,
+        )
+        timed_out = [
+            name for name, task in tasks.items()
+            if task in pending
+        ]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        for name, task in tasks.items():
+            if name in timed_out or task.cancelled():
+                continue
+            error = task.exception()
+            if error is not None:
+                log.warning(
+                    "shutdown_component_failed",
+                    component=name,
+                    error_type=type(error).__name__,
+                )
+        if timed_out:
+            log.warning(
+                "shutdown_timeout",
+                components=timed_out,
+                timeout=timeout,
+            )
+        return timed_out
+
     async def run(self) -> None:
         log.info("agent_starting")
 
         # 加载 .env 配置
         self.cfg.load()
+        configure_redaction_secrets(
+            (
+                self.cfg.LARK_APP_SECRET,
+                self.cfg.GITHUB_TOKEN,
+                self.cfg.TAVILY_API_KEY,
+                self.cfg.API_SECRET,
+            )
+        )
 
         # 初始化组件
         self._init_components()
@@ -526,7 +632,9 @@ class AgentApp:
         await self._queue.start()
         await self._scheduler.start()
         await self._health.start()
+        await self._runtime_manager.recover_goals()
         self._runtime_workers.start()
+        await self._runtime_workers.recover_notifications()
 
         # 构建 WS 事件分发
         def _make_lark_handler():
@@ -556,8 +664,13 @@ class AgentApp:
             self.cfg.LARK_APP_ID,
             self.cfg.LARK_APP_SECRET,
             event_handler=event_handler,
-            log_level=lark.LogLevel.INFO,
+            log_level=lark.LogLevel.WARNING,
             domain=self.cfg.LARK_DOMAIN,
+        )
+        from lark_oapi.ws.client import loop as lark_sdk_loop
+        ws_runner = LarkWebSocketRunner(
+            client=ws_client,
+            sdk_loop=lark_sdk_loop,
         )
 
         # 优雅退出
@@ -566,8 +679,7 @@ class AgentApp:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop_event.set)
 
-        # 在线程池里启动 WS（阻塞调用）
-        ws_task = loop.run_in_executor(None, ws_client.start)
+        ws_runner.start()
 
         log.info("agent_running", mode="websocket",
                  hugo_repo=self.cfg.HUGO_REPO,
@@ -576,15 +688,10 @@ class AgentApp:
         await stop_event.wait()
 
         log.info("shutting_down")
-        await self._runtime_workers.stop()
-        await self._queue.stop()
-        await self._scheduler.stop()
-        await self._health.stop()
-
-        # 等待进行中任务
-        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        await self._shutdown_components(
+            ws_runner=ws_runner,
+            timeout=self.SHUTDOWN_TIMEOUT,
+        )
 
         log.info("agent_stopped")
 

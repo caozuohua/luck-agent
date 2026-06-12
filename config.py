@@ -144,6 +144,8 @@ class Config:
     # GitHub
     GITHUB_TOKEN:         str = ""
     GITHUB_DEFAULT_OWNER: str = ""
+    TAVILY_API_KEY:       str = ""
+    API_SECRET:           str = ""
 
     # Hugo
     HUGO_REPO:         str = ""
@@ -184,10 +186,15 @@ class Config:
         self.LARK_DOMAIN          = _opt("LARK_DOMAIN", "https://open.larksuite.com")
         from core.auth import normalize_admin_users
         self.ADMIN_USERS          = normalize_admin_users(_opt("ADMIN_USERS"))
+        if not self.ADMIN_USERS:
+            raise RuntimeError(
+                "ADMIN_USERS must contain at least one authorized Lark open_id"
+            )
         self.HUGO_REPO            = _opt("HUGO_REPO",           "caozuohua/caozuohua.github.io")
         self.HUGO_BRANCH          = _opt("HUGO_BRANCH",         "main")
         self.HUGO_CONTENT_PATH    = _opt("HUGO_CONTENT_PATH",   "content/posts")
         self.TAVILY_API_KEY       = _opt("TAVILY_API_KEY")
+        self.API_SECRET           = _opt("API_SECRET")
         self.SHELL_WORK_DIR       = _opt("SHELL_WORK_DIR",      str(Path(__file__).parent))
         self.FILE_UPLOAD_DIR      = _opt("FILE_DIR",            str(Path(__file__).parent / "files"))
         self.BLOG_LOCAL_PATH      = _opt("BLOG_LOCAL_PATH",     "/var/www/blog")

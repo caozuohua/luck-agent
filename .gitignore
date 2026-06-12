@@ -1,6 +1,7 @@
 # ─── 敏感配置文件 (核心：绝对不能上传) ───
 .env
 *.json
+!vercel.json
 # 如果你还保留着之前的 credentials.json，确保它也被排除
 credentials.json
 *.service

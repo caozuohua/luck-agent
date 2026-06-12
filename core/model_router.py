@@ -109,6 +109,11 @@ class ModelRouter:
         for model in models_to_try:
             try:
                 result = await self._call(model, contents, tools, system)
+                if (
+                    not str(result.get("text") or "").strip()
+                    and not result.get("tool_calls")
+                ):
+                    raise RuntimeError("model returned empty response")
                 log.info("model_called", model=model, user_id=user_id[:8] if user_id else "")
                 return result
             except Exception as e:

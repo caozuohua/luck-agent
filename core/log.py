@@ -20,6 +20,12 @@ import sys
 import time
 from typing import Any
 
+from core.redaction import (
+    configure_redaction_secrets,
+    redact_text,
+    redact_value,
+)
+
 
 # ── JSON Formatter ────────────────────────────────────────────────────────────
 
@@ -44,18 +50,20 @@ class _JsonFormatter(logging.Formatter):
                 "%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)
             ) + f".{int(record.msecs):03d}Z",
             "level":  self.LEVEL_MAP.get(record.levelno, "info"),
-            "event":  record.getMessage(),
+            "event":  redact_text(record.getMessage()),
         }
 
         # 附加的结构化字段（通过 extra= 传入）
         for key, val in record.__dict__.items():
             if key.startswith("_") or key in _SKIP_FIELDS:
                 continue
-            payload[key] = val
+            payload[key] = redact_value(val)
 
         # 异常信息
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            payload["exc"] = redact_text(
+                self.formatException(record.exc_info)
+            )
 
         try:
             return json.dumps(payload, ensure_ascii=False, default=str)

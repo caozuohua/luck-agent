@@ -15,4 +15,4 @@ def normalize_admin_users(value: str | Collection[str] | None) -> set[str]:
 
 def is_authorized_user(config, user_id: str) -> bool:
     admins = normalize_admin_users(getattr(config, "ADMIN_USERS", set()))
-    return not admins or user_id in admins
+    return bool(admins) and user_id in admins

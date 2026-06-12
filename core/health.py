@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Coroutine
 
 from core.log import get_logger
+from core.redaction import redact_text
 
 log = get_logger()
 
@@ -87,14 +88,18 @@ class DBLogHandler(logging.Handler):
         """标准 logging.Handler 接口。"""
         try:
             level  = record.levelname.lower()
-            event  = record.getMessage()[:200]
+            event  = redact_text(record.getMessage())[:200]
             detail = ""
             if record.exc_info:
                 import traceback
-                detail = traceback.format_exception(*record.exc_info)[-1][:500]
+                detail = redact_text(
+                    traceback.format_exception(*record.exc_info)[-1]
+                )[:500]
             # 从 extra 字段提取 user_id 和 source
-            user_id = str(getattr(record, "user_id", ""))[:50]
-            source  = str(getattr(record, "source",  record.module))[:50]
+            user_id = redact_text(getattr(record, "user_id", ""))[:50]
+            source = redact_text(
+                getattr(record, "source", record.module)
+            )[:50]
             created_at = time.time()
             with self._queue_lock:
                 self._queue.append((level, event, detail, user_id, source, created_at))

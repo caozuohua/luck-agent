@@ -29,6 +29,15 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
+def normalize_goal_title(text: str, limit: int = 60) -> str:
+    title = " ".join((text or "").strip().split())
+    if not title:
+        return "未命名目标"
+    if len(title) <= limit:
+        return title
+    return title[:limit].rstrip() + "…"
+
+
 @dataclass
 class ArtifactRef:
     type: str

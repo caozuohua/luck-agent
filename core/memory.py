@@ -6,6 +6,7 @@ core/memory.py — SQLite 持久化记忆系统
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -97,6 +98,43 @@ CREATE TABLE IF NOT EXISTS goal_steps (
 CREATE INDEX IF NOT EXISTS idx_goal_steps_goal ON goal_steps(goal_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_goal_steps_status ON goal_steps(status, created_at DESC);
 
+-- Goal Runtime：可观测事件
+CREATE TABLE IF NOT EXISTS runtime_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id    TEXT NOT NULL UNIQUE,
+    goal_id     TEXT DEFAULT '',
+    step_id     TEXT DEFAULT '',
+    skill       TEXT DEFAULT '',
+    intent      TEXT DEFAULT '',
+    event_type  TEXT NOT NULL,
+    status      TEXT DEFAULT '',
+    user_id     TEXT DEFAULT '',
+    chat_id     TEXT DEFAULT '',
+    payload     TEXT NOT NULL DEFAULT '{}',
+    created_at  REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_events_goal
+    ON runtime_events(goal_id, id);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_skill
+    ON runtime_events(skill, id);
+CREATE INDEX IF NOT EXISTS idx_runtime_events_type
+    ON runtime_events(event_type, id);
+
+-- Goal Runtime：终态通知 outbox，跨进程原子领取避免重复发送
+CREATE TABLE IF NOT EXISTS goal_notifications (
+    goal_id     TEXT PRIMARY KEY,
+    status      TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'pending', -- pending/claimed/sent/failed
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    claimed_at  REAL,
+    error_type  TEXT DEFAULT '',
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goal_notifications_state
+    ON goal_notifications(state, updated_at);
+
 -- Lessons Learned：失败经验 / 修复经验
 CREATE TABLE IF NOT EXISTS lessons (
     lesson_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +207,14 @@ class Memory:
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError as error:
+            log.warning(
+                "memory_permission_hardening_failed",
+                path=self.db_path,
+                error_type=type(error).__name__,
+            )
 
     @contextmanager
     def _conn(self):
@@ -355,6 +401,15 @@ class Memory:
 
     def update_goal(self, goal_id: str, **updates: Any) -> bool:
         """Update mutable goal fields. JSON fields accept native Python objects."""
+        return self.update_goal_if_status(goal_id, None, **updates)
+
+    def update_goal_if_status(
+        self,
+        goal_id: str,
+        expected_statuses: set[str] | None,
+        **updates: Any,
+    ) -> bool:
+        """Update a goal only when its current status matches the expected set."""
         allowed = {
             "title", "intent", "status", "success_criteria", "current_step",
             "plan", "artifacts", "error",
@@ -370,12 +425,24 @@ class Memory:
 
         set_clause = ", ".join(f"{k}=?" for k in values)
         params = list(values.values()) + [goal_id]
+        where = "goal_id=?"
+        if expected_statuses is not None:
+            if not expected_statuses:
+                return False
+            placeholders = ", ".join("?" for _ in expected_statuses)
+            where += f" AND status IN ({placeholders})"
+            params.extend(sorted(expected_statuses))
         with self._conn() as conn:
-            cur = conn.execute(f"UPDATE goals SET {set_clause} WHERE goal_id=?", params)
+            cur = conn.execute(f"UPDATE goals SET {set_clause} WHERE {where}", params)
         return cur.rowcount > 0
 
-    def list_goals(self, user_id: str | None = None, status: str | None = None,
-                   limit: int = 20) -> list[dict]:
+    def list_goals(
+        self,
+        user_id: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
         clauses, params = [], []
         if user_id:
             clauses.append("user_id=?")
@@ -384,11 +451,12 @@ class Memory:
             clauses.append("status=?")
             params.append(status)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(limit)
+        params.extend((limit, offset))
         with self._conn() as conn:
             rows = conn.execute(
                 f"""SELECT * FROM goals {where}
-                    ORDER BY updated_at DESC LIMIT ?""",
+                    ORDER BY updated_at DESC, goal_id DESC
+                    LIMIT ? OFFSET ?""",
                 params,
             ).fetchall()
         return [self._decode_json_fields(r, ("success_criteria", "plan", "artifacts")) for r in rows]
@@ -416,6 +484,51 @@ class Memory:
                 ),
             )
 
+    def commit_goal_plan(self, goal_id: str, steps: list[dict[str, Any]]) -> bool:
+        """Atomically insert a complete plan for a running goal with no steps."""
+        if not steps:
+            return False
+
+        now = time.time()
+        with self._conn() as conn:
+            claimed = conn.execute(
+                """UPDATE goals
+                   SET current_step=?, updated_at=?
+                   WHERE goal_id=?
+                     AND status='running'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM goal_steps
+                         WHERE goal_steps.goal_id=goals.goal_id
+                     )""",
+                (steps[0]["name"], now, goal_id),
+            )
+            if claimed.rowcount <= 0:
+                return False
+
+            conn.executemany(
+                """INSERT INTO goal_steps
+                   (step_id, goal_id, name, status, input, output, error,
+                    retry_count, started_at, finished_at, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        step["step_id"],
+                        step["goal_id"],
+                        step["name"],
+                        step.get("status", "pending"),
+                        self._json_dumps(step.get("input", {})),
+                        self._json_dumps(step.get("output", {})),
+                        step.get("error", ""),
+                        int(step.get("retry_count", 0)),
+                        step.get("started_at"),
+                        step.get("finished_at"),
+                        step.get("created_at", now),
+                    )
+                    for step in steps
+                ],
+            )
+        return True
+
     def update_goal_step(self, step_id: str, **updates: Any) -> bool:
         allowed = {
             "name", "status", "input", "output", "error",
@@ -432,6 +545,183 @@ class Memory:
         with self._conn() as conn:
             cur = conn.execute(f"UPDATE goal_steps SET {set_clause} WHERE step_id=?", params)
         return cur.rowcount > 0
+
+    def interrupt_goal_execution(
+        self,
+        goal_id: str,
+        *,
+        reason: str,
+        expected_statuses: set[str],
+        require_replay_safe: bool = False,
+    ) -> bool:
+        """Atomically pause a goal and make its active step retryable."""
+        if not expected_statuses:
+            return False
+        now = time.time()
+        statuses = sorted(expected_statuses)
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._conn() as conn:
+            running_steps = conn.execute(
+                """SELECT step_id, input FROM goal_steps
+                   WHERE goal_id=? AND status='running'""",
+                (goal_id,),
+            ).fetchall()
+            unsafe_step_ids = [
+                str(row["step_id"])
+                for row in running_steps
+                if not bool(
+                    (self._json_loads(row["input"], {}) or {}).get(
+                        "replay_safe",
+                        False,
+                    )
+                )
+            ]
+            if require_replay_safe and unsafe_step_ids:
+                blocked_reason = (
+                    "unsafe step replay requires manual review"
+                )
+                blocked = conn.execute(
+                    f"""UPDATE goals
+                        SET status='blocked', error=?, updated_at=?
+                        WHERE goal_id=?
+                          AND status IN ({placeholders})""",
+                    [blocked_reason, now, goal_id, *statuses],
+                )
+                if blocked.rowcount <= 0:
+                    return False
+                step_placeholders = ", ".join("?" for _ in unsafe_step_ids)
+                conn.execute(
+                    f"""UPDATE goal_steps
+                        SET status='blocked', error=?, finished_at=?
+                        WHERE step_id IN ({step_placeholders})
+                          AND status='running'""",
+                    [blocked_reason, now, *unsafe_step_ids],
+                )
+                return False
+            interrupted = conn.execute(
+                f"""UPDATE goals
+                    SET status='interrupted', error=?, updated_at=?
+                    WHERE goal_id=?
+                      AND status IN ({placeholders})""",
+                [reason, now, goal_id, *statuses],
+            )
+            if interrupted.rowcount <= 0:
+                return False
+            conn.execute(
+                """UPDATE goal_steps
+                   SET status='pending',
+                       error='',
+                       started_at=NULL,
+                       finished_at=NULL
+                   WHERE goal_id=? AND status='running'""",
+                (goal_id,),
+            )
+        return True
+
+    def start_goal_step(self, step_id: str) -> tuple[dict | None, bool]:
+        """Atomically start a pending step only while its goal is running."""
+        started_at = time.time()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM goal_steps WHERE step_id=?",
+                (step_id,),
+            ).fetchone()
+            if not row:
+                return None, False
+
+            claimed = conn.execute(
+                """UPDATE goal_steps
+                   SET status='running', started_at=?
+                   WHERE step_id=?
+                     AND status='pending'
+                     AND EXISTS (
+                         SELECT 1 FROM goals
+                         WHERE goals.goal_id=goal_steps.goal_id
+                           AND goals.status='running'
+                     )""",
+                (started_at, step_id),
+            )
+            if claimed.rowcount <= 0:
+                return self._decode_json_fields(row, ("input", "output")), False
+
+            conn.execute(
+                """UPDATE goals
+                   SET current_step=?, status='running', updated_at=?
+                   WHERE goal_id=? AND status='running'""",
+                (row["name"], started_at, row["goal_id"]),
+            )
+            started = conn.execute(
+                "SELECT * FROM goal_steps WHERE step_id=?",
+                (step_id,),
+            ).fetchone()
+        return (
+            self._decode_json_fields(started, ("input", "output"))
+            if started
+            else None,
+            True,
+        )
+
+    def commit_goal_step_result(
+        self,
+        step_id: str,
+        *,
+        status: str,
+        output: dict[str, Any] | None = None,
+        error: str = "",
+        retry_increment: bool = False,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Atomically commit a running step result while its goal is running."""
+        assignments = [
+            "status=?",
+            "output=?",
+            "error=?",
+            "finished_at=?",
+        ]
+        params: list[Any] = [
+            status,
+            self._json_dumps(output or {}),
+            error,
+            time.time(),
+        ]
+        if retry_increment:
+            assignments.append("retry_count=retry_count+1")
+        params.append(step_id)
+
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"""UPDATE goal_steps
+                    SET {", ".join(assignments)}
+                    WHERE step_id=?
+                      AND status='running'
+                      AND EXISTS (
+                          SELECT 1 FROM goals
+                          WHERE goals.goal_id=goal_steps.goal_id
+                            AND goals.status='running'
+                      )""",
+                params,
+            )
+            if cur.rowcount <= 0:
+                return False
+
+            if artifacts:
+                row = conn.execute(
+                    """SELECT goals.goal_id, goals.artifacts
+                       FROM goals
+                       JOIN goal_steps ON goal_steps.goal_id=goals.goal_id
+                       WHERE goal_steps.step_id=?""",
+                    (step_id,),
+                ).fetchone()
+                if not row:
+                    raise RuntimeError("goal missing during step result commit")
+                merged = list(self._json_loads(row["artifacts"], []) or [])
+                merged.extend(artifacts)
+                conn.execute(
+                    """UPDATE goals SET artifacts=?, updated_at=?
+                       WHERE goal_id=? AND status='running'""",
+                    (self._json_dumps(merged), time.time(), row["goal_id"]),
+                )
+        return True
 
     def get_goal_step(self, step_id: str) -> dict | None:
         with self._conn() as conn:
@@ -452,6 +742,186 @@ class Memory:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM goals WHERE goal_id=?", (goal_id,))
         return cur.rowcount > 0
+
+    # ── Runtime Events ────────────────────────────────────────────
+    def append_runtime_event(self, event: dict[str, Any]) -> None:
+        conn = sqlite3.connect(self.db_path, timeout=0.05)
+        try:
+            conn.execute(
+                """INSERT INTO runtime_events
+                   (event_id, goal_id, step_id, skill, intent, event_type,
+                    status, user_id, chat_id, payload, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event["event_id"],
+                    event.get("goal_id", ""),
+                    event.get("step_id", ""),
+                    event.get("skill", ""),
+                    event.get("intent", ""),
+                    event["event_type"],
+                    event.get("status", ""),
+                    event.get("user_id", ""),
+                    event.get("chat_id", ""),
+                    json.dumps(
+                        event.get("payload", {}),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                    ),
+                    event.get("created_at", time.time()),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_runtime_events(
+        self,
+        *,
+        goal_id: str | None = None,
+        skill: str | None = None,
+        event_type: str | None = None,
+        after_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for field, value in (
+            ("goal_id", goal_id),
+            ("skill", skill),
+            ("event_type", event_type),
+        ):
+            if value is not None:
+                clauses.append(f"{field}=?")
+                params.append(value)
+        if after_id is not None:
+            clauses.append("id>?")
+            params.append(int(after_id))
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 1000)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM runtime_events {where}
+                    ORDER BY id ASC LIMIT ?""",
+                params,
+            ).fetchall()
+        return [self._decode_json_fields(row, ("payload",)) for row in rows]
+
+    def list_latest_runtime_events(
+        self,
+        *,
+        goal_id: str | None = None,
+        limit: int = 30,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if goal_id is not None:
+            clauses.append("goal_id=?")
+            params.append(goal_id)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 100)))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM runtime_events {where}
+                    ORDER BY id DESC LIMIT ?""",
+                params,
+            ).fetchall()
+        decoded = [
+            self._decode_json_fields(row, ("payload",))
+            for row in rows
+        ]
+        return list(reversed(decoded))
+
+    # ── Goal Runtime terminal notification outbox ────────────────
+    def ensure_goal_notification(self, goal_id: str, status: str) -> None:
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO goal_notifications
+                   (goal_id, status, state, attempts, created_at, updated_at)
+                   VALUES (?, ?, 'pending', 0, ?, ?)""",
+                (goal_id, status, now, now),
+            )
+
+    def claim_goal_notification(
+        self,
+        goal_id: str,
+        *,
+        stale_after_seconds: float = 300.0,
+    ) -> bool:
+        now = time.time()
+        stale_before = now - max(0.0, stale_after_seconds)
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """UPDATE goal_notifications
+                   SET state='claimed',
+                       attempts=attempts + 1,
+                       claimed_at=?,
+                       error_type='',
+                       updated_at=?
+                   WHERE goal_id=?
+                     AND (
+                         state IN ('pending', 'failed')
+                         OR (state='claimed' AND claimed_at <= ?)
+                     )""",
+                (now, now, goal_id, stale_before),
+            )
+            return cursor.rowcount == 1
+
+    def mark_goal_notification_sent(self, goal_id: str) -> bool:
+        now = time.time()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """UPDATE goal_notifications
+                   SET state='sent', error_type='', updated_at=?
+                   WHERE goal_id=? AND state='claimed'""",
+                (now, goal_id),
+            )
+            return cursor.rowcount == 1
+
+    def mark_goal_notification_failed(
+        self,
+        goal_id: str,
+        error_type: str,
+    ) -> bool:
+        now = time.time()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """UPDATE goal_notifications
+                   SET state='failed', error_type=?, updated_at=?
+                   WHERE goal_id=? AND state='claimed'""",
+                (error_type, now, goal_id),
+            )
+            return cursor.rowcount == 1
+
+    def get_goal_notification(self, goal_id: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM goal_notifications WHERE goal_id=?",
+                (goal_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_recoverable_goal_notifications(
+        self,
+        *,
+        stale_after_seconds: float = 300.0,
+        limit: int = 100,
+    ) -> list[dict]:
+        stale_before = time.time() - max(0.0, stale_after_seconds)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM goal_notifications
+                   WHERE state IN ('pending', 'failed')
+                      OR (state='claimed' AND claimed_at <= ?)
+                   ORDER BY updated_at ASC
+                   LIMIT ?""",
+                (stale_before, max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ── Lessons Learned ───────────────────────────────────────────
     def save_lesson(self, lesson: dict) -> int:

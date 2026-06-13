@@ -693,7 +693,10 @@ class AgentMessageHandler:
                 if item_bits:
                     lines.append("\n".join(item_bits))
             elif tool == "write_pkb":
-                lines.append(f"🗃️ 个人知识库已记录：`{res.get('type', 'idea')}`")
+                if res.get("idempotent"):
+                    lines.append("🗃️ 知识库中已有该内容")
+                else:
+                    lines.append(f"🗃️ 个人知识库已记录：`{res.get('type', 'idea')}`")
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from handlers.message import (
@@ -205,6 +207,58 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🗃️ 个人知识库检索完成：找到 1 条", text)
         self.assertIn("- [idea · Python / AI] **Python note**", text)
         self.assertIn("  🔗 https://example.com/note", text)
+
+    def test_write_pkb_tool_summary_reports_idempotent_content(self) -> None:
+        from handlers.message import AgentMessageHandler
+
+        handler = AgentMessageHandler.__new__(AgentMessageHandler)
+        text = handler._summarize_tool_results(
+            [{
+                "tool": "write_pkb",
+                "result": {"ok": True, "type": "fact", "idempotent": True},
+            }]
+        )
+
+        self.assertIn("知识库中已有该内容", text)
+        self.assertNotIn("已记录", text)
+
+    async def test_note_no_card_fallback_uses_computed_detail(self) -> None:
+        from agent import AgentApp
+
+        app = AgentApp.__new__(AgentApp)
+        app.cfg = SimpleNamespace()
+        app._health = SimpleNamespace(mark_ws_ok=lambda: None)
+        app._memory = SimpleNamespace(set_profile=lambda *args: None)
+        app._cmd_handler = SimpleNamespace(is_command=lambda text: False)
+        app._msg_handler = SimpleNamespace(card=SimpleNamespace())
+        app._sender = SimpleNamespace(send=AsyncMock())
+        event = {
+            "event": {
+                "message": {
+                    "chat_id": "chat-1",
+                    "message_id": "message-1",
+                    "message_type": "text",
+                    "chat_type": "p2p",
+                    "content": json.dumps({"text": "# duplicate"}),
+                },
+                "sender": {"sender_id": {"open_id": "user-1"}},
+            }
+        }
+
+        with (
+            patch("agent.is_authorized_user", return_value=True),
+            patch(
+                "agent.forward_to_pkb_result",
+                new=AsyncMock(return_value={"ok": True, "idempotent": True}),
+            ),
+        ):
+            await app._on_message(event)
+
+        app._sender.send.assert_awaited_once_with(
+            "chat-1",
+            text="知识库中已有该内容",
+            reply_to="message-1",
+        )
 
 
 if __name__ == "__main__":

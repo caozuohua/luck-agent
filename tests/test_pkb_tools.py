@@ -276,7 +276,10 @@ class PkbClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["code"], "configuration_error")
         self.assertFalse(result["retryable"])
 
-    def test_factory_reads_environment_and_default_timeout(self) -> None:
+    async def test_factory_reads_environment_and_default_timeout(self) -> None:
+        from tools import pkb_tools
+
+        await pkb_tools.close_pkb_client()
         with patch.dict(
             os.environ,
             {
@@ -290,6 +293,28 @@ class PkbClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.base_url, "https://env.example")
         self.assertEqual(client.timeout_ms, 2345)
         self.assertNotIn("env-secret", repr(client))
+        await pkb_tools.close_pkb_client()
+
+    async def test_factory_reuses_process_client_and_close_clears_it(self) -> None:
+        from tools import pkb_tools
+
+        await pkb_tools.close_pkb_client()
+        first_client = unittest.mock.AsyncMock()
+        second_client = unittest.mock.AsyncMock()
+        with patch(
+            "tools.pkb_tools.PkbClient",
+            side_effect=[first_client, second_client],
+        ) as factory:
+            first = pkb_tools.get_pkb_client()
+            second = pkb_tools.get_pkb_client()
+            await pkb_tools.close_pkb_client()
+            third = pkb_tools.get_pkb_client()
+
+        self.assertIs(first, second)
+        self.assertIsNot(first, third)
+        self.assertEqual(factory.call_count, 2)
+        first_client.aclose.assert_awaited_once_with()
+        await pkb_tools.close_pkb_client()
 
 
 if __name__ == "__main__":

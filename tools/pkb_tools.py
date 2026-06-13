@@ -10,6 +10,7 @@ import httpx
 
 VALID_PKB_TYPES = {"fact", "idea", "task", "question", "code"}
 _RETRY_DELAYS = (0.25, 0.5)
+_pkb_client: PkbClient | None = None
 _ERRORS = {
     400: ("invalid_arguments", "PKB 请求参数错误", False),
     401: ("authentication_failed", "PKB 认证失败", False),
@@ -277,4 +278,15 @@ class PkbClient:
 
 
 def get_pkb_client() -> PkbClient:
-    return PkbClient()
+    global _pkb_client
+    if _pkb_client is None:
+        _pkb_client = PkbClient()
+    return _pkb_client
+
+
+async def close_pkb_client() -> None:
+    global _pkb_client
+    client = _pkb_client
+    _pkb_client = None
+    if client is not None:
+        await client.aclose()

@@ -16,6 +16,7 @@ from core.lark_ws_runner import LarkWebSocketRunner
 from core.log import configure_redaction_secrets, get_logger
 from core.short_id import short_id
 from handlers.message import forward_to_pkb_result, parse_note_message
+from tools.pkb_tools import close_pkb_client
 
 log = get_logger()
 
@@ -528,18 +529,11 @@ class AgentApp:
                         reply_to=message_id,
                     )
                 else:
-                    if ok:
-                        await self._sender.send(
-                            chat_id,
-                            text=f"✅ 已记录 [{note_type}] 内容",
-                            reply_to=message_id,
-                        )
-                    else:
-                        await self._sender.send(
-                            chat_id,
-                            text="❌ 记录失败，请重试",
-                            reply_to=message_id,
-                        )
+                    await self._sender.send(
+                        chat_id,
+                        text=detail,
+                        reply_to=message_id,
+                    )
                 return
 
             # 模型前缀解析（/pro /flash /lite 开头，剥离后转 AI）
@@ -609,6 +603,7 @@ class AgentApp:
             "queue": self._queue.stop,
             "scheduler": self._scheduler.stop,
             "health": self._health.stop,
+            "pkb": close_pkb_client,
         }
         tasks = {
             name: asyncio.create_task(stop(), name=f"shutdown-{name}")

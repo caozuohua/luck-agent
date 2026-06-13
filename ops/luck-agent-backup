@@ -2,7 +2,7 @@
 set -eu
 
 [ "$#" -eq 0 ] || exit 2
-exec /usr/bin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python - <<'PY'
+exec /usr/sbin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python - <<'PY'
 import datetime
 import os
 import sqlite3

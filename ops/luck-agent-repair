@@ -2,7 +2,7 @@
 set -eu
 
 [ "$#" -eq 0 ] || exit 2
-exec /usr/bin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python - <<'PY'
+exec /usr/sbin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python - <<'PY'
 import sqlite3
 
 with sqlite3.connect("/opt/luck-agent/memory.db", timeout=30) as conn:

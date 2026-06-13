@@ -3,17 +3,17 @@ set -eu
 
 [ "$#" -eq 0 ] || exit 2
 repo="/opt/luck-agent"
-remote=$(/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" config --get remote.origin.url)
+remote=$(/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" config --get remote.origin.url)
 case "$remote" in
     *github.com/caozuohua/luck-agent.git|*github.com/caozuohua/luck-agent) ;;
     *) echo "unexpected origin: $remote" >&2; exit 3 ;;
 esac
 
-/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --quiet
-/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --cached --quiet
-/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" fetch origin main
-/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" merge --ff-only origin/main
-/usr/bin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python -m py_compile \
+/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --quiet
+/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --cached --quiet
+/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" fetch origin main
+/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" merge --ff-only origin/main
+/usr/sbin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python -m py_compile \
     "$repo/agent.py" "$repo/config.py" "$repo/handlers/command.py"
 /bin/systemctl restart luck-agent
 /usr/bin/git -C "$repo" rev-parse --short HEAD

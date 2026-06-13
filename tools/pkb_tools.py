@@ -168,6 +168,9 @@ class PkbClient:
                     "PKB 返回了无效响应",
                     False,
                 )
+            note = result.get("note")
+            if isinstance(note, dict):
+                return {**note, **{key: value for key, value in result.items() if key != "note"}}
             return result
 
         return _error(None, "unavailable", "PKB 暂时不可用", True)

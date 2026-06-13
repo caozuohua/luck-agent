@@ -11,6 +11,25 @@ from tools.pkb_tools import PkbClient, get_pkb_client
 
 
 class PkbClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_note_envelope_is_flattened_for_get_and_update(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"ok": True, "note": {"id": "note-1", "type": "fact"}},
+            )
+
+        async with PkbClient(
+            "https://pkb.example",
+            "secret",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            result = await client.get("note-1")
+
+        self.assertEqual(result["id"], "note-1")
+        self.assertEqual(result["type"], "fact")
+        self.assertTrue(result["ok"])
+        self.assertNotIn("note", result)
+
     def make_client(self, handler, **kwargs) -> PkbClient:
         return PkbClient(
             base_url="https://pkb.example/",

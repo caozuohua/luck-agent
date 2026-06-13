@@ -251,7 +251,7 @@ class AgentMessageHandler:
                     "type": "object",
                     "properties": {
                         "content": {"type": "string", "description": "要保存的笔记正文"},
-                        "note_type": {"type": "string", "enum": ["idea", "question", "fact", "practice"], "description": "笔记类型"},
+                        "note_type": {"type": "string", "enum": ["fact", "idea", "task", "question", "code"], "description": "笔记类型"},
                         "topics": {"type": "array", "items": {"type": "string"}, "description": "主题标签"},
                     },
                     "required": ["content"],

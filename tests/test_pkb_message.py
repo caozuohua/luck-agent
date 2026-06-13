@@ -43,6 +43,20 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
                 parsed = parse_note_message(f"# [{note_type}] content")
                 self.assertEqual(parsed[1], note_type)
 
+    def test_transitional_write_pkb_schema_uses_stable_types(self) -> None:
+        from handlers.message import AgentMessageHandler
+
+        with patch("tools.search_tools.SearchTools"):
+            handler = AgentMessageHandler(
+                None, None, None, None, None, None, None, None, None,
+            )
+
+        schema = next(tool for tool in handler.all_tools if tool["name"] == "write_pkb")
+        self.assertEqual(
+            schema["parameters"]["properties"]["note_type"]["enum"],
+            ["fact", "idea", "task", "question", "code"],
+        )
+
     def test_topics_and_fact_type(self) -> None:
         self.assertEqual(
             parse_note_message("# [fact] #Python #AI 这里是一条事实"),

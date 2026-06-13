@@ -4,7 +4,6 @@
 !vercel.json
 # 如果你还保留着之前的 credentials.json，确保它也被排除
 credentials.json
-*.service
 
 # ─── Python 环境与缓存 ───
 venv/

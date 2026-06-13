@@ -69,7 +69,7 @@ upload_code() {
   FILES=(
     agent.py config.py requirements.txt luck-agent.service
     core/memory.py core/model_router.py core/task_queue.py
-    tools/github_tools.py tools/shell_tools.py tools/file_bridge.py
+    tools/github_tools.py tools/shell_tools.py tools/file_bridge.py tools/pkb_tools.py
     handlers/command.py handlers/message.py handlers/file_handler.py
     cards/builder.py
   )

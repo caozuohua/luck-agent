@@ -175,11 +175,9 @@ TAVILY_API_KEY=tvly-xxxxxxxx
 TAVILY_API_KEY_2=tvly-yyyyyyyy
 
 # 个人知识库（Vercel + Supabase）
-VERCEL_API_URL=https://your-vercel-app.vercel.app/api/pkb
-PKB_INGEST_URL=https://your-vercel-app.vercel.app/api/pkb       # 可选：覆盖录入接口
-PKB_SEARCH_URL=https://your-vercel-app.vercel.app/api/pkb/search # 可选：覆盖检索接口
-PKB_HEALTH_URL=https://your-vercel-app.vercel.app/api/pkb/health # 可选：覆盖健康检查接口
-API_SECRET=your-api-secret
+PKB_BASE_URL=https://your-vercel-app.vercel.app
+PKB_API_SECRET=your-api-secret
+PKB_TIMEOUT_MS=10000
 ```
 
 **4. 配置 GCP 认证（二选一）**
@@ -259,7 +257,7 @@ CMD ["python", "agent.py"]
 | 文件 | `/rm <路径>` | 删除文件（危险路径直接拦截，其他需确认）|
 | 文件 | `/files` | 列出已接收文件 |
 | 文件 | `/send <路径>` | 发送 VPS 文件到当前对话 |
-| 知识库 | `# 内容` | 录入个人知识库（`[idea|question|fact|practice]` + `#Topic` 可选） |
+| 知识库 | `# 内容` | 录入个人知识库（`[fact|idea|task|question|code]` + `#Topic` 可选） |
 | 知识库 | `/pkb <关键词>` | 检索个人知识库 |
 | Git | `/git [路径] [message]` | add + commit + push |
 | GitHub | `/deploy [repo]` | 触发 GitHub Actions 部署 |
@@ -372,13 +370,18 @@ git pull && sudo systemctl restart luck-agent
 在真实 Lark 环境里，建议按下面顺序做一次完整验收：
 
 1. `/search <关键词>`：看搜索卡是否返回，重点确认标题、来源和前几条结果可在手机端一屏扫完。
-2. `#` 录入 + `/pkb` 检索：先发一条 `#` 笔记，确认回复“已记录”，再用 `/pkb` 查回同一条内容。
+2. `#` 录入 + `/pkb` 检索：先发一条 `#` 笔记，再重复发送并确认提示“知识库中已有该内容”，最后用 `/pkb` 查回同一条内容。
 3. 博客发布：先发一篇小改动，检查创建/更新结果卡是否展示，随后确认 `deploy-hugo.yml` 已触发。
 4. `/status`：检查总览卡是否显示 WS、SQLite、备份、内存、磁盘和最近任务；`/health` 应返回同一张卡。
 5. `/schedule add|list|pause|resume|cancel`：先建一个 60 秒以上的 interval 任务，再试 `list`、`pause`、`resume`、`cancel`，确认都只作用于当前用户，并检查卡片里的下一次触发时间/ETA。
 6. `/send <file>`：先发送一个小文件，确认 Lark 中能收到文件卡，并且本地路径与文件名正确。
 
 如果以上五条都稳定，说明这套智能体已经具备长期碎片化使用的基础。
+
+模型可使用 `pkb_save`、`pkb_search`、`pkb_get`、`pkb_list`、
+`pkb_update`、`pkb_delete` 和 `pkb_restore` 完成知识生命周期操作。
+删除默认且仅支持软删除，必须先确认；可用 `pkb_restore` 恢复。
+PKB 不可用时智能体会继续基于当前上下文回答，但不会声称已经读取或写入知识库。
 
 ---
 

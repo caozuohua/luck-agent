@@ -29,6 +29,94 @@ if TYPE_CHECKING:
 MAX_TOOL_ROUNDS = 6   # 防止无限工具循环
 VALID_NOTE_TYPES = VALID_PKB_TYPES
 
+PKB_TOOL_SCHEMAS = [
+    {
+        "name": "pkb_save",
+        "description": "保存长期有价值的知识。仅在用户明确要求记住、保存或加入知识库时使用；不得保存密码、令牌、私钥或未经确认的敏感个人信息。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "source": {"type": "string", "description": "默认 luck-agent"},
+                "type": {"type": "string", "enum": ["fact", "idea", "task", "question", "code"]},
+                "topics": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "pkb_search",
+        "description": "检索知识库。通常不要传 source，只有用户明确要求限定来源时才传。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+                "source": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "pkb_get",
+        "description": "按 ID 获取完整知识，适合搜索结果上下文不足时继续读取。",
+        "parameters": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "pkb_list",
+        "description": "浏览最近或指定类型、主题、时间范围的知识。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer"},
+                "type": {"type": "string", "enum": ["fact", "idea", "task", "question", "code"]},
+                "topics": {"type": "array", "items": {"type": "string"}},
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "include_deleted": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "pkb_update",
+        "description": "修正已定位的知识，至少传 content、type、topics、summary 之一。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "content": {"type": "string"},
+                "type": {"type": "string", "enum": ["fact", "idea", "task", "question", "code"]},
+                "topics": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": "string"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "pkb_delete",
+        "description": "软删除已定位的知识。调用前必须获得用户确认；不得永久删除。",
+        "parameters": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "pkb_restore",
+        "description": "恢复已软删除的知识。",
+        "parameters": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+]
+
 
 def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
     """解析以 # 开头的个人知识库笔记消息。
@@ -243,32 +331,7 @@ class AgentMessageHandler:
         from tools.shell_tools import SHELL_TOOL_SCHEMAS
         from tools.search_tools import SEARCH_TOOL_SCHEMAS
         from core.scheduler import SCHEDULE_TOOL_SCHEMAS
-        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + SCHEDULE_TOOL_SCHEMAS + [
-            {
-                "name": "write_pkb",
-                "description": "写入个人知识库笔记。仅当用户明确要求保存、记录、录入到知识库/PKB/笔记时使用。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string", "description": "要保存的笔记正文"},
-                        "note_type": {"type": "string", "enum": ["fact", "idea", "task", "question", "code"], "description": "笔记类型"},
-                        "topics": {"type": "array", "items": {"type": "string"}, "description": "主题标签"},
-                    },
-                    "required": ["content"],
-                },
-            },
-            {
-                "name": "search_pkb",
-                "description": "检索个人知识库中的已记录笔记。适合查找历史想法、问题、事实和实践记录。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "检索关键词"},
-                        "limit": {"type": "integer", "description": "返回条数，默认 5"},
-                    },
-                    "required": ["query"],
-                },
-            },
+        self.all_tools = GITHUB_TOOL_SCHEMAS + SHELL_TOOL_SCHEMAS + SEARCH_TOOL_SCHEMAS + SCHEDULE_TOOL_SCHEMAS + PKB_TOOL_SCHEMAS + [
             {
                 "name": "remember",
                 "description": "保存用户的偏好、习惯、重要信息到持久化记忆。",
@@ -554,22 +617,47 @@ class AgentMessageHandler:
             result = await self.searcher.search(args.get("query", ""))
             return result
 
-        elif name == "search_pkb":
-            query = (args.get("query") or "").strip()
-            limit = _coerce_pkb_limit(args.get("limit", 5))
-            if not query:
-                return {"error": "缺少 query"}
-            return await search_pkb(query, limit=limit)
-
-        elif name == "write_pkb":
-            content = (args.get("content") or "").strip()
-            note_type = (args.get("note_type") or "idea").strip()
-            if note_type not in VALID_NOTE_TYPES:
-                note_type = "idea"
-            topics = normalize_topics(args.get("topics") or [])
-            if not content:
-                return {"error": "缺少 content"}
-            return await forward_to_pkb_result(content, note_type, topics)
+        elif name.startswith("pkb_"):
+            client = get_pkb_client()
+            try:
+                if name == "pkb_save":
+                    return await client.save(
+                        (args.get("content") or "").strip(),
+                        source=(args.get("source") or "luck-agent").strip(),
+                        note_type=(args.get("type") or "fact").strip(),
+                        topics=normalize_topics(args.get("topics") or []),
+                    )
+                if name == "pkb_search":
+                    kwargs = {"limit": args.get("limit", 5)}
+                    if args.get("source"):
+                        kwargs["source"] = str(args["source"]).strip()
+                    return await client.search((args.get("query") or "").strip(), **kwargs)
+                if name == "pkb_get":
+                    return await client.get((args.get("id") or "").strip())
+                if name == "pkb_list":
+                    return await client.list(
+                        limit=args.get("limit", 50),
+                        offset=args.get("offset", 0),
+                        note_type=args.get("type"),
+                        topics=normalize_topics(args.get("topics") or []),
+                        from_=args.get("from"),
+                        to=args.get("to"),
+                        include_deleted=bool(args.get("include_deleted", False)),
+                    )
+                if name == "pkb_update":
+                    return await client.update(
+                        (args.get("id") or "").strip(),
+                        content=args.get("content"),
+                        note_type=args.get("type"),
+                        topics=normalize_topics(args["topics"]) if "topics" in args else None,
+                        summary=args.get("summary"),
+                    )
+                if name == "pkb_delete":
+                    return await client.delete((args.get("id") or "").strip())
+                if name == "pkb_restore":
+                    return await client.restore((args.get("id") or "").strip())
+            except (TypeError, ValueError) as exc:
+                return {"ok": False, "code": "invalid_arguments", "error": str(exc)}
 
         elif name == "schedule_task":
             if not self.scheduler:
@@ -682,7 +770,7 @@ class AgentMessageHandler:
                 )
                 if item_bits:
                     lines.append("\n".join(item_bits))
-            elif tool == "search_pkb":
+            elif tool in ("pkb_search", "pkb_list"):
                 summary = (res.get("summary") or "")[:500]
                 items = res.get("results", [])[:3]
                 lines.append(
@@ -692,11 +780,11 @@ class AgentMessageHandler:
                 item_bits = format_pkb_result_items(items, limit=3)
                 if item_bits:
                     lines.append("\n".join(item_bits))
-            elif tool == "write_pkb":
+            elif tool == "pkb_save":
                 if res.get("idempotent"):
                     lines.append("🗃️ 知识库中已有该内容")
                 else:
-                    lines.append(f"🗃️ 个人知识库已记录：`{res.get('type', 'idea')}`")
+                    lines.append(f"🗃️ 个人知识库已记录：`{res.get('type', 'fact')}`")
             elif tool in ("remember", "recall"):
                 pass   # 记忆操作静默处理
             else:

@@ -39,6 +39,10 @@ class Intent(str, Enum):
     MEMORY_OP      = "memory_op"
     PKB_WRITE      = "pkb_write"
     PKB_SEARCH     = "pkb_search"
+    PKB_LIST       = "pkb_list"
+    PKB_UPDATE     = "pkb_update"
+    PKB_DELETE     = "pkb_delete"
+    PKB_RESTORE    = "pkb_restore"
     SCHEDULE_OP    = "schedule_op"
     GIT_PUSH       = "git_push"
     SEARCH         = "search"
@@ -134,6 +138,29 @@ _RULES: list[tuple[Intent, float, list[str], list[str]]] = [
         r"(忘掉|忘记|删除).{0,10}(记忆|偏好|信息)",
     ]),
 
+    # 个人知识库恢复、删除、更新、浏览（必须在宽泛检索规则之前）
+    (Intent.PKB_RESTORE, 0.98, [
+        "撤销刚才删除", "恢复知识库", "恢复笔记", "还原知识库", "还原笔记",
+    ], [
+        r"(撤销|恢复|还原).{0,10}(删除|知识库|pkb|笔记|记录)",
+    ]),
+    (Intent.PKB_DELETE, 0.97, [
+        "删除知识库", "删除笔记", "忘掉那条", "忘掉这条",
+    ], [
+        r"(删除|忘掉|移除).{0,12}(知识库|pkb|笔记|记录|那条|这条)",
+    ]),
+    (Intent.PKB_UPDATE, 0.96, [
+        "修改知识库", "更新知识库", "修正知识库", "修改笔记", "更新笔记",
+    ], [
+        r"(修改|更新|修正|改成).{0,12}(知识库|pkb|笔记|记录|那条)",
+        r"(知识库|pkb|笔记|记录).{0,12}(修改|更新|修正|改成)",
+    ]),
+    (Intent.PKB_LIST, 0.95, [
+        "列出知识库", "列出笔记", "最近的知识", "最近知识", "浏览知识库",
+    ], [
+        r"(列出|浏览|查看最近).{0,12}(知识库|pkb|笔记|记录|知识)",
+    ]),
+
     # 个人知识库写入
     (Intent.PKB_WRITE, 0.94, [
         "记到知识库", "写入知识库", "存到知识库", "录入知识库",
@@ -149,6 +176,7 @@ _RULES: list[tuple[Intent, float, list[str], list[str]]] = [
         "查笔记", "查知识库", "检索笔记", "检索知识库", "知识库",
         "个人知识库", "pkb", "我的笔记", "历史笔记", "以前记的",
         "找一下笔记", "找一下知识库", "笔记里", "记录里",
+        "以前关于", "之前关于",
     ], [
         r"(查|找|检索|搜索).{0,10}(笔记|知识库|记录)",
         r"(个人知识库|pkb)",
@@ -210,10 +238,31 @@ TOOL_SUBSETS: dict[Intent, list[str]] = {
         "recall",
     ],
     Intent.PKB_WRITE: [
-        "write_pkb",
+        "pkb_save",
     ],
     Intent.PKB_SEARCH: [
-        "search_pkb",
+        "pkb_search",
+        "pkb_get",
+        "pkb_list",
+    ],
+    Intent.PKB_LIST: [
+        "pkb_list",
+        "pkb_get",
+    ],
+    Intent.PKB_UPDATE: [
+        "pkb_search",
+        "pkb_get",
+        "pkb_update",
+    ],
+    Intent.PKB_DELETE: [
+        "pkb_search",
+        "pkb_get",
+        "pkb_delete",
+    ],
+    Intent.PKB_RESTORE: [
+        "pkb_search",
+        "pkb_list",
+        "pkb_restore",
     ],
     Intent.SCHEDULE_OP: [
         "schedule_task",
@@ -344,16 +393,43 @@ Intent.FILE_OP: """
 
     Intent.PKB_WRITE: """
 ## 当前任务：个人知识库写入
-- 用 write_pkb(content="...", note_type="idea|question|fact|practice", topics=[...]) 写入用户知识库
-- 只写入用户明确要求保存、记录、录入到知识库/PKB/笔记的内容
+- 用 pkb_save(content="...", type="fact|idea|task|question|code", topics=[...]) 写入用户知识库
+- 只保存用户明确要求记住的长期信息、稳定偏好、项目决策、可复用经验或长期任务
+- 不要保存寒暄、临时状态、无上下文片段、密码、令牌、私钥或未经确认的敏感个人信息
 - 写入后简要确认类型、主题和结果，不要重复大段原文
 """,
 
     Intent.PKB_SEARCH: """
 ## 当前任务：个人知识库检索
-- 用 search_pkb(query="...", limit=5) 检索用户已记录的笔记
-- 用户若在问“之前记过什么、查一下笔记、找知识库”，优先用这个工具
+- 用 pkb_search(query="...", limit=5) 检索；通常不要传 source，只有用户明确要求限定来源时才传
+- 搜索结果上下文不足时用 pkb_get(id="...")
+- 回答用户历史、项目决策或长期偏好时，主动先检索 PKB
 - 回复时按相关度列出最相关的笔记标题、类型、话题和摘要
+""",
+
+    Intent.PKB_LIST: """
+## 当前任务：浏览个人知识库
+- 用 pkb_list 列出最近或指定类型、主题、时间范围的知识
+- 需要完整正文时继续用 pkb_get
+""",
+
+    Intent.PKB_UPDATE: """
+## 当前任务：修正个人知识库
+- 先用 pkb_search 定位记录，必要时 pkb_get 确认完整内容，再调用 pkb_update
+- 至少更新 content、type、topics、summary 中一个字段
+""",
+
+    Intent.PKB_DELETE: """
+## 当前任务：遗忘个人知识库记录
+- 先用 pkb_search 定位目标并向用户展示
+- 必须获得用户明确确认后才能调用 pkb_delete
+- pkb_delete 仅执行软删除，不得永久删除
+""",
+
+    Intent.PKB_RESTORE: """
+## 当前任务：恢复个人知识库记录
+- 用 pkb_list(include_deleted=true) 或 pkb_search 定位已删除记录
+- 调用 pkb_restore(id="...") 恢复
 """,
 
     Intent.SCHEDULE_OP: """

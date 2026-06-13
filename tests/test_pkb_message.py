@@ -45,7 +45,7 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
                 parsed = parse_note_message(f"# [{note_type}] content")
                 self.assertEqual(parsed[1], note_type)
 
-    def test_transitional_write_pkb_schema_uses_stable_types(self) -> None:
+    def test_model_exposes_stable_pkb_lifecycle_tools(self) -> None:
         from handlers.message import AgentMessageHandler
 
         with patch("tools.search_tools.SearchTools"):
@@ -53,11 +53,15 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
                 None, None, None, None, None, None, None, None, None,
             )
 
-        schema = next(tool for tool in handler.all_tools if tool["name"] == "write_pkb")
-        self.assertEqual(
-            schema["parameters"]["properties"]["note_type"]["enum"],
-            ["fact", "idea", "task", "question", "code"],
+        tool_names = {tool["name"] for tool in handler.all_tools}
+        self.assertTrue(
+            {
+                "pkb_save", "pkb_search", "pkb_get", "pkb_list",
+                "pkb_update", "pkb_delete", "pkb_restore",
+            }.issubset(tool_names)
         )
+        self.assertNotIn("write_pkb", tool_names)
+        self.assertNotIn("search_pkb", tool_names)
 
     def test_topics_and_fact_type(self) -> None:
         self.assertEqual(
@@ -187,7 +191,7 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
         text = handler._summarize_tool_results(
             [
                 {
-                    "tool": "search_pkb",
+                    "tool": "pkb_search",
                     "result": {
                         "summary": "找到 1 条",
                         "results": [
@@ -208,13 +212,13 @@ class ParseNoteMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("- [idea · Python / AI] **Python note**", text)
         self.assertIn("  🔗 https://example.com/note", text)
 
-    def test_write_pkb_tool_summary_reports_idempotent_content(self) -> None:
+    def test_pkb_save_tool_summary_reports_idempotent_content(self) -> None:
         from handlers.message import AgentMessageHandler
 
         handler = AgentMessageHandler.__new__(AgentMessageHandler)
         text = handler._summarize_tool_results(
             [{
-                "tool": "write_pkb",
+                "tool": "pkb_save",
                 "result": {"ok": True, "type": "fact", "idempotent": True},
             }]
         )

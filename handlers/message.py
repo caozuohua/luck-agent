@@ -5,16 +5,15 @@ ReAct 风格：模型 → 工具调用 → 结果注入 → 模型再推理，�
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
-import httpx
 from core.log import get_logger
 from core.intent_router import route as intent_route, Intent
 from core.topics import normalize_topic, normalize_topics
+from tools.pkb_tools import PkbClient, VALID_PKB_TYPES, get_pkb_client
 
 log = get_logger()
 
@@ -28,10 +27,7 @@ if TYPE_CHECKING:
     from config import Config
 
 MAX_TOOL_ROUNDS = 6   # 防止无限工具循环
-VALID_NOTE_TYPES = {"idea", "question", "fact", "practice"}
-PKB_SEARCH_ACTION = "search"
-PKB_INGEST_ROUTE = "/api/note 或 /api/pkb"
-PKB_SEARCH_ROUTE = "/api/pkb/search"
+VALID_NOTE_TYPES = VALID_PKB_TYPES
 
 
 def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
@@ -72,41 +68,6 @@ def parse_note_message(text: str) -> tuple[str, str, list[str]] | None:
     if not content:
         return None
     return content, note_type, topics
-
-
-def _pkb_url(action: str) -> str:
-    if action == "ingest":
-        url = os.getenv("PKB_INGEST_URL", "").strip()
-    elif action == "search":
-        url = os.getenv("PKB_SEARCH_URL", "").strip()
-    else:
-        url = ""
-    return (url or os.getenv("VERCEL_API_URL", "").strip()).rstrip("/")
-
-
-def _pkb_health_url() -> str:
-    explicit = os.getenv("PKB_HEALTH_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-
-    search_url = os.getenv("PKB_SEARCH_URL", "").strip().rstrip("/")
-    if search_url.endswith(PKB_SEARCH_ROUTE):
-        return search_url[: -len(PKB_SEARCH_ROUTE)] + "/api/pkb/health"
-
-    base_url = os.getenv("VERCEL_API_URL", "").strip().rstrip("/")
-    if base_url.endswith("/api/pkb"):
-        return base_url + "/health"
-    if base_url:
-        return base_url.rstrip("/") + "/api/pkb/health"
-    return ""
-
-
-def _pkb_env(action: str = "default") -> tuple[str, str] | None:
-    url = _pkb_url(action)
-    secret = os.getenv("API_SECRET", "").strip()
-    if not url or not secret:
-        return None
-    return url, secret
 
 
 def _coerce_pkb_limit(limit: Any, default: int = 5) -> int:
@@ -198,124 +159,20 @@ def _normalize_pkb_result_payload(data: Any) -> tuple[str, list[dict]]:
     return summary, results
 
 
-async def _pkb_post(payload: dict[str, Any], action: str = "default") -> httpx.Response | None:
-    env = _pkb_env(action)
-    if not env:
-        log.error("pkb_env_missing", action=action, has_url=bool(_pkb_url(action)),
-                  has_secret=bool(os.getenv("API_SECRET", "").strip()))
-        return None
-
-    url, secret = env
-    try:
-        timeout = httpx.Timeout(10.0, connect=5.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            return await client.post(
-                url,
-                headers={"x-api-secret": secret, "Content-Type": "application/json"},
-                json=payload,
-            )
-    except Exception as e:
-        log.error("pkb_request_error", error=str(e)[:200])
-        return None
-
-
 async def check_pkb_health() -> dict:
-    url = _pkb_health_url()
-    if not url:
-        return {"status": "unknown", "detail": "PKB_HEALTH_URL/VERCEL_API_URL 未配置"}
-
-    try:
-        timeout = httpx.Timeout(3.0, connect=2.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url)
-    except Exception as e:
-        return {"status": "down", "detail": str(e)[:160], "url": url}
-
-    if not resp.is_success:
-        return {"status": "down", "detail": f"HTTP {resp.status_code}", "url": url}
-
-    try:
-        data = resp.json()
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-
-    supabase = data.get("supabase")
-    has_secret = data.get("hasApiSecret")
-    if data.get("ok") and supabase is not False:
-        detail = "Supabase ok" if supabase is True else "PKB ok"
-        if has_secret is False:
-            detail += "，API_SECRET 未配置"
-        return {"status": "ok", "detail": detail, "url": url}
-
-    return {"status": "degraded", "detail": f"supabase={supabase}, secret={has_secret}", "url": url}
-
-
-def _pkb_error_detail(resp: httpx.Response) -> str:
-    try:
-        data = resp.json()
-    except Exception:
-        return resp.text[:300]
-    if isinstance(data, dict):
-        detail = data.get("error") or data.get("message") or data.get("detail")
-        if detail:
-            return str(detail)[:300]
-    return resp.text[:300]
+    client: PkbClient = get_pkb_client()
+    return await client.health()
 
 
 async def forward_to_pkb_result(content: str, note_type: str, topics: list[str]) -> dict:
     """转发笔记到已部署的 PKB 接口。"""
-    env = _pkb_env("ingest")
-    if not env:
-        log.error(
-            "pkb_env_missing",
-            action="ingest",
-            has_url=bool(_pkb_url("ingest")),
-            has_secret=bool(os.getenv("API_SECRET", "").strip()),
-        )
-        return {"ok": False, "error": "PKB 录入接口环境变量未配置"}
-
-    resp = await _pkb_post({
-        "content": content,
-        "type": note_type,
-        "topics": topics,
-        "source": "lark",
-    }, action="ingest")
-    if resp is None:
-        return {"ok": False, "error": "PKB 请求失败"}
-
-    if not resp.is_success:
-        detail = _pkb_error_detail(resp)
-        log.error(
-            "pkb_forward_fail",
-            status=resp.status_code,
-            error=detail,
-            url=_pkb_url("ingest"),
-        )
-        return {
-            "ok": False,
-            "status": resp.status_code,
-            "error": detail or f"HTTP {resp.status_code}",
-            "url": _pkb_url("ingest"),
-        }
-
-    try:
-        data = resp.json()
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-
-    return {
-        "ok": True,
-        "status": resp.status_code,
-        "url": _pkb_url("ingest"),
-        "id": str(data.get("id", "")),
-        "type": str(data.get("type", note_type)),
-        "topics": data.get("topics") or topics,
-        "created_at": str(data.get("created_at", "")),
-    }
+    client: PkbClient = get_pkb_client()
+    return await client.save(
+        content,
+        source="luck-agent",
+        note_type=note_type,
+        topics=topics,
+    )
 
 
 async def forward_to_pkb(content: str, note_type: str, topics: list[str]) -> bool:
@@ -331,33 +188,10 @@ async def search_pkb(query: str, limit: int = 5) -> dict:
 
     limit = _coerce_pkb_limit(limit)
 
-    if not _pkb_env("search"):
-        return {"error": "PKB 接口环境变量未配置"}
-
-    resp = await _pkb_post({
-        "query": query,
-        "limit": limit,
-        "source": "lark",
-        "action": "search",
-    }, action="search")
-    if resp is None:
-        return {"error": "PKB 请求失败"}
-
-    if not resp.is_success:
-        if resp.status_code == 404:
-            url = _pkb_url("search")
-        return {
-            "error": (
-                f"PKB 检索接口不存在(404)：{url}。"
-                    f"请确认 PKB_SEARCH_URL 指向 {PKB_SEARCH_ROUTE}。"
-            )
-        }
-        return {"error": f"{resp.status_code}: {resp.text[:300]}"}
-
-    try:
-        data = resp.json()
-    except Exception:
-        return {"error": "PKB 响应不是有效 JSON"}
+    client: PkbClient = get_pkb_client()
+    data = await client.search(query, limit=limit)
+    if not data.get("ok", True):
+        return data
 
     summary, results = _normalize_pkb_result_payload(data)
 

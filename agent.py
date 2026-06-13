@@ -22,6 +22,14 @@ log = get_logger()
 MODEL_PREFERENCE_KEY = "preferred_model"
 
 
+def _pkb_record_detail(result: dict[str, Any]) -> str:
+    if result.get("ok") and result.get("idempotent"):
+        return "知识库中已有该内容"
+    if result.get("ok"):
+        return "已保存到个人知识库"
+    return str(result.get("error") or "PKB 请求失败")
+
+
 def resolve_model_preference(memory, user_id: str, text: str, models: dict[str, str]):
     """Apply a model prefix and persist the choice for future messages."""
     normalized = text.strip()
@@ -505,7 +513,7 @@ class AgentApp:
                 content, note_type, topics = note
                 pkb_result = await forward_to_pkb_result(content, note_type, topics)
                 ok = bool(pkb_result.get("ok"))
-                error_detail = pkb_result.get("error") or "请检查 Vercel / Supabase 接口与 API Secret"
+                detail = _pkb_record_detail(pkb_result)
                 card_fn = getattr(self._msg_handler.card, "pkb_recorded", None)
                 if callable(card_fn):
                     await self._sender.send(
@@ -515,7 +523,7 @@ class AgentApp:
                             note_type=note_type,
                             topics=topics,
                             ok=ok,
-                            detail="已转发到个人知识库" if ok else str(error_detail),
+                            detail=detail,
                         ),
                         reply_to=message_id,
                     )

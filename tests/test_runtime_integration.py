@@ -226,7 +226,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             app._sender = sender
             app._runtime_manager = manager
             app._health = SimpleNamespace(mark_ws_ok=lambda: None)
-            app._memory = SimpleNamespace(set_profile=lambda *args: None)
+            app._memory = SimpleNamespace(
+                set_profile=lambda *args: None,
+                add_message=lambda *args: None,
+            )
 
             async def no_command(*args) -> bool:
                 return False

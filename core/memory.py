@@ -266,7 +266,8 @@ class Memory:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT role, content, model FROM messages
-                   WHERE user_id=? ORDER BY created_at DESC LIMIT ?""",
+                   WHERE user_id=?
+                   ORDER BY created_at DESC, id DESC LIMIT ?""",
                 (user_id, limit),
             ).fetchall()
         return [dict(r) for r in reversed(rows)]

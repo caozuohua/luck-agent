@@ -566,13 +566,19 @@ class AgentApp:
                 text=text,
             )
             if runtime_result.handled:
+                accepted_text = (
+                    f"任务已接受：`{short_id(runtime_result.goal_id)}`\n"
+                    f"{runtime_result.summary}"
+                )
+                from core.memory import Message
+                self._memory.add_message(Message(user_id, "user", text))
+                self._memory.add_message(
+                    Message(user_id, "assistant", accepted_text)
+                )
                 try:
                     await self._sender.send(
                         chat_id,
-                        text=(
-                            f"任务已接受：`{short_id(runtime_result.goal_id)}`\n"
-                            f"{runtime_result.summary}"
-                        ),
+                        text=accepted_text,
                         reply_to=message_id,
                     )
                 finally:

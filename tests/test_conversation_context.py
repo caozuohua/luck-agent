@@ -134,6 +134,52 @@ class ConversationContextTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("模型调用失败", history[-1]["content"])
             memory._local.conn.close()
 
+    async def test_react_context_log_contains_structure_without_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = Memory(str(Path(temp_dir) / "memory.db"))
+            router = SimpleNamespace(
+                build_system_prompt=lambda *args, **kwargs: "system",
+                chat=AsyncMock(return_value={
+                    "text": "回复",
+                    "tool_calls": [],
+                    "model": "test-model",
+                    "tokens": 1,
+                }),
+            )
+            handler = build_handler(memory, router)
+
+            with (
+                patch("handlers.message.intent_route") as route,
+                patch("handlers.message.log") as message_log,
+            ):
+                route.return_value = SimpleNamespace(
+                    intent=SimpleNamespace(value="general"),
+                    confidence=1.0,
+                    tool_names=[],
+                    model_hint="",
+                    prompt_hint="",
+                )
+                await handler.handle(
+                    "user-1",
+                    "chat-1",
+                    "message-1",
+                    "Authorization: Bearer must-not-appear",
+                )
+
+            context_call = next(
+                call
+                for call in message_log.info.call_args_list
+                if call.args == ("react_loop_context",)
+            )
+            fields = context_call.kwargs
+            self.assertNotIn("previews", fields)
+            self.assertNotIn("content", fields)
+            self.assertEqual(fields["roles"], ["user"])
+            self.assertEqual(fields["content_lengths"], [37])
+            self.assertEqual(fields["tool_result_messages"], 0)
+            self.assertNotIn("must-not-appear", repr(fields))
+            memory._local.conn.close()
+
     async def test_goal_acceptance_is_persisted_as_complete_turn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = Memory(str(Path(temp_dir) / "memory.db"))

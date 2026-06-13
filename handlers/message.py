@@ -443,10 +443,19 @@ class AgentMessageHandler:
                 round=tool_rounds + 1,
                 count=len(messages),
                 roles=[message.get("role", "?") for message in messages],
-                previews=[
-                    str(message.get("content", ""))[:160]
+                content_lengths=[
+                    len(str(message.get("content", "")))
                     for message in messages
                 ],
+                history_messages=len(recent_history),
+                tool_result_messages=sum(
+                    1
+                    for message in messages
+                    if message.get("role") == "tool"
+                    or str(message.get("content", "")).startswith(
+                        "工具执行完毕，结果如下"
+                    )
+                ),
             )
             try:
                 result = await self.router.chat(

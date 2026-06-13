@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from core.log import get_logger
 from core.redaction import redact_text
+from core.short_id import short_id
 from tools.github_tools import DEFAULT_DEPLOY_WORKFLOW
 
 if TYPE_CHECKING:
@@ -530,7 +531,7 @@ class CommandHandler:
         lines = []
         for t in tasks:
             emoji = {"done":"✅","failed":"❌","running":"⏳","pending":"🕐"}.get(t["status"],"❓")
-            lines.append(f"{emoji} `#{t['task_id']}` {t['type']} — {t['status']}")
+            lines.append(f"{emoji} `#{short_id(t['task_id'])}` {t['type']} — {t['status']}")
         await self.reply(chat_id, text="**近期任务**\n" + "\n".join(lines))
 
     # ── 系统状态 ──────────────────────────────────────────────────────
@@ -615,8 +616,14 @@ class CommandHandler:
             await self.reply(chat_id, text="Runtime 诊断服务尚未初始化。")
             return
         try:
+            resolver = getattr(service, "resolve_goal_id", None)
+            resolved_goal_id = (
+                resolver(goal_id)
+                if goal_id and callable(resolver)
+                else goal_id
+            )
             text = (
-                await service.goal_timeline(goal_id)
+                await service.goal_timeline(resolved_goal_id)
                 if goal_id
                 else await service.overview()
             )

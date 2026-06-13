@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.redaction import redact_text, redact_value
+from core.short_id import short_id
 
 
 class AcceptanceGatedNotifier:
@@ -69,7 +70,7 @@ class RuntimeGoalNotifier:
                     result=result,
                 )
         else:
-            detail_parts = [f"Goal ID: {goal_id}"]
+            detail_parts = [f"Goal ID: {short_id(goal_id)}"]
             current_step = redact_text(
                 goal.get("current_step") or ""
             ).strip()

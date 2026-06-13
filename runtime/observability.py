@@ -8,6 +8,7 @@ from typing import Any
 
 from core.goal import GoalError
 from core.redaction import redact_text, redact_value
+from core.short_id import matches_short_id, short_id
 
 
 class RuntimeObservability:
@@ -47,7 +48,7 @@ class RuntimeObservability:
                 "processed={processed} failed={failed}".format(
                     worker_id=redact_text(worker.get("worker_id") or "unknown"),
                     running=bool(worker.get("running")),
-                    goal=redact_text(current),
+                    goal=redact_text(short_id(current) if current != "-" else current),
                     processed=int(worker.get("processed") or 0),
                     failed=int(worker.get("failed") or 0),
                 )
@@ -144,6 +145,18 @@ class RuntimeObservability:
                 line += f" payload={payload}"
             lines.append(line)
         return "\n".join(lines)[:8000]
+
+    def resolve_goal_id(self, candidate: str) -> str:
+        matches = [
+            str(goal.get("goal_id") or "")
+            for goal in self.goal_manager.list_goals(limit=self.overview_limit)
+            if matches_short_id(goal.get("goal_id"), candidate)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(f"Goal 短码 `{candidate}` 不唯一，请多输入一位。")
+        return candidate
 
     def _latest_events(
         self,

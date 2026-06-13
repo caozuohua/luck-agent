@@ -9,6 +9,7 @@ import json
 import time
 from typing import Any
 
+from core.short_id import short_id
 from core.topics import normalize_topics
 
 
@@ -96,7 +97,7 @@ class CardBuilder:
         if elapsed:
             footer_parts.append(f"⏱ {elapsed:.1f}s")
         if task_id:
-            footer_parts.append(f"📋 #{task_id}")
+            footer_parts.append(f"📋 #{short_id(task_id)}")
 
         if footer_parts:
             elements.append(_divider())
@@ -589,7 +590,7 @@ class CardBuilder:
                 "tag": "div",
                 "fields": [
                     {"is_short": True, "text": {"tag": "lark_md",
-                                                "content": f"**任务 ID**\n#{task_id}"}},
+                                                "content": f"**任务 ID**\n#{short_id(task_id)}"}},
                     {"is_short": True, "text": {"tag": "lark_md",
                                                 "content": f"**类型**\n{task_type}"}},
                     {"is_short": True, "text": {"tag": "lark_md",
@@ -612,7 +613,7 @@ class CardBuilder:
         return {
             "schema": "2.0",
             "header": {
-                "title":    {"tag": "plain_text", "content": f"{emoji} 任务 #{task_id}"},
+                "title":    {"tag": "plain_text", "content": f"{emoji} 任务 #{short_id(task_id)}"},
                 "template": color,
             },
             "body": {"elements": elements},
@@ -750,7 +751,7 @@ class CardBuilder:
                 emoji = STATUS_EMOJI.get(t.get("status", ""), "?")
                 elements.append({"tag": "div", "fields": [
                     {"is_short": False, "text": {"tag": "lark_md",
-                                                "content": f"{emoji} #{t['task_id']} {t['type']} - {t['status']}"}},
+                                                "content": f"{emoji} #{short_id(t['task_id'])} {t['type']} - {t['status']}"}},
                 ]})
 
         return {

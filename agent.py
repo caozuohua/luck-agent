@@ -14,6 +14,7 @@ import lark_oapi as lark
 from core.auth import is_authorized_user
 from core.lark_ws_runner import LarkWebSocketRunner
 from core.log import configure_redaction_secrets, get_logger
+from core.short_id import short_id
 from handlers.message import forward_to_pkb_result, parse_note_message
 
 log = get_logger()
@@ -567,7 +568,7 @@ class AgentApp:
                     await self._sender.send(
                         chat_id,
                         text=(
-                            f"任务已接受：`{runtime_result.goal_id[-6:]}`\n"
+                            f"任务已接受：`{short_id(runtime_result.goal_id)}`\n"
                             f"{runtime_result.summary}"
                         ),
                         reply_to=message_id,

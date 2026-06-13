@@ -44,7 +44,7 @@ class FakeMemory:
     def get_task(self, task_id: str) -> dict | None:
         tasks = {
             "abcd1234": {"task_id": "abcd1234", "type": "demo", "status": "done"},
-            "abcd5678": {"task_id": "abcd5678", "type": "demo", "status": "done"},
+            "abce5678": {"task_id": "abce5678", "type": "demo", "status": "done"},
         }
         return tasks.get(task_id)
 
@@ -52,7 +52,7 @@ class FakeMemory:
         return [
             task for task_id, task in {
                 "abcd1234": {"task_id": "abcd1234", "type": "demo", "status": "done"},
-                "abcd5678": {"task_id": "abcd5678", "type": "demo", "status": "done"},
+                "abce5678": {"task_id": "abce5678", "type": "demo", "status": "done"},
             }.items() if task_id.startswith(prefix)
         ][:limit]
 
@@ -208,14 +208,32 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
             "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-journal 12"
         )
 
-    async def test_task_accepts_unique_short_prefix(self) -> None:
+    async def test_task_accepts_four_character_short_id(self) -> None:
         replies: list[dict] = []
         handler = self.make_handler(replies)
         handler.card.task_status = lambda **kwargs: kwargs
 
-        await handler._handle_task("chat", "abcd1")
+        await handler._handle_task("chat", "abcd")
 
         self.assertEqual(replies[-1]["card"]["task_id"], "abcd1234")
+
+    async def test_runtime_resolves_four_character_goal_id(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        service = type(
+            "RuntimeObservability",
+            (),
+            {
+                "overview": AsyncMock(return_value="runtime overview"),
+                "goal_timeline": AsyncMock(return_value="goal timeline"),
+                "resolve_goal_id": lambda self, value: "goal_a1b2c3d4e5",
+            },
+        )()
+        handler.runtime_observability = service
+
+        await handler._handle_runtime("chat", "a1b2")
+
+        service.goal_timeline.assert_awaited_once_with("goal_a1b2c3d4e5")
 
 
 if __name__ == "__main__":

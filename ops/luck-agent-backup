@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 0 ] || exit 2
+exec /usr/bin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python - <<'PY'
+import datetime
+import os
+import sqlite3
+
+db_path = "/opt/luck-agent/memory.db"
+backup_dir = "/opt/luck-agent/backups"
+os.makedirs(backup_dir, exist_ok=True)
+stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+name = f"memory-{stamp}.db"
+target = os.path.join(backup_dir, name)
+with sqlite3.connect(db_path, timeout=30) as source:
+    with sqlite3.connect(target) as destination:
+        source.backup(destination)
+os.chmod(target, 0o600)
+print(name)
+PY

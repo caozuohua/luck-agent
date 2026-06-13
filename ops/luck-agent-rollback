@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || exit 2
+commit="$1"
+case "$commit" in
+    *[!0-9a-fA-F]*|'') exit 2 ;;
+esac
+[ "${#commit}" -ge 7 ] && [ "${#commit}" -le 40 ] || exit 2
+
+repo="/opt/luck-agent"
+/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --quiet
+/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --cached --quiet
+/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" cat-file -e "$commit^{commit}"
+/usr/bin/runuser -u luck-agent -- /usr/bin/git -C "$repo" reset --hard "$commit"
+/bin/systemctl restart luck-agent
+/usr/bin/git -C "$repo" rev-parse --short HEAD

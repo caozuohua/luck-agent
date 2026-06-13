@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || exit 2
+name="$1"
+case "$name" in
+    *[!A-Za-z0-9._-]*|.*|'') exit 2 ;;
+esac
+
+db="/opt/luck-agent/memory.db"
+source="/opt/luck-agent/backups/$name"
+[ -f "$source" ] || exit 3
+
+/bin/systemctl stop luck-agent
+/bin/cp -- "$source" "$db"
+/bin/rm -f -- "$db-wal" "$db-shm"
+/bin/chown luck-agent:luck-agent "$db"
+/bin/chmod 600 "$db"
+/bin/systemctl start luck-agent

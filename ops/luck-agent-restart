@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 0 ] || exit 2
+/bin/systemctl restart luck-agent
+/bin/systemctl is-active luck-agent

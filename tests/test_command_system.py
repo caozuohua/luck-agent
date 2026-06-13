@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from handlers.command import AGENT_REPO, AGENT_REPO_DIR, CommandHandler
+from handlers.command import AGENT_REPO, CommandHandler
 
 
 class FakeShell:
@@ -20,6 +20,8 @@ class FakeShell:
             return {"stdout": "Already up to date.\n", "stderr": "", "returncode": 0}
         if command == "sudo systemctl restart luck-agent":
             return {"stdout": "", "stderr": "", "returncode": 0}
+        if command == "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-upgrade":
+            return {"stdout": "d2dd232\n", "stderr": "", "returncode": 0}
         if command.startswith("df "):
             return {"stdout": "/dev/root 10G 4G 6G 40% /\n", "stderr": "", "returncode": 0}
         if command.startswith("free "):
@@ -86,38 +88,40 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
         handler.runtime_observability = None
         return handler
 
-    async def test_upgrade_pulls_luck_agent_repo_from_code_directory(self) -> None:
+    async def test_upgrade_calls_fixed_privileged_entrypoint(self) -> None:
         replies: list[dict] = []
         handler = self.make_handler(replies)
 
         await handler._handle_upgrade("chat")
 
         commands = [command for command, _cwd in handler.shell.calls]
-        self.assertEqual(commands, [
-            "git config --get remote.origin.url",
-            "git pull --ff-only",
-            "sudo systemctl restart luck-agent",
-        ])
-        self.assertTrue(
-            all(cwd == str(AGENT_REPO_DIR) for _command, cwd in handler.shell.calls)
+        self.assertEqual(
+            commands,
+            ["/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-upgrade"],
         )
         self.assertIn(AGENT_REPO, replies[-1]["text"])
 
-    async def test_upgrade_stops_when_origin_is_not_luck_agent(self) -> None:
+    async def test_upgrade_reports_wrapper_failure(self) -> None:
         replies: list[dict] = []
         handler = self.make_handler(replies)
 
         async def run_wrong_origin(command: str, cwd: str | None = None, **kwargs) -> dict:
             handler.shell.calls.append((command, cwd))
-            return {"stdout": "git@github.com:caozuohua/ai-daily-newsletter.git\n", "stderr": "", "returncode": 0}
+            return {
+                "stdout": "",
+                "stderr": "unexpected origin",
+                "returncode": 3,
+            }
 
         handler.shell.run = run_wrong_origin
 
         await handler._handle_upgrade("chat")
 
-        self.assertEqual([command for command, _cwd in handler.shell.calls], ["git config --get remote.origin.url"])
-        self.assertIn("不是", replies[-1]["text"])
-        self.assertIn(AGENT_REPO, replies[-1]["text"])
+        self.assertEqual(
+            [command for command, _cwd in handler.shell.calls],
+            ["/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-upgrade"],
+        )
+        self.assertIn("升级失败", replies[-1]["text"])
 
     async def test_health_reuses_status_card(self) -> None:
         replies: list[dict] = []
@@ -206,6 +210,71 @@ class CommandSystemTests(unittest.IsolatedAsyncioTestCase):
 
         handler.shell.run.assert_awaited_once_with(
             "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-journal 12"
+        )
+
+    async def test_backup_uses_privileged_wrapper(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "memory-20260613.db\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_backup("chat")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-backup"
+        )
+
+    async def test_restore_uses_privileged_wrapper_with_quoted_name(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "restore scheduled\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_restore("chat", "memory-20260613.db")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-restore memory-20260613.db"
+        )
+
+    async def test_repair_uses_privileged_wrapper(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "ok\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_repair("chat")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-repair"
+        )
+
+    async def test_upgrade_uses_single_privileged_wrapper(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "updated\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_upgrade("chat")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-upgrade"
+        )
+
+    async def test_rollback_uses_privileged_wrapper(self) -> None:
+        replies: list[dict] = []
+        handler = self.make_handler(replies)
+        handler.shell.run = AsyncMock(
+            return_value={"stdout": "rolled back\n", "stderr": "", "returncode": 0}
+        )
+
+        await handler._handle_rollback("chat", "abcdef1")
+
+        handler.shell.run.assert_awaited_once_with(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-rollback abcdef1"
         )
 
     async def test_task_accepts_four_character_short_id(self) -> None:

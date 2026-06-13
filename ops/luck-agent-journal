@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+hours="${1:-24}"
+case "$hours" in
+    *[!0-9]*|'') exit 2 ;;
+esac
+[ "$hours" -ge 1 ] && [ "$hours" -le 168 ] || exit 2
+
+/bin/journalctl -u luck-agent -n 120 --since "$hours hours ago" --no-pager

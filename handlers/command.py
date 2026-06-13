@@ -8,8 +8,6 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
-import shutil
-import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,12 +27,6 @@ if TYPE_CHECKING:
 log = get_logger()
 
 AGENT_REPO = "caozuohua/luck-agent"
-AGENT_REPO_DIR = Path(__file__).resolve().parents[1]
-
-
-def _remote_matches_repo(remote_url: str, repo: str) -> bool:
-    normalized = remote_url.strip().removesuffix(".git").replace(":", "/")
-    return normalized.endswith(f"github.com/{repo}") or normalized.endswith(repo)
 
 
 HELP_TEXT = """
@@ -636,34 +628,14 @@ class CommandHandler:
         await self.reply(chat_id, text=text)
 
     async def _handle_backup(self, chat_id: str) -> None:
-        db_path = Path(self.memory.db_path)
-        backup_dir = db_path.parent / "backups"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        backup_db = backup_dir / f"{db_path.stem}-{stamp}{db_path.suffix}"
-        backup_meta = backup_dir / f"{db_path.stem}-{stamp}.meta.txt"
-
-        if not db_path.exists():
-            await self.reply(chat_id, text="❌ 数据库不存在，无法备份。")
-            return
-
-        shutil.copy2(db_path, backup_db)
-        extra_files = []
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(str(db_path) + suffix)
-            if sidecar.exists():
-                shutil.copy2(sidecar, backup_dir / f"{sidecar.name}.{stamp}")
-                extra_files.append(sidecar.name)
-
-        backup_meta.write_text(
-            "\n".join([
-                f"db_path={db_path}",
-                f"created_at={stamp} UTC",
-                f"extra={','.join(extra_files) if extra_files else 'none'}",
-            ]),
-            encoding="utf-8",
+        result = await self.shell.run(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-backup"
         )
-        await self.reply(chat_id, text=f"✅ 已备份：`{backup_db.name}`")
+        if result["returncode"] == 0:
+            name = redact_text(result["stdout"]).strip()
+            await self.reply(chat_id, text=f"✅ 已备份：`{name}`")
+        else:
+            await self._reply_ops_error(chat_id, "备份失败", result)
 
     async def _handle_restore(self, chat_id: str, args: str) -> None:
         name = args.strip()
@@ -671,14 +643,18 @@ class CommandHandler:
             await self._show_backups(chat_id)
             await self.reply(chat_id, text="用法：`/restore <备份名>`")
             return
-        db_path = Path(self.memory.db_path)
-        backup_dir = db_path.parent / "backups"
-        source = backup_dir / name
-        if not source.exists():
-            await self.reply(chat_id, text=f"❌ 找不到备份：`{name}`")
-            return
-        shutil.copy2(source, db_path)
-        await self.reply(chat_id, text="✅ 已恢复数据库文件。建议立即 `/restart`。")
+        command = (
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-restore "
+            f"{shlex.quote(name)}"
+        )
+        result = await self.shell.run(command)
+        if result["returncode"] == 0:
+            await self.reply(
+                chat_id,
+                text="✅ 恢复任务已提交，服务将在数秒内自动重启。",
+            )
+        else:
+            await self._reply_ops_error(chat_id, "恢复失败", result)
 
     async def _show_backups(self, chat_id: str) -> None:
         db_path = Path(self.memory.db_path)
@@ -701,43 +677,18 @@ class CommandHandler:
         await self.reply(chat_id, text="\n".join(lines))
 
     async def _handle_upgrade(self, chat_id: str) -> None:
-        repo_dir = str(AGENT_REPO_DIR)
         await self.reply(chat_id, text=f"⏳ 拉取 `{AGENT_REPO}` 并重启…")
-
-        origin = await self.shell.run("git config --get remote.origin.url", cwd=repo_dir)
-        if origin["returncode"] != 0:
-            await self.reply(chat_id, text=f"❌ 无法确认当前仓库：\n```\n{origin['stdout']}\n{origin['stderr']}\n```")
-            return
-
-        remote_url = (origin.get("stdout") or "").strip()
-        if not _remote_matches_repo(remote_url, AGENT_REPO):
+        result = await self.shell.run(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-upgrade"
+        )
+        if result["returncode"] == 0:
+            output = redact_text(result["stdout"]).strip()
             await self.reply(
                 chat_id,
-                text=(
-                    f"❌ 当前目录不是 `{AGENT_REPO}`，已停止升级。\n"
-                    f"目录：`{repo_dir}`\n"
-                    f"origin：`{remote_url or 'unknown'}`"
-                ),
+                text=f"✅ `{AGENT_REPO}` 已更新，服务正在重启。\n```\n{output}\n```",
             )
-            return
-
-        pull = await self.shell.run("git pull --ff-only", cwd=repo_dir)
-        if pull["returncode"] != 0:
-            await self.reply(chat_id, text=f"❌ 拉取失败：\n```\n{pull['stdout']}\n{pull['stderr']}\n```")
-            return
-
-        restart = await self.shell.run("sudo systemctl restart luck-agent", cwd=repo_dir)
-        if restart["returncode"] == 0:
-            await self.reply(chat_id, text=f"✅ `{AGENT_REPO}` 已更新并重启。\n```\n{pull['stdout']}\n```")
         else:
-            hint = self.shell.explain_permission_issue(restart["stderr"])
-            await self.reply(
-                chat_id,
-                text=(
-                    f"⚠️ `{AGENT_REPO}` 已拉取，但重启失败：\n"
-                    f"```\n{restart['stdout']}\n{restart['stderr']}\n```\n💡 {hint}"
-                ),
-            )
+            await self._reply_ops_error(chat_id, "升级失败", result)
 
     async def _handle_rollback(self, chat_id: str, args: str) -> None:
         commit = args.strip()
@@ -745,35 +696,33 @@ class CommandHandler:
             await self.reply(chat_id, text="用法：`/rollback <commit>`")
             return
         await self.reply(chat_id, text=f"⏳ 回退到 `{commit}` 并重启…")
-        result = await self.shell.run(f"git checkout {commit} && sudo systemctl restart luck-agent")
+        result = await self.shell.run(
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-rollback "
+            f"{shlex.quote(commit)}"
+        )
         if result["returncode"] == 0:
-            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```")
+            output = redact_text(result["stdout"]).strip()
+            await self.reply(chat_id, text=f"✅ 已回退，服务正在重启。\n```\n{output}\n```")
         else:
-            hint = self.shell.explain_permission_issue(result["stderr"])
-            await self.reply(chat_id, text=f"```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
+            await self._reply_ops_error(chat_id, "回退失败", result)
 
     async def _handle_repair(self, chat_id: str) -> None:
-        db_path = Path(self.memory.db_path)
-        if not db_path.exists():
-            await self.reply(chat_id, text="❌ 数据库不存在，无法修复。")
-            return
-
         result = await self.shell.run(
-            f"python - <<'PY'\n"
-            f"import sqlite3\n"
-            f"db = r'''{db_path}'''\n"
-            f"conn = sqlite3.connect(db, timeout=30)\n"
-            f"conn.execute('PRAGMA wal_checkpoint(PASSIVE)')\n"
-            f"conn.execute('VACUUM')\n"
-            f"conn.close()\n"
-            f"print('ok')\n"
-            f"PY"
+            "/usr/bin/sudo.ws -n /usr/local/sbin/luck-agent-repair"
         )
         if result["returncode"] == 0:
             await self.reply(chat_id, text="✅ 已完成 SQLite checkpoint + vacuum。")
         else:
-            hint = self.shell.explain_permission_issue(result["stderr"])
-            await self.reply(chat_id, text=f"❌ 修复失败：\n```\n{result['stdout']}\n{result['stderr']}\n```\n💡 {hint}")
+            await self._reply_ops_error(chat_id, "修复失败", result)
+
+    async def _reply_ops_error(self, chat_id: str, title: str, result: dict) -> None:
+        stdout = redact_text(result.get("stdout") or "")
+        stderr = redact_text(result.get("stderr") or "")
+        hint = redact_text(self.shell.explain_permission_issue(stderr))
+        await self.reply(
+            chat_id,
+            text=f"❌ {title}：\n```\n{stdout}\n{stderr}\n```\n💡 {hint}",
+        )
 
     async def _handle_logs(self, chat_id: str, args: str) -> None:
         """

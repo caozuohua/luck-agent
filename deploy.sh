@@ -124,6 +124,9 @@ install_and_start() {
     sudo mkdir -p /opt/workspace /opt/luck-agent/files
     sudo chown -R luck-agent:luck-agent /opt/luck-agent /opt/workspace
 
+    # 安装 root-owned 运维脚本和最小 sudoers 白名单
+    sudo /bin/sh /opt/luck-agent/ops/install.sh
+
     # systemd
     sudo cp /opt/luck-agent/luck-agent.service /etc/systemd/system/
     sudo systemctl daemon-reload

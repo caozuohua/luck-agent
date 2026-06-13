@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || exit 2
+name="$1"
+case "$name" in
+    *[!A-Za-z0-9._-]*|.*|'') exit 2 ;;
+esac
+[ -f "/opt/luck-agent/backups/$name" ] || {
+    echo "backup not found" >&2
+    exit 3
+}
+
+unit="luck-agent-restore-$(date +%s)"
+/bin/systemd-run \
+    --unit="$unit" \
+    --collect \
+    --on-active=2s \
+    /usr/local/libexec/luck-agent/luck-agent-restore-worker "$name" >/dev/null
+echo "restore scheduled: $name"

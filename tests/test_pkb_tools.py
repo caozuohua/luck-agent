@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import unittest
@@ -180,7 +179,7 @@ class PkbClientTests(unittest.IsolatedAsyncioTestCase):
                     calls += 1
                     return httpx.Response(status, json={"error": "down"})
 
-                with patch("tools.pkb_tools.asyncio.sleep", wraps=asyncio.sleep) as sleep:
+                with patch("tools.pkb_tools.asyncio.sleep", return_value=None) as sleep:
                     result = await self.make_client(handler).get("note-1")
 
                 self.assertEqual(calls, 3)
@@ -212,6 +211,64 @@ class PkbClientTests(unittest.IsolatedAsyncioTestCase):
                     result = await self.make_client(handler).get("note-1")
                 self.assertEqual(result["code"], code)
                 self.assertEqual(result["retryable"], retryable)
+
+    async def test_remote_protocol_and_transport_errors_return_unavailable(self) -> None:
+        errors = (
+            httpx.RemoteProtocolError,
+            httpx.TransportError,
+        )
+        for error_type in errors:
+            with self.subTest(error_type=error_type.__name__):
+                calls = 0
+
+                def handler(request: httpx.Request) -> httpx.Response:
+                    nonlocal calls
+                    calls += 1
+                    raise error_type("transport failed")
+
+                with patch("tools.pkb_tools.asyncio.sleep", return_value=None):
+                    result = await self.make_client(handler).get("note-1")
+
+                self.assertEqual(calls, 3)
+                self.assertEqual(result["code"], "unavailable")
+                self.assertTrue(result["retryable"])
+
+    def test_explicit_nonpositive_timeout_is_rejected(self) -> None:
+        for timeout_ms in (0, -1):
+            with self.subTest(timeout_ms=timeout_ms):
+                with self.assertRaises(ValueError):
+                    PkbClient(
+                        base_url="https://pkb.example",
+                        api_secret="secret",
+                        timeout_ms=timeout_ms,
+                    )
+
+    async def test_reuses_client_and_aclose_closes_it(self) -> None:
+        client = self.make_client(
+            lambda request: httpx.Response(200, json={"ok": True})
+        )
+        underlying = client._client
+
+        await client.get("note-1")
+        await client.get("note-2")
+
+        self.assertIs(client._client, underlying)
+        self.assertFalse(underlying.is_closed)
+        await client.aclose()
+        self.assertTrue(underlying.is_closed)
+
+    async def test_async_context_manager_closes_client(self) -> None:
+        client = self.make_client(
+            lambda request: httpx.Response(200, json={"ok": True})
+        )
+        underlying = client._client
+
+        async with client as entered:
+            self.assertIs(entered, client)
+            await entered.health()
+            self.assertFalse(underlying.is_closed)
+
+        self.assertTrue(underlying.is_closed)
 
     async def test_missing_configuration_is_structured_and_does_not_expose_secret(self) -> None:
         client = PkbClient(base_url="", api_secret="")

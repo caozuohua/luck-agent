@@ -68,13 +68,28 @@ class PkbClient:
         self.base_url = configured_url.strip().rstrip("/")
         self.api_secret = configured_secret.strip()
         self.timeout_ms = timeout_ms if timeout_ms is not None else _env_timeout_ms()
+        if self.timeout_ms <= 0:
+            raise ValueError("timeout_ms must be greater than zero")
         self.transport = transport
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(self.timeout_ms / 1000),
+            transport=self.transport,
+        )
 
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}(base_url={self.base_url!r}, "
             f"timeout_ms={self.timeout_ms!r})"
         )
+
+    async def __aenter__(self) -> PkbClient:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def _request(
         self,
@@ -100,18 +115,14 @@ class PkbClient:
 
         for attempt in range(len(_RETRY_DELAYS) + 1):
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(self.timeout_ms / 1000),
-                    transport=self.transport,
-                ) as client:
-                    response = await client.request(
-                        method,
-                        f"{self.base_url}{path}",
-                        headers=headers,
-                        json=json_body,
-                        params=params,
-                    )
-            except (httpx.TimeoutException, httpx.NetworkError):
+                response = await self._client.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                    json=json_body,
+                    params=params,
+                )
+            except httpx.TransportError:
                 if attempt < len(_RETRY_DELAYS):
                     await asyncio.sleep(_RETRY_DELAYS[attempt])
                     continue

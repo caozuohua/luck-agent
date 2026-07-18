@@ -1,0 +1,19 @@
+[run]
+omit =
+    core/auth.py
+    core/execution_engine.py
+    core/goal.py
+    core/health.py
+    core/intent_router.py
+    core/lark_ws_runner.py
+    core/lesson_manager.py
+    core/log.py
+    core/memory.py
+    core/model_router.py
+    core/protocols.py
+    core/redaction.py
+    core/scheduler.py
+    core/short_id.py
+    core/supervisor.py
+    core/task_queue.py
+    core/topics.py

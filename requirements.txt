@@ -10,6 +10,10 @@ lark-oapi>=1.3.3
 
 # ─── HTTP ─────────────────────────────────────────────────────
 httpx>=0.27.0           # GitHub API / Lark 文件 API（异步）
+aiosqlite>=0.20.0      # Phase 2 GoalStore / patterns / context summaries async SQLite
+pytest>=9.0.0
+pytest-asyncio>=1.3.0
+pytest-cov>=7.0.0
 
 # ─── V2 structured protocol validation ─────────────────────────
 jsonschema>=4.23.0      # Goal / Step / ToolResult / Verification JSON 校验

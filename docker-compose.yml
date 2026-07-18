@@ -1,0 +1,12 @@
+services:
+  luck-agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/home/agent/data
+      - ./soul:/home/agent/app/soul
+      - ./workspace:/home/agent/workspace
+      - ./sa-key.json:/home/agent/app/sa-key.json:ro
+    ports:
+      - "8080:8080"

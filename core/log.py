@@ -50,6 +50,10 @@ class _JsonFormatter(logging.Formatter):
                 "%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)
             ) + f".{int(record.msecs):03d}Z",
             "level":  self.LEVEL_MAP.get(record.levelno, "info"),
+            "module": record.name,
+            "goal_id": "",
+            "message": redact_text(record.getMessage()),
+            "duration_ms": 0,
             "event":  redact_text(record.getMessage()),
         }
 
@@ -84,6 +88,15 @@ _SKIP_FIELDS = frozenset({
 
 _initialized = False
 
+
+class _DynamicStdout:
+    def write(self, text: str) -> int:
+        return sys.stdout.write(text)
+
+    def flush(self) -> None:
+        sys.stdout.flush()
+
+
 def _setup(level: str = "INFO") -> None:
     global _initialized
     if _initialized:
@@ -96,7 +109,7 @@ def _setup(level: str = "INFO") -> None:
     # 清除已有 handlers（避免重复）
     root.handlers.clear()
 
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(_DynamicStdout())
     handler.setFormatter(_JsonFormatter())
     root.addHandler(handler)
 

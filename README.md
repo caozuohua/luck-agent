@@ -2,6 +2,22 @@
 
 基于 Python 的 Lark 智能体，面向 GCP e2-micro（永久免费层）和长期稳定运营场景：通过 WebSocket 实时连接 Lark，集成 Gemini 多模型路由、GitHub/Shell/搜索工具链、ReAct 工具调用闭环和 SQLite 持久化记忆。
 
+[公开案例页](https://caozuohua.github.io/portal/projects/luck-agent/) · [项目 Portal](https://caozuohua.github.io/portal/)
+
+## 快速判断
+
+- **适合**：需要在低成本 VPS 上长期运行、通过 Lark 处理搜索、知识记录、GitHub 与系统运维的个人开发者。
+- **核心边界**：规则指令优先于模型推理；模型或外部 API 故障时，状态、备份、恢复和基础运维仍可工作。
+- **最小验证**：完成环境配置后，依次运行 `/status`、`/search <关键词>`、`# 一条测试记录` 和 `/pkb 测试记录`。
+- **公开形态**：这是可自行部署的开源运行时，不提供公开在线机器人，也不会代用户托管 Lark 凭据。
+
+## 安全边界
+
+- `.env`、服务账号、Lark 密钥、GitHub Token 和个人知识库数据不得提交到仓库。
+- Shell、删除、部署和恢复类动作必须经过既有确认与用户隔离逻辑，不应在模型提示词中绕过。
+- 日志、截图和公开案例只能使用脱敏示例，不展示真实用户 ID、消息、路径、Token 或知识库内容。
+- 公开案例页只说明架构和工作流，运行状态以部署者自己的 `/status` 与服务日志为准。
+
 ---
 
 ## 架构概览

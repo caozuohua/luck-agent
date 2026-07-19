@@ -52,6 +52,10 @@ class MinimalAgent:
         result_summarizer: ResultSummarizer | None = None,
         history_summary: str = "",
         experience_patterns: list[Any] | None = None,
+        execution_mode: str = "graph",
+        max_steps: int = 12,
+        max_retry: int = 2,
+        graph_db_path: str = "graph_state.db",
     ) -> None:
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -81,12 +85,89 @@ class MinimalAgent:
         self.result_summarizer = result_summarizer or ResultSummarizer()
         self.history_summary = history_summary
         self.experience_patterns = experience_patterns or []
+        self.execution_mode = execution_mode
+        self.max_steps = max_steps
+        self.max_retry = max_retry
+        self.graph_db_path = graph_db_path
         self.state = AgentState.IDLE
         self.conversation_history: list[dict[str, str]] = []
         self.completed_goal_count = 0
         self._background_tasks: list[asyncio.Task[Any]] = []
 
     async def run_turn(self, user_input: str, *, user_id: str = "default") -> str:
+        if self.execution_mode == "legacy":
+            return await self._run_turn_legacy(user_input, user_id=user_id)
+        return await self._run_turn_graph(user_input, user_id=user_id)
+
+    async def _run_turn_graph(self, user_input: str, *, user_id: str = "default") -> str:
+        """ReAct loop via LangGraph: multi-step Think->Act->Observe->Supervise.
+
+        Non-breaking: same signature as legacy. Reuses PromptBuilder,
+        OutputParser, ToolExecutor and core.Supervisor inside the graph.
+        """
+        from core.graph.engine import build_graph, run_graph
+        from core.graph.state import AgentState as GraphState
+        from core.supervisor import Supervisor
+
+        self.state = AgentState.IDLE
+        goal = await self._create_goal(user_id, user_input)
+        if goal is not None:
+            self._transition(goal, AgentState.ROUTING)
+            self._transition(goal, AgentState.PLANNING)
+        history = self._build_history_summary()
+        await self._maybe_compress_context(
+            user_id, user_input, self.prompt_builder.build_system_prompt()
+        )
+
+        seed: GraphState = {
+            "goal": user_input,
+            "user_id": user_id,
+            "messages": [],
+            "scratchpad": [],
+            "step_count": 0,
+            "last_tool_result": None,
+            "last_parsed": None,
+            "decision": None,
+            "final_answer": "",
+            "is_goal_complete": False,
+        }
+        thread_key = goal.id if goal is not None else user_input
+        config = {"configurable": {"thread_id": f"{user_id}:{thread_key}"}}
+        try:
+            out = await run_graph(
+                seed,
+                graph=None,
+                config=config,
+                max_steps=self.max_steps,
+                db_path=self.graph_db_path,
+                llm=self.llm_client,
+                tools=self.tool_registry,
+                executor=self.tool_executor,
+                supervisor=Supervisor(memory=self.pattern_store),
+                history=history,
+                prompt_builder=self.prompt_builder,
+                parser=self.output_parser,
+                intent_classifier=self.intent_classifier,
+                router=self.router,
+                max_retry=self.max_retry,
+            )
+            answer = out.get("final_answer") or "（未生成回复）"
+            decision = out.get("decision")
+            if goal is not None:
+                if decision == "fail":
+                    self._transition(goal, AgentState.FAILED, result=answer)
+                else:
+                    self._transition(goal, AgentState.EVALUATING)
+                    self._transition(goal, AgentState.DONE, result=answer)
+        except Exception as exc:  # graph/LLM failure -> graceful degrade
+            answer = f"（处理出错：{exc}）"
+            if goal is not None:
+                self._transition(goal, AgentState.FAILED, error=str(exc), result=answer)
+
+        self._record_turn(user_input, answer)
+        return answer
+
+    async def _run_turn_legacy(self, user_input: str, *, user_id: str = "default") -> str:
         self.state = AgentState.IDLE
         goal = await self._create_goal(user_id, user_input)
         intent = self.intent_classifier.classify(user_input)

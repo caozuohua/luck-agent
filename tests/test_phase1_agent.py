@@ -169,6 +169,7 @@ class Phase1SmokeTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_action_loop_calls_tool_and_summarizes(self) -> None:
         registry = ToolRegistry([EchoTool()])
         agent = MinimalAgent(
+            execution_mode="legacy",
             llm_client=FakeLLM(),
             tool_registry=registry,
             history_summary="",

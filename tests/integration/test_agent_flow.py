@@ -54,6 +54,7 @@ async def test_complete_action_goal_writes_each_state(memory_db) -> None:
     goal_store = RecordingGoalStore(memory_db)
     registry = ToolRegistry([EchoTool()])
     agent = MinimalAgent(
+        execution_mode="legacy",
         llm_client=ActionLLM(),
         tool_registry=registry,
         router=ToolRouter(registry),
@@ -80,6 +81,7 @@ async def test_tool_failure_moves_goal_to_failed_and_records_fallback(memory_db)
     goal_store = RecordingGoalStore(memory_db)
     registry = ToolRegistry([FailTool()])
     agent = MinimalAgent(
+        execution_mode="legacy",
         llm_client=ActionLLM(),
         tool_registry=registry,
         router=ToolRouter(registry),
@@ -103,6 +105,7 @@ async def test_clarify_intent_does_not_call_tool(memory_db) -> None:
     tool = EchoTool()
     registry = ToolRegistry([tool])
     agent = MinimalAgent(
+        execution_mode="legacy",
         llm_client=ClarifyLLM(),
         tool_registry=registry,
         router=ToolRouter(registry),

@@ -220,6 +220,7 @@ class Phase2StateMachineSmokeTests(unittest.IsolatedAsyncioTestCase):
             registry = ToolRegistry([DummyTool("general_search")])
             router = ToolRouter(registry)
             agent = MinimalAgent(
+                execution_mode="legacy",
                 llm_client=ActionLLM(),
                 tool_registry=registry,
                 router=router,

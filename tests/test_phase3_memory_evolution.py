@@ -60,6 +60,7 @@ class Phase3MemoryEvolutionTests(unittest.IsolatedAsyncioTestCase):
             pattern_store = PatternStore(db)
             registry = ToolRegistry([SearchTool()])
             agent = MinimalAgent(
+                execution_mode="legacy",
                 llm_client=Phase3LLM(),
                 tool_registry=registry,
                 router=ToolRouter(registry),
@@ -120,6 +121,7 @@ class Phase3MemoryEvolutionTests(unittest.IsolatedAsyncioTestCase):
             registry = ToolRegistry([SearchTool()])
             llm = Phase3LLM()
             agent = MinimalAgent(
+                execution_mode="legacy",
                 llm_client=llm,
                 tool_registry=registry,
                 router=ToolRouter(registry),
@@ -151,6 +153,7 @@ class Phase3MemoryEvolutionTests(unittest.IsolatedAsyncioTestCase):
             registry = ToolRegistry([SearchTool()])
             curator = CountingCurator()
             agent = MinimalAgent(
+                execution_mode="legacy",
                 llm_client=Phase3LLM(),
                 tool_registry=registry,
                 router=ToolRouter(registry),

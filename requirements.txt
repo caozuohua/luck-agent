@@ -5,6 +5,12 @@ httpx>=0.27.0           # Lark file API / OpenAI-compatible LLM client (async)
 aiosqlite>=0.20.0      # GoalStore / patterns / context summaries async SQLite
 jsonschema>=4.23.0      # Goal / Step / ToolResult / Verification JSON validation
 
+# ─── Graph engine (LangGraph, HARD dependency) ──────────────
+# LangGraph 1.2.x splits checkpointer backends into separate
+# packages; the SQLite saver lives in langgraph-checkpoint-sqlite.
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=3.0
+
 # ─── Test only ──────────────────────────────────────────────────────
 pytest>=9.0.0
 pytest-asyncio>=1.3.0

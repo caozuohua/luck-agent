@@ -111,19 +111,24 @@ async def run_graph(
 
 
 async def resume_graph(
-    graph: StateGraph,
     thread_id: str,
     approval: dict[str, Any],
     *,
     db_path: str = "graph_state.db",
     max_steps: int = 12,
-    **node_deps: Any,
+    **deps: Any,
 ) -> AgentState:
-    """Resume a graph paused at an interrupt() (human-in-the-loop block)."""
+    """Resume a graph paused at an interrupt() (human-in-the-loop block).
+
+    `deps` must be the same per-run dependencies passed to run_graph so the
+    rebuilt graph's nodes stay bound (llm, tools/executor, supervisor,
+    prompt_builder, parser, intent_classifier, router, history, goal).
+    """
     from langgraph.types import Command
 
+    node_deps = _bind_deps(**deps)
+    g = build_graph(node_deps)
     config = {"configurable": {"thread_id": thread_id}}
-    g = build_graph(node_deps) if node_deps else graph
     async with _saver(db_path) as saver:
         app = g.compile(checkpointer=saver)
         return await app.ainvoke(Command(resume=approval), config)

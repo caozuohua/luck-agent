@@ -51,6 +51,12 @@ class AgentSettings:
     curator_trigger_interval: int = 50
     curator_periodic_interval_seconds: float = 24 * 60 * 60
     shutdown_timeout_seconds: float = 30.0
+    # LangGraph ReAct engine — production resource controls.
+    execution_mode: str = "graph"  # "graph" (LangGraph ReAct) | "legacy"
+    max_steps: int = 12  # hard cap on ReAct loop iterations per goal
+    max_retry: int = 2  # per-step retry budget (Supervisor)
+    graph_db_path: str = "/home/agent/data/graph_state.db"  # checkpointer
+    graph_max_active: int = 1  # concurrent graphs per user (task queue)
 
 
 def load_settings() -> AgentSettings:
@@ -74,4 +80,9 @@ def load_settings() -> AgentSettings:
             os.environ.get("CURATOR_PERIODIC_INTERVAL_SECONDS", str(24 * 60 * 60))
         ),
         shutdown_timeout_seconds=float(os.environ.get("SHUTDOWN_TIMEOUT_SECONDS", "30")),
+        execution_mode=os.environ.get("EXECUTION_MODE", "graph"),
+        max_steps=int(os.environ.get("MAX_STEPS", "12")),
+        max_retry=int(os.environ.get("MAX_RETRY", "2")),
+        graph_db_path=os.environ.get("GRAPH_DB_PATH", "/home/agent/data/graph_state.db"),
+        graph_max_active=int(os.environ.get("GRAPH_MAX_ACTIVE", "1")),
     )

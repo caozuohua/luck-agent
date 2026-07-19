@@ -75,6 +75,10 @@ class Runtime:
             context_store=self.context_store,
             curator=self.curator,
             curator_trigger_interval=settings.curator_trigger_interval,
+            execution_mode=settings.execution_mode,
+            max_steps=settings.max_steps,
+            max_retry=settings.max_retry,
+            graph_db_path=settings.graph_db_path,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

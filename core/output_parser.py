@@ -146,11 +146,17 @@ class OutputParser:
         if not isinstance(tool_call, dict):
             raise ParseError("tool_call object is required")
         name = tool_call.get("name")
-        args = tool_call.get("args", {})
+        # Small models drift on the key name for arguments: prefer `args`,
+        # fall back to `arguments` or OpenAI-style `parameters` only when
+        # `args` is absent (so an explicitly non-object `args` is still caught).
+        if "args" in tool_call:
+            args = tool_call.get("args")
+        else:
+            args = tool_call.get("arguments") or tool_call.get("parameters") or {}
         if not isinstance(name, str) or not name.strip():
             raise ParseError("tool_call.name is required")
         if not isinstance(args, dict):
-            raise ParseError("tool_call.args must be an object")
+            raise ParseError("tool_call args must be an object")
         return ParsedOutput(
             intent=IntentType.ACTION,
             plan=plan.strip(),

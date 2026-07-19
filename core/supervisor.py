@@ -159,8 +159,16 @@ class Supervisor:
             "prevention": f"Before action `{action}`, check prior lessons and preconditions.",
             "confidence": self.default_confidence,
         }
+        # The memory backend may be a Supervisor-style lesson store
+        # (save_lesson, sync) or a PatternStore (write_pattern, async).
+        # This method is sync; we only support the sync path here. When the
+        # backend is a PatternStore the lesson capture is best-effort and
+        # skipped (experience search still works via PatternStore queries).
+        backend = getattr(self.memory, "save_lesson", None)
+        if backend is None:
+            return None
         try:
-            lesson_id = self.memory.save_lesson(lesson)
+            lesson_id = backend(lesson)
             log.info("lesson_candidate_saved", lesson_id=lesson_id, domain=domain, task_type=task_type)
             return lesson_id
         except Exception as e:

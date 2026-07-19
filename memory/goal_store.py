@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
@@ -143,9 +144,17 @@ class GoalStore:
         previous = self._last_task
 
         async def run_after_previous() -> None:
-            if previous is not None:
-                await previous
-            await self.update_status(goal_id, status, **kwargs)
+            try:
+                if previous is not None:
+                    await previous
+                await self.update_status(goal_id, status, **kwargs)
+            except sqlite3.ProgrammingError as exc:
+                # A background status write that fails because the DB is
+                # closing (shutdown / test teardown) is non-critical and must
+                # not surface as an unretrieved-task exception.
+                log.debug("goal_status_update_skipped_db_closed", goal_id=goal_id, error=str(exc))
+            except InvalidGoalTransition as exc:
+                log.debug("goal_status_update_skipped_invalid", goal_id=goal_id, error=str(exc))
 
         task = asyncio.create_task(run_after_previous())
         self._last_task = task

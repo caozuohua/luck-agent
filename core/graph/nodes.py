@@ -56,9 +56,10 @@ async def planner_node(
 ) -> dict[str, Any]:
     """Think step: build the ReAct prompt (with prior observations) and call the LLM."""
     system_prompt = prompt_builder.build_system_prompt()
+    tool_list = tools.list() if hasattr(tools, "list") else list(tools)
     task_prompt = await prompt_builder.build_task_prompt_with_experience_search(
         intent_classifier.classify(state.get("goal", "")),
-        tools,
+        tool_list,
         history,
         user_input=state.get("goal", ""),
         experience_patterns=[],
@@ -121,9 +122,22 @@ async def supervisor_node(
     human-in-the-loop approval; resume continues without re-running steps.
     """
     parsed = state.get("last_parsed") or {}
-    if (parsed.get("intent") in ("CHAT", "DONE")) and parsed.get("is_goal_complete"):
+
+    # Respect a terminal decision already set upstream (executor_node sets
+    # DONE/FAIL when there was no tool_call to run).
+    upstream = state.get("decision")
+    if upstream in (DECISION_DONE, DECISION_FAIL):
+        return {
+            **state,
+            "decision": upstream,
+            "final_answer": state.get("final_answer") or parsed.get("message", ""),
+        }
+
+    # A CHAT/DONE reply IS the answer — terminal regardless of the flag.
+    if parsed.get("intent") in ("CHAT", "DONE"):
         return {**state, "decision": DECISION_DONE, "final_answer": parsed.get("message", "")}
-    if state.get("last_tool_result") is None and parsed.get("intent") not in ("CHAT", "DONE"):
+
+    if state.get("last_tool_result") is None:
         # No action taken and no tool result -> nothing to supervise yet.
         return {**state, "decision": DECISION_DONE, "final_answer": parsed.get("message", "")}
 

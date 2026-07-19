@@ -21,3 +21,4 @@ class AgentState(TypedDict, total=False):
     decision: str | None  # pass | retry | block | fail | done
     final_answer: str
     is_goal_complete: bool
+    max_steps: int

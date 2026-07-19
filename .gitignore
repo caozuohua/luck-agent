@@ -34,3 +34,10 @@ workspace/
 .vscode/
 *.swp
 .worktrees/
+
+# LangGraph SQLite checkpointer
+graph_state.db
+graph_state.db-*
+t-*.db
+*.db-shm
+*.db-wal

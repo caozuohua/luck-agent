@@ -1,32 +1,12 @@
 rules:
-  - name: "calendar"
-    patterns: ["日程", "会议", "提醒", "calendar", "schedule", "meeting"]
-    tools: ["calendar_query", "calendar_create", "reminder_set"]
-
   - name: "shell"
-    patterns: ["运行", "执行", "脚本", "文件", "命令", "shell", "command", "terminal", "ls", "cat"]
-    tools: ["shell", "file_read", "show_capabilities"]
-
-  - name: "file"
-    patterns: ["文档", "上传", "file", "document", "upload"]
-    tools: ["file_search", "file_read", "file_write"]
+    patterns: ["运行", "执行", "脚本", "命令", "shell", "command", "terminal", "ls", "cat", "pwd", "目录", "文件夹", "当前目录", "列出", "文件列表", "磁盘", "时间", "日期", "几点", "几号", "现在", "今天", "明天", "昨天", "星期", "date", "time", "clock", "now", "pwd", "ls", "cd", "disk", "directory", "folder", "list", "run"]
+    tools: ["shell"]
 
   - name: "search"
-    patterns: ["搜索", "查找", "查询", "最新", "news", "search", "find", "lookup"]
-    tools: ["web_search", "general_search", "file_search", "show_capabilities"]
-
-  - name: "github"
-    patterns: ["github", "repo", "pr", "issue", "commit"]
-    tools: ["github_search", "github_issue", "github_pr"]
-
-  - name: "deploy"
-    patterns: ["部署", "发布", "deploy", "release", "restart"]
-    tools: ["deploy_status", "deploy_run", "shell_run"]
+    patterns: ["搜索", "查找", "查询", "最新", "新闻", "天气", "news", "weather", "search", "find", "lookup", "google"]
+    tools: ["web_search"]
 
 fallback_tools:
-  - "general_search"
-  - "web_search"
-  - "ask_clarification"
-  - "show_capabilities"
-  - "file_search"
   - "shell"
+  - "web_search"

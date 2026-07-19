@@ -96,9 +96,13 @@ class Phase1ParserTests(unittest.TestCase):
                 '{"intent":"ACTION","plan":"do it","tool_call":{"name":"echo","args":[]},"fallback":"stop"}'
             )
 
-    def test_parser_rejects_unknown_intent(self) -> None:
-        with self.assertRaisesRegex(ParseError, "unsupported intent"):
-            OutputParser().parse('{"intent":"DONE","message":"ok"}')
+    def test_parser_maps_unknown_intent_heuristically(self) -> None:
+        # Small models invent intent names; the parser must degrade
+        # gracefully instead of hard-failing the turn.
+        action_like = OutputParser().parse('{"intent":"GET_CURRENT_DIRECTORY","tool_call":{"name":"shell","args":{"command":"pwd"}}}')
+        self.assertEqual(action_like.intent, IntentType.ACTION)
+        chat_like = OutputParser().parse('{"intent":"greet","message":"hi"}')
+        self.assertEqual(chat_like.intent, IntentType.CHAT)
 
     def test_parser_repair_retries_invalid_output(self) -> None:
         async def repair(raw_output: str, error: ParseError, attempt: int) -> str:

@@ -44,13 +44,15 @@ class ToolRouter:
         self.reload_rules()
 
     def route(self, user_input: str, intent: IntentType) -> list[Tool]:
-        if intent is not IntentType.ACTION:
-            return []
-        for rule in self.rules:
-            if rule.matches(user_input):
-                selected = self._resolve_tools(rule.tools)
-                if selected:
-                    return selected[:5]
+        # ACTION routes through rules; CHAT still gets the fallback tool set
+        # so the model can decide to call a tool (e.g. shell for "current
+        # directory" / "time") instead of claiming no tools are available.
+        if intent is IntentType.ACTION:
+            for rule in self.rules:
+                if rule.matches(user_input):
+                    selected = self._resolve_tools(rule.tools)
+                    if selected:
+                        return selected[:5]
         return self._resolve_tools(self.fallback_tools)[: self.fallback_tool_count]
 
     def reload_rules(self) -> None:

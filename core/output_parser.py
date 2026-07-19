@@ -55,12 +55,17 @@ class OutputParser:
         payload = self._loads(raw_output)
         intent_raw = payload.get("intent")
         if not isinstance(intent_raw, str) or not intent_raw:
+            # No intent field at all -> treat as a plain chat reply if a
+            # message is present, else fail gracefully.
+            if isinstance(payload.get("message"), str) and payload["message"].strip():
+                return self._parse_chat(payload)
             raise ParseError("intent is required")
         try:
             intent = IntentType(intent_raw)
-        except ValueError as exc:
-            raise ParseError(f"unsupported intent: {intent_raw}") from exc
-
+        except ValueError:
+            # Small models invent intent names (e.g. GET_CURRENT_DIRECTORY,
+            # ask_date). Map heuristically instead of hard-failing the turn.
+            intent = self._map_unknown_intent(intent_raw, payload)
         if intent is IntentType.ACTION:
             return self._parse_action(payload)
         if intent is IntentType.CHAT:
@@ -68,6 +73,25 @@ class OutputParser:
         if intent is IntentType.CLARIFY:
             return self._parse_clarify(payload)
         return self._parse_cannot_complete(payload)
+
+    @staticmethod
+    def _map_unknown_intent(raw: str, payload: dict[str, Any]) -> IntentType:
+        lowered = raw.lower()
+        action_signals = (
+            "action", "tool", "run", "exec", "command", "shell", "date", "time",
+            "dir", "directory", "pwd", "ls", "cat", "search", "fetch", "deploy",
+            "schedule", "create", "write", "read", "call", "invoke",
+        )
+        if any(sig in lowered for sig in action_signals):
+            return IntentType.ACTION
+        if any(sig in lowered for sig in ("clarif", "question", "unsure", "unknown")):
+            return IntentType.CLARIFY
+        if any(sig in lowered for sig in ("cannot", "fail", "error", "unable")):
+            return IntentType.CANNOT_COMPLETE
+        # A tool_call is present -> clearly meant ACTION.
+        if isinstance(payload.get("tool_call"), dict):
+            return IntentType.ACTION
+        return IntentType.CHAT
 
     async def repair_and_retry(self, raw_output: str, error: ParseError) -> ParsedOutput:
         current_output = raw_output
@@ -110,8 +134,14 @@ class OutputParser:
         return value.strip()
 
     def _parse_action(self, payload: dict[str, Any]) -> ParsedOutput:
-        plan = self._require_str(payload, "plan")
-        fallback = self._require_str(payload, "fallback")
+        # plan / fallback are OPTIONAL: a model may legitimately return an
+        # empty fallback (no escape hatch). Only intent + a well-formed
+        # tool_call are required, so empty strings don't force a needless
+        # (and often failing) repair retry.
+        plan = payload.get("plan")
+        plan = plan if isinstance(plan, str) else ""
+        fallback = payload.get("fallback")
+        fallback = fallback if isinstance(fallback, str) else ""
         tool_call = payload.get("tool_call")
         if not isinstance(tool_call, dict):
             raise ParseError("tool_call object is required")
@@ -123,9 +153,9 @@ class OutputParser:
             raise ParseError("tool_call.args must be an object")
         return ParsedOutput(
             intent=IntentType.ACTION,
-            plan=plan,
+            plan=plan.strip(),
             tool_call=ToolCall(name=name.strip(), args=args),
-            fallback=fallback,
+            fallback=fallback.strip(),
         )
 
     def _parse_chat(self, payload: dict[str, Any]) -> ParsedOutput:

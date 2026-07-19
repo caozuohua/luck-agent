@@ -94,11 +94,12 @@ class MinimalAgent:
         self._transition(goal, AgentState.ROUTING, intent_type=intent.value)
         self._transition(goal, AgentState.PLANNING)
         system_prompt = self.prompt_builder.build_system_prompt()
+        history_summary = self._build_history_summary()
         await self._maybe_compress_context(user_id, user_input, system_prompt)
         task_prompt = await self.prompt_builder.build_task_prompt_with_experience_search(
             intent,
             tools,
-            self.history_summary,
+            history_summary,
             user_input=user_input,
             experience_patterns=self.experience_patterns,
         )
@@ -276,6 +277,24 @@ class MinimalAgent:
 
     def _estimate_tokens(self, text: str) -> int:
         return max(1, len(text) // 4)
+
+    def _build_history_summary(self) -> str:
+        # Feed recent conversation turns back into the prompt so the agent
+        # keeps multi-turn context (previously every turn was treated as a
+        # fresh conversation because only the compressed `history_summary`
+        # was passed, which starts empty).
+        recent = self.conversation_history[-6:]
+        if not recent and not self.history_summary:
+            return ""
+        parts: list[str] = []
+        if self.history_summary:
+            parts.append(f"[earlier summary]\n{self.history_summary}")
+        if recent:
+            turns = "\n".join(
+                f"{turn.get('role', '')}: {turn.get('content', '')}" for turn in recent
+            )
+            parts.append(f"[recent]\n{turns}")
+        return "\n\n".join(parts)
 
     def _record_turn(self, user_input: str, response: str) -> None:
         self.conversation_history.append({"role": "user", "content": user_input})

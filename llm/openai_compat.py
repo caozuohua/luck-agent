@@ -58,17 +58,34 @@ class OpenAICompatClient:
             "Content-Type": "application/json",
             **self.extra_headers,
         }
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-        text = self._extract_text(body)
-        log.debug("llm_generated", model=self.model, chars=len(text))
-        return text
+        last_err: Exception | None = None
+        for attempt in range(3):  # retry on transient 429/5xx
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    )
+                    if resp.status_code == 429:
+                        await asyncio.sleep(2.0 * (attempt + 1))
+                        last_err = RuntimeError("429 rate limited")
+                        continue
+                    resp.raise_for_status()
+                    body = resp.json()
+                text = self._extract_text(body)
+                log.debug("llm_generated", model=self.model, chars=len(text))
+                return text
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if getattr(exc, "status_code", None) == 429:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
+        raise last_err or RuntimeError("llm generate failed")
 
     async def repair(self, raw_output: str, error: Exception, attempt: int) -> str:
         system_prompt = (

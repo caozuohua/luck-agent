@@ -39,6 +39,10 @@ class ToolExecutor:
     ) -> ToolResult:
         started_at = time.perf_counter()
         args = args or {}
+        # Small models sometimes emit a command name (ls, pwd, date, cat,
+        # grep, find) as the tool name. Route those through the shell tool,
+        # unless the name is an actually-registered tool.
+        tool_name, args = self._normalize_tool_call(tool_name, args, self.registry)
         try:
             tool = self.registry.get(tool_name)
         except ToolNotFoundError:
@@ -72,6 +76,24 @@ class ToolExecutor:
         result.metadata.setdefault("tool_name", tool_name)
         self._schedule_pattern(tool_name, args, result, user_id=user_id)
         return result.with_timing(started_at)
+
+    @staticmethod
+    def _normalize_tool_call(
+        tool_name: str, args: dict[str, Any], registry: ToolRegistry
+    ) -> tuple[str, dict[str, Any]]:
+        name = (tool_name or "").strip()
+        # Already a real tool -> leave it untouched.
+        if name in registry._tools:
+            return name, args
+        command_aliases = {
+            "ls", "pwd", "date", "cat", "grep", "find", "df", "ps",
+            "env", "whoami", "uname", "wc", "head", "tail", "tree",
+        }
+        if name in command_aliases:
+            command = args.get("command") or args.get("cmd") or name
+            rest = {k: v for k, v in args.items() if k not in ("command", "cmd")}
+            return "shell", {"command": str(command), **rest}
+        return name, args
 
     async def execute_model_output(
         self,

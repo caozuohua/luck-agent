@@ -1,35 +1,21 @@
 [Unit]
-Description=Lark x Vertex AI Agent
-After=network-online.target
-Wants=network-online.target
+Description=Luck Agent V2 (Goal Runtime)
+After=network.target
 
 [Service]
 Type=simple
 User=luck-agent
 Group=luck-agent
 WorkingDirectory=/opt/luck-agent
-ExecStart=/opt/luck-agent/venv/bin/python3 agent.py
-
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/luck-agent/.env
+ExecStart=/opt/luck-agent/venv/bin/python main.py
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-EnvironmentFile=/opt/luck-agent/.env
-
-MemoryMax=500M
-MemorySwapMax=0
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=luck-agent
-
-# sudoers wrappers require setuid. All privileged actions remain constrained
-# to root-owned scripts listed in /etc/sudoers.d/luck-agent-ops.
 NoNewPrivileges=no
 ProtectSystem=strict
-ReadWritePaths=/opt/luck-agent /opt/workspace
-ReadOnlyPaths=/opt/luck-agent/credentials.json
+StandardOutput=append:/var/log/luck-agent.log
+StandardError=append:/var/log/luck-agent.log
 
 [Install]
 WantedBy=multi-user.target

@@ -120,5 +120,15 @@ class Database:
 
     async def close(self) -> None:
         if self._conn is not None:
+            # Fold the WAL into the main database and drop the -wal/-shm
+            # auxiliary files before closing. On Windows the OS holds these
+            # handles briefly, so removing them here avoids teardown rmtree
+            # races (PermissionError / WinError 32) in tests.
+            try:
+                await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                await self._conn.execute("PRAGMA journal_mode=DELETE")
+                await self._conn.commit()
+            except Exception:  # pragma: no cover - best effort cleanup
+                pass
             await self._conn.close()
             self._conn = None

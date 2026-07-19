@@ -10,7 +10,8 @@ from core.log import get_logger
 from core.router import ToolRouter
 from interface.health import HealthService
 from interface.lark_ws import LarkWebSocketInterface
-from llm.vertex_client import VertexClient
+from llm.fake import FakeLLMClient
+from llm.openai_compat import OpenAICompatClient
 from memory.context_store import ContextStore
 from memory.curator import Curator
 from memory.db import Database
@@ -48,12 +49,15 @@ class Runtime:
         self.goal_store = GoalStore(self.db)
         self.pattern_store = PatternStore(self.db)
         self.context_store = ContextStore(self.db)
-        self.llm_client = VertexClient(
-            project=settings.vertex_project,
-            location=settings.vertex_location,
-            model=settings.vertex_model,
-            service_account_key_path=settings.service_account_key_path,
-        )
+        # No base url configured -> offline fake client (local dev / CI).
+        if settings.llm_base_url:
+            self.llm_client: Any = OpenAICompatClient(
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+            )
+        else:
+            self.llm_client = FakeLLMClient(model=settings.llm_model)
         self.tool_registry = ToolRegistry()
         self.tool_registry.register_builtin_tools()
         self.router = ToolRouter(self.tool_registry)

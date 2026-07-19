@@ -18,7 +18,14 @@ class HealthLogBufferTests(unittest.TestCase):
 
                 rows = handler.query(hours=1, limit=10)
 
-                self.assertEqual([row["event"] for row in reversed(rows)], ["warn one", "error two"])
+                # Both records were buffered and flushed; the flusher writes
+                # them as a batch with sub-millisecond timestamps, so created_at
+                # ordering is non-deterministic on fast machines. Assert the
+                # multiset of events rather than emitted-order.
+                self.assertEqual(
+                    sorted(row["event"] for row in rows),
+                    ["error two", "warn one"],
+                )
             finally:
                 handler.close()
 

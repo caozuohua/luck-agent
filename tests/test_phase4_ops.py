@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -20,6 +21,25 @@ from memory.goal_store import GoalStatus, GoalStore
 from memory.pattern_store import PatternStore
 from tools.base import Tool
 from tools.registry import ToolRegistry
+
+
+@contextmanager
+def _safe_tempdir():
+    """TemporaryDirectory that retries cleanup on Windows file-lock races.
+
+    Windows holds SQLite -wal/-shm handles briefly after close(), so rmtree
+    on __exit__ can raise PermissionError (WinError 32). Retry with backoff.
+    """
+    d = tempfile.mkdtemp()
+    try:
+        yield d
+    finally:
+        for _ in range(50):
+            try:
+                shutil.rmtree(d, ignore_errors=False)
+                break
+            except OSError:
+                time.sleep(0.05)
 
 
 class NamedTool(Tool):
@@ -81,13 +101,18 @@ class Phase4OpsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reply:hello", json.dumps(sender.sent[0][1], ensure_ascii=False))
 
     async def test_health_service_reports_process_goals_sqlite_and_curator(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _safe_tempdir() as tmp:
             db = Database(Path(tmp) / "agent.db")
             await db.initialize()
             goal_store = GoalStore(db)
             done = await goal_store.create("u1", "ok")
             failed = await goal_store.create("u1", "bad")
+            # Walk the legal state-machine chain (see core/agent.py + GoalStore).
+            await goal_store.update_status(done.id, GoalStatus.ROUTING)
+            await goal_store.update_status(done.id, GoalStatus.PLANNING)
+            await goal_store.update_status(done.id, GoalStatus.EVALUATING)
             await goal_store.update_status(done.id, GoalStatus.DONE, result="ok")
+            await goal_store.update_status(failed.id, GoalStatus.ROUTING)
             await goal_store.update_status(failed.id, GoalStatus.FAILED, error="bad")
             service = HealthService(db=db, goal_store=goal_store, curator_last_run_at=123.0)
 

@@ -103,15 +103,21 @@ class LarkWebSocketRunner:
             else:
                 background_tasks.append(task)
 
-        for task in background_tasks:
+        # Cancel every outstanding task (background + select) so cancellation
+        # is actually delivered before the loop is torn down. On Windows the
+        # event loop does not implicitly flush pending cancellations, so we
+        # must await them rather than only scheduling call_soon(task.cancel).
+        for task in (*background_tasks, *select_tasks):
             task.cancel()
-        if background_tasks:
-            await asyncio.gather(
-                *background_tasks,
-                return_exceptions=True,
-            )
+        pending = [t for t in (*background_tasks, *select_tasks) if not t.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
         await self.client._disconnect()
         loop = asyncio.get_running_loop()
+        # Any select task that re-spawned is cancelled on the next tick.
         for task in select_tasks:
             loop.call_soon(task.cancel)
+        # Let the SDK loop finish so the blocking run_until_complete() in the
+        # client thread returns and the runner thread can join.
+        loop.call_soon(loop.stop)

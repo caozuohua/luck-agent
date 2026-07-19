@@ -5,10 +5,12 @@ from pathlib import Path
 
 
 class OpsScriptTests(unittest.TestCase):
-    def test_deploy_uploads_pkb_client(self) -> None:
+    def test_deploy_uploads_v2_entrypoint(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "deploy.sh").read_text(encoding="utf-8")
-        self.assertIn("tools/pkb_tools.py", source)
+        # V2 ships main.py as the runtime entrypoint (V1 agent.py retired)
+        self.assertIn("main.py", source)
+        self.assertIn("luck-agent.service", source)
 
     def test_scripts_use_vps_runuser_absolute_path(self) -> None:
         ops_dir = Path(__file__).resolve().parents[1] / "ops"

@@ -6,10 +6,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class AgentSettings:
-    vertex_project: str = ""
-    vertex_location: str = "us-central1"
-    vertex_model: str = "gemini-2.0-flash"
-    service_account_key_path: str = "/home/agent/app/sa-key.json"
+    # LLM — OpenAI-compatible /chat/completions endpoint.
+    # Default target: the NIM-served model on the GCP VPS (newAPI).
+    # When `llm_base_url` is empty the runtime falls back to an offline
+    # FakeLLMClient so the stack + test suite run with no model backend.
+    llm_base_url: str = ""  # e.g. http://<vps-ip>:8000/v1  (NIM OpenAI-compatible)
+    llm_api_key: str = ""     # NIM bearer / nvapi-... (empty OK for local NIM)
+    llm_model: str = "nvidia/llama-3.1-nemotron-nano-8b-v1"  # cold, fast NIM model (override via LLM_MODEL)
+
     lark_app_id: str = ""
     lark_app_secret: str = ""
     serper_api_key: str = ""
@@ -26,13 +30,9 @@ class AgentSettings:
 
 def load_settings() -> AgentSettings:
     return AgentSettings(
-        vertex_project=os.environ.get("VERTEX_PROJECT") or os.environ.get("GCP_PROJECT", ""),
-        vertex_location=os.environ.get("VERTEX_LOCATION") or os.environ.get("GCP_LOCATION", "us-central1"),
-        vertex_model=os.environ.get("VERTEX_MODEL", "gemini-2.0-flash"),
-        service_account_key_path=os.environ.get(
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "/home/agent/app/sa-key.json",
-        ),
+        llm_base_url=os.environ.get("LLM_BASE_URL", ""),
+        llm_api_key=os.environ.get("LLM_API_KEY", ""),
+        llm_model=os.environ.get("LLM_MODEL", "nvidia/llama-3.1-nemotron-nano-8b-v1"),
         lark_app_id=os.environ.get("LARK_APP_ID", ""),
         lark_app_secret=os.environ.get("LARK_APP_SECRET", ""),
         serper_api_key=os.environ.get("SERPER_API_KEY", ""),

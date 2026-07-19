@@ -99,9 +99,26 @@ Lark WebSocket
 | GCP | e2-micro 或更高（VPC + Cloud Logging 可选） |
 | Lark 应用 | 飞书开放平台自建应用（含机器人能力） |
 | GitHub Token | `Contents:Read & Write`（博客写入）、`Actions:Read & Write`（CI 触发）|
-| Gemini API | Vertex AI 或 Google AI Studio API Key |
+| Gemini API | Google AI Studio API Key（仅 V1 `core/model_router.py` 使用） |
+
+> **架构现状（2026-07）**：仓库内并存两套架构。
+> - **V1（当前已部署，`agent.py`）**：沿用 Gemini（`google-genai`，Google AI Studio API，**非 Vertex**）。
+> - **V2（开发中，`main.py` + `llm/` + `core/` + `runtime/` + `skills/` + `memory/`）**：LLM 层改为 **OpenAI 兼容**（`llm/openai_compat.py`，可接 OpenRouter / ModelRoute / Hermes proxy / Ollama / 本地）。**Vertex AI 已从 V2 移除**；`LLM_BASE_URL` 不设置时 V2 使用离线 `FakeLLMClient`，整套测试可无模型后端运行。
+> - 本 README 主要描述已上线的 V1；V2 的接入与测试见 `CLAUDE.md` / `AGENTS.md`。
 
 ---
+
+## 本地测试（Windows / Hermes 环境）
+
+Hermes 运行时会向环境注入 `PYTHONPATH`（指向 Hermes 自身损坏的 `pydantic_core`），会导致 `google-genai` / `lark-oapi` 导入失败。务必清空 `PYTHONPATH` 再跑测试，或用自带脚本：
+
+```bash
+uv venv --python 3.12 && uv pip install -r requirements.txt
+pwsh ./scripts/test-local.ps1            # 单元测试 + 集成测试（离线）
+pwsh ./scripts/test-local.ps1 -All       # 完整套件（含 V2 Goal Runtime）
+# 等价手动命令：
+PYTHONPATH= .venv/Scripts/python -m pytest tests/ -q
+```
 
 ## 目录结构
 
@@ -168,9 +185,9 @@ cp .env.example .env
 
 必填配置：
 ```ini
-# GCP
+# GCP（V1 Gemini 用的 ADC / 服务账号认证，非 Vertex）
 GCP_PROJECT=your-gcp-project-id
-GCP_LOCATION=us-central1              # Vertex AI 区域
+GCP_LOCATION=us-central1              # GCP 区域（V1 认证用）
 
 # Lark（飞书开放平台获取）
 LARK_APP_ID=cli_xxxxxxxxxx
@@ -194,6 +211,11 @@ TAVILY_API_KEY_2=tvly-yyyyyyyy
 PKB_BASE_URL=https://your-vercel-app.vercel.app
 PKB_API_SECRET=your-api-secret
 PKB_TIMEOUT_MS=10000
+
+# V2 LLM（OpenAI 兼容；不设置 LLM_BASE_URL 则 V2 用离线 FakeLLMClient）
+# LLM_BASE_URL=https://openrouter.ai/api/v1   # 或 ModelRoute / Hermes proxy / 本地
+# LLM_API_KEY=sk-or-...
+# LLM_MODEL=gpt-4o-mini
 ```
 
 **4. 配置 GCP 认证（二选一）**

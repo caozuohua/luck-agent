@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from core.agent import AgentState, MinimalAgent
@@ -15,6 +17,25 @@ from memory.db import Database
 from memory.goal_store import GoalStatus, GoalStore
 from tools.base import Tool, ToolResult
 from tools.registry import ToolRegistry
+
+
+@contextmanager
+def _safe_tempdir():
+    """TemporaryDirectory that retries cleanup on Windows file-lock races.
+
+    Windows holds SQLite -wal/-shm handles briefly after close(), so rmtree
+    on __exit__ can raise PermissionError (WinError 32). Retry with backoff.
+    """
+    d = tempfile.mkdtemp()
+    try:
+        yield d
+    finally:
+        for _ in range(50):
+            try:
+                shutil.rmtree(d, ignore_errors=False)
+                break
+            except OSError:
+                time.sleep(0.05)
 
 
 class DummyTool(Tool):
@@ -148,13 +169,17 @@ class Phase2GoalStoreTests(unittest.IsolatedAsyncioTestCase):
             await db.close()
 
     async def test_goal_store_crud_and_in_progress_recovery(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with _safe_tempdir() as tmp:
             db = Database(Path(tmp) / "agent.db")
             await db.initialize()
             store = GoalStore(db)
 
             goal = await store.create("user-1", "do work")
             await store.update_status(goal.id, GoalStatus.ROUTING, intent_type="ACTION")
+            # Follow the legal state-machine chain (ROUTING -> PLANNING ->
+            # EVALUATING -> DONE) as the runtime does in core/agent.py.
+            await store.update_status(goal.id, GoalStatus.PLANNING)
+            await store.update_status(goal.id, GoalStatus.EVALUATING)
             await store.update_status(goal.id, GoalStatus.DONE, result="ok")
 
             recent = await store.get_recent("user-1", limit=1)

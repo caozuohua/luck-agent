@@ -3,9 +3,9 @@
 # 用法：bash deploy.sh [--update]
 set -euo pipefail
 
-PROJECT_ID="${GCP_PROJECT:-project-c1exx}"
-ZONE="${GCP_ZONE:-us-central1-c}"
-INSTANCE="${INSTANCE_NAME:-luck-agent}"
+PROJECT_ID="${GCP_PROJECT:-project-c1ed131b-6f02-49de-9f8}"
+ZONE="${GCP_ZONE:-us-west1-a}"
+INSTANCE="${INSTANCE_NAME:-gcp-free-vps-oregon}"
 REMOTE_DIR="/opt/luck-agent"
 UPDATE_ONLY="${1:-}"
 

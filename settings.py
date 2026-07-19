@@ -7,12 +7,15 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AgentSettings:
     # LLM — OpenAI-compatible /chat/completions endpoint.
-    # Default target: the NIM-served model on the GCP VPS (newAPI).
+    # Default target: the `new-api` container on the GCP VPS (same host as V2).
+    #   base url : http://127.0.0.1:3000/v1   (new-api binds localhost:3000)
+    #   auth     : Authorization: <new-api user token>  (from new-api web UI)
+    #   model    : whatever the new-api channel serves (see LLM_MODEL)
     # When `llm_base_url` is empty the runtime falls back to an offline
     # FakeLLMClient so the stack + test suite run with no model backend.
-    llm_base_url: str = ""  # e.g. http://<vps-ip>:8000/v1  (NIM OpenAI-compatible)
-    llm_api_key: str = ""     # NIM bearer / nvapi-... (empty OK for local NIM)
-    llm_model: str = "nvidia/llama-3.1-nemotron-nano-8b-v1"  # cold, fast NIM model (override via LLM_MODEL)
+    llm_base_url: str = ""  # http://127.0.0.1:3000/v1  (new-api on VPS)
+    llm_api_key: str = ""     # new-api user token (from web UI, NOT ROOT_TOKEN env)
+    llm_model: str = ""         # e.g. the model name the new-api channel serves
 
     lark_app_id: str = ""
     lark_app_secret: str = ""

@@ -80,6 +80,28 @@ class WebInterfaceTests(unittest.TestCase):
         self.assertEqual(resp.status, 400)
         self.assertIsNone(agent.last_text)
 
+    def test_special_chars_dont_crash(self) -> None:
+        # A "/" or "(" in the query used to raise fts5: syntax error
+        # near "/" and crash the whole turn. The agent should still
+        # return a reply (the pattern search must quote safely).
+        agent = _FakeAgent("handled /path and (parens) fine")
+        iface = self._start(agent)
+        try:
+            conn = HTTPConnection("127.0.0.1", iface.port, timeout=5)
+            conn.request(
+                "POST", "/chat",
+                body=json.dumps({"text": "查 /etc/config 和 (foo)"}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            data = json.loads(resp.read().decode())
+            conn.close()
+        finally:
+            asyncio.run(iface.stop())
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["reply"], "handled /path and (parens) fine")
+        self.assertEqual(agent.last_text, "查 /etc/config 和 (foo)")
+
 
 if __name__ == "__main__":
     unittest.main()

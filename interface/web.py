@@ -107,7 +107,11 @@ class WebInterface:
                 if not text:
                     self._send_json(400, {"error": "missing 'text'"})
                     return
-                reply = asyncio.run(agent.run_turn(text, user_id=user_id))
+                try:
+                    reply = asyncio.run(agent.run_turn(text, user_id=user_id))
+                except Exception as exc:  # never crash the server on one bad turn
+                    log.warning("web_chat_error", error=str(exc))
+                    reply = f"（处理出错：{exc}）"
                 self._send_json(200, {"reply": reply})
 
             def _read_body(self) -> bytes:

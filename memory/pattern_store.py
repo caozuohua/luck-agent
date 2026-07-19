@@ -83,12 +83,20 @@ class PatternStore:
         await self.db.execute("DELETE FROM patterns WHERE created_at < ?", (cutoff_unix,))
 
     def _fts_query(self, query: str) -> str:
-        cleaned = [
-            token.replace('"', "").strip()
-            for token in query.replace("'", " ").split()
-            if token.replace('"', "").strip()
+        # FTS5 MATCH treats / * ( ) " : NEAR ... as syntax. Quote each
+        # whitespace-separated token as a safe phrase and OR them, so
+        # arbitrary user input can never break the query (a "/" or "(" in
+        # the message used to raise "fts5: syntax error near ...") while
+        # still matching any of the query terms (recall-preserving).
+        tokens = [
+            tok.strip()
+            for tok in query.replace("'", " ").split()
+            if tok.strip()
         ]
-        return " OR ".join(cleaned[:8])
+        if not tokens:
+            return ""
+        safe = [f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in tokens[:8]]
+        return " OR ".join(safe)
 
 
 def pattern_outcome_from_data(data: Any) -> str:

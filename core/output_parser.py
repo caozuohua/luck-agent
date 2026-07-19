@@ -145,7 +145,7 @@ class OutputParser:
         tool_call = payload.get("tool_call")
         if not isinstance(tool_call, dict):
             raise ParseError("tool_call object is required")
-        name = tool_call.get("name")
+        name = tool_call.get("name") or tool_call.get("tool") or tool_call.get("function")
         # Small models drift on the key name for arguments: prefer `args`,
         # fall back to `arguments` or OpenAI-style `parameters` only when
         # `args` is absent (so an explicitly non-object `args` is still caught).

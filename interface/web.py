@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
@@ -23,6 +24,8 @@ from typing import Any, Protocol
 from core.log import get_logger
 
 log = get_logger()
+
+SHUTDOWN_ENDPOINT = "/shutdown"
 
 
 class AgentProtocol(Protocol):
@@ -85,13 +88,20 @@ class WebInterface:
                 pass
 
             def do_GET(self):  # noqa: N802
-                if self.path.split("?")[0] == "/":
+                path = self.path.split("?")[0]
+                if path == "/":
                     self._send_html(_CHAT_PAGE)
+                elif path == SHUTDOWN_ENDPOINT:
+                    self._handle_shutdown()
                 else:
                     self._send_json(404, {"error": "not found"})
 
             def do_POST(self):  # noqa: N802
-                if self.path.split("?")[0] != "/chat":
+                path = self.path.split("?")[0]
+                if path != "/chat":
+                    if path == SHUTDOWN_ENDPOINT:
+                        self._handle_shutdown()
+                        return
                     self._send_json(404, {"error": "not found"})
                     return
                 body = self._read_body()
@@ -113,6 +123,24 @@ class WebInterface:
                     log.warning("web_chat_error", error=str(exc))
                     reply = f"（处理出错：{exc}）"
                 self._send_json(200, {"reply": reply})
+
+            def _handle_shutdown(self) -> None:
+                # Stop serving and exit the whole process so the port is freed.
+                # Done from a worker thread so we can return a 200 first and
+                # don't deadlock the server's own thread.
+                self._send_json(200, {"status": "shutting down"})
+                threading.Thread(target=self._shutdown_server, daemon=True).start()
+
+            def _shutdown_server(self) -> None:
+                try:
+                    self.server.shutdown()  # stop accepting new connections
+                except Exception:
+                    pass
+                log.info("web_interface_shutdown_requested")
+                # os._exit terminates all threads (incl. the serve_forever loop)
+                # and releases the bound port, so a fresh start won't hit
+                # "address already in use".
+                os._exit(0)
 
             def _read_body(self) -> bytes:
                 length = int(self.headers.get("Content-Length", "0") or "0")
@@ -162,6 +190,7 @@ _CHAT_PAGE = """<!doctype html>
   <div id="log"></div>
   <textarea id="text" placeholder="输入消息，回车发送"></textarea>
   <button id="send">发送</button>
+  <button id="shutdown" style="margin-left: .5rem; color: #c33;">关闭系统</button>
   <script>
     const log = document.getElementById('log');
     const text = document.getElementById('text');
@@ -187,6 +216,11 @@ _CHAT_PAGE = """<!doctype html>
     }
     document.getElementById('send').onclick = send;
     text.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+    document.getElementById('shutdown').onclick = async () => {
+      if (!confirm('确定关闭 Luck Agent 系统吗？进程会完全退出并释放端口。')) return;
+      await fetch('/shutdown', {method: 'POST'});
+      add('bot', '系统正在关闭…');
+    };
   </script>
 </body>
 </html>

@@ -103,5 +103,33 @@ class WebInterfaceTests(unittest.TestCase):
         self.assertEqual(agent.last_text, "查 /etc/config 和 (foo)")
 
 
+    def test_shutdown_endpoint_returns_ok(self) -> None:
+        # Patch os._exit so the test process isn't killed; we only verify
+        # the route responds 200 and triggers server shutdown.
+        import os
+        import interface.web as web_mod
+
+        agent = _FakeAgent("x")
+        iface = self._start(agent)
+        saved_exit = os._exit
+        try:
+            os._exit = lambda code=0: None  # type: ignore[misc]
+            conn = HTTPConnection("127.0.0.1", iface.port, timeout=5)
+            conn.request("POST", web_mod.SHUTDOWN_ENDPOINT)
+            resp = conn.getresponse()
+            data = json.loads(resp.read().decode())
+            conn.close()
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(data.get("status"), "shutting down")
+        finally:
+            os._exit = saved_exit  # type: ignore[misc]
+            # The _shutdown_server thread may have called server.shutdown();
+            # ensure we don't leak a serving loop.
+            try:
+                asyncio.run(iface.stop())
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()

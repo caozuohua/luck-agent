@@ -9,7 +9,7 @@ from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
 from interface.health import HealthService
-from interface.lark_ws import LarkWebSocketInterface
+from interface.web import WebInterface
 from llm.fake import FakeLLMClient
 from llm.openai_compat import OpenAICompatClient
 from memory.context_store import ContextStore
@@ -76,7 +76,20 @@ class Runtime:
             curator=self.curator,
             curator_trigger_interval=settings.curator_trigger_interval,
         )
-        self.lark = LarkWebSocketInterface(agent=self.agent, sender=NoopLarkSender())
+        # Interface: Lark WebSocket when credentials are present, otherwise
+        # a local web page for manual testing (no Lark app needed).
+        if settings.lark_app_id and settings.lark_app_secret:
+            from interface.lark_ws import LarkWebSocketInterface
+
+            self.lark = LarkWebSocketInterface(
+                agent=self.agent, sender=NoopLarkSender()
+            )
+        else:
+            self.lark = WebInterface(
+                agent=self.agent,
+                host=settings.web_host,
+                port=settings.web_port,
+            )
         self.health = HealthService(
             db=self.db,
             goal_store=self.goal_store,

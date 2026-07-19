@@ -3,6 +3,26 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+# Load .env (if present) into os.environ BEFORE reading settings, so the
+# file-based config works the same way V1's config.py did. Stdlib-only.
+def _load_dotenv(path: str = ".env") -> None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip()
+                # strip surrounding quotes
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                    val = val[1:-1]
+                os.environ.setdefault(key, val)
+    except FileNotFoundError:
+        pass
+
+_load_dotenv()
+
 
 @dataclass(frozen=True)
 class AgentSettings:
@@ -19,6 +39,8 @@ class AgentSettings:
 
     lark_app_id: str = ""
     lark_app_secret: str = ""
+    web_host: str = "127.0.0.1"
+    web_port: int = 8000
     serper_api_key: str = ""
     db_path: str = "/home/agent/data/agent.db"
     agent_workdir: str = "/home/agent/workspace"
@@ -38,6 +60,8 @@ def load_settings() -> AgentSettings:
         llm_model=os.environ.get("LLM_MODEL", "nvidia/llama-3.1-nemotron-nano-8b-v1"),
         lark_app_id=os.environ.get("LARK_APP_ID", ""),
         lark_app_secret=os.environ.get("LARK_APP_SECRET", ""),
+        web_host=os.environ.get("WEB_HOST", "127.0.0.1"),
+        web_port=int(os.environ.get("WEB_PORT", "8000")),
         serper_api_key=os.environ.get("SERPER_API_KEY", ""),
         db_path=os.environ.get("DB_PATH", "/home/agent/data/agent.db"),
         agent_workdir=os.environ.get("AGENT_WORKDIR", "/home/agent/workspace"),

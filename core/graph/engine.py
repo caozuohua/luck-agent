@@ -64,7 +64,7 @@ def _bind_deps(**deps: Any) -> dict[str, dict[str, Any]]:
 
     Shared deps (llm, supervisor, history, prompt_builder, parser,
     intent_classifier, router) go to planner; tools+executor go to
-    executor; supervisor gets supervisor+goal.
+    executor; supervisor gets supervisor+goal+max_retry+hitl.
     """
     planner_keys = {"llm", "tools", "history", "prompt_builder", "parser", "intent_classifier", "router"}
     return {
@@ -74,6 +74,7 @@ def _bind_deps(**deps: Any) -> dict[str, dict[str, Any]]:
             "supervisor": deps["supervisor"],
             "goal": deps.get("goal", {}),
             "max_retry": deps.get("max_retry", 2),
+            "hitl": deps.get("hitl", False),
         },
     }
 
@@ -85,15 +86,19 @@ async def run_graph(
     config: dict[str, Any],
     max_steps: int = 12,
     db_path: str = "graph_state.db",
+    hitl: bool = False,
     **deps: Any,
 ) -> AgentState:
     """Compile (with SQLite checkpointer + recursion cap) and run to END.
 
     `deps` are per-run dependencies (llm, tools/executor, supervisor,
-    prompt_builder, parser, intent_classifier, router, history, goal).
+    prompt_builder, parser, intent_classifier, router, history, goal,
+    hitl). `hitl=True` enables interrupt()-based human approval on a
+    `block` decision; when False (web/local default) a block degrades to a
+    clear FAIL answer so the run never hangs for an approval that won't come.
     On `GraphRecursionError` (step cap hit) returns a graceful answer.
     """
-    node_deps = _bind_deps(**deps)
+    node_deps = _bind_deps(**deps, hitl=hitl)
     g = graph or build_graph(node_deps)
     # Carry the step budget in state so the router can enforce a hard cap
     # (recursion_limit is a backstop set comfortably above it).
@@ -106,6 +111,16 @@ async def run_graph(
             result = {
                 **state,
                 "final_answer": "（任务步骤超出上限，已停止。请拆分任务或简化目标。）",
+            }
+        # A `block` decision with HITL enabled pauses the graph and returns
+        # an interrupt marker instead of a final answer. With no approver
+        # wired up this would otherwise surface as an empty reply, so we
+        # synthesize a clear message and mark it failed.
+        if "__interrupt__" in result:
+            result = {
+                **state,
+                "decision": "fail",
+                "final_answer": "（任务需要人工确认，但当前环境未接入审批通道。请在支持审批的入口重试，或调整请求。）",
             }
         return result
 
@@ -126,7 +141,7 @@ async def resume_graph(
     """
     from langgraph.types import Command
 
-    node_deps = _bind_deps(**deps)
+    node_deps = _bind_deps(**deps, hitl=True)
     g = build_graph(node_deps)
     config = {"configurable": {"thread_id": thread_id}}
     async with _saver(db_path) as saver:

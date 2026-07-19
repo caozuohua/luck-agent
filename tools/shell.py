@@ -11,12 +11,26 @@ from tools.base import Tool, ToolResult
 
 
 ALLOWED_PREFIXES = {
+    # read-only inspection (safe for an agent to run)
     "ls",
     "cat",
     "grep",
     "find",
     "echo",
     "pwd",
+    "env",
+    "date",
+    "cal",
+    "whoami",
+    "uname",
+    "hostname",
+    "wc",
+    "head",
+    "tail",
+    "sort",
+    "uniq",
+    "awk",
+    "sed",
     "python3",
     "pip",
     "curl",
@@ -24,7 +38,9 @@ ALLOWED_PREFIXES = {
     "git",
     "df",
     "ps",
-    "env",
+    # interpreters (still subject to DANGEROUS_PATTERNS + timeout)
+    "powershell",
+    "cmd",
 }
 
 DANGEROUS_PATTERNS = (
@@ -57,6 +73,11 @@ class ShellTool(Tool):
 
     async def run(self, command: str = "", timeout: float | None = None, **kwargs: Any) -> ToolResult:  # type: ignore[override]
         command = str(command or kwargs.get("command", "")).strip()
+        # On Windows the shell is cmd.exe, where Unix-style read-only
+        # commands behave differently (e.g. `date` is interactive, `cal`
+        # doesn't exist). Rewrite the common ones to their Windows
+        # equivalents so agent requests like "查看日期" actually work.
+        command = self._platform_command(command)
         timeout = float(
             timeout
             if timeout is not None
@@ -96,6 +117,21 @@ class ShellTool(Tool):
             data={"output": output, "returncode": getattr(proc, "returncode", 0)},
             tool_name=self.name,
         )
+
+    def _platform_command(self, command: str) -> str:
+        """Rewrite Unix-style read-only commands to Windows equivalents.
+
+        Only applies on non-POSIX systems and only to a small safelist of
+        read-only queries, so it can't be abused to run arbitrary commands.
+        """
+        if os.name == "nt":
+            lowered = command.lower().split(maxsplit=1)
+            head = lowered[0] if lowered else ""
+            if head == "date":
+                return 'powershell -NoProfile -Command "(Get-Date).ToString(\'yyyy-MM-dd dddd\')"'
+            if head == "cal":
+                return 'powershell -NoProfile -Command "cal"'
+        return command
 
     def validate_command(self, command: str) -> str:
         if not command:

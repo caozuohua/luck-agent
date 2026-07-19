@@ -150,8 +150,9 @@ class MinimalAgent:
                 intent_classifier=self.intent_classifier,
                 router=self.router,
                 max_retry=self.max_retry,
+                hitl=False,
             )
-            answer = out.get("final_answer") or "（未生成回复）"
+            answer = out.get("final_answer") or "（任务未能完成，请换一种说法或提供更多上下文。）"
             decision = out.get("decision")
             if goal is not None:
                 if decision == "fail":

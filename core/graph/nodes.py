@@ -115,11 +115,15 @@ async def supervisor_node(
     supervisor: Supervisor,
     goal: dict[str, Any],
     max_retry: int,
+    hitl: bool = False,
 ) -> dict[str, Any]:
     """Supervise step: verify the step result and decide pass/retry/block/fail.
 
     A `block` decision pauses the graph via LangGraph interrupt() for
-    human-in-the-loop approval; resume continues without re-running steps.
+    human-in-the-loop approval (only when `hitl=True`, e.g. an API/cron
+    caller wired to a /approve endpoint). When HITL is not available the
+    graph must never hang waiting for an approval that will never come, so
+    `block` degrades to a clear FAIL answer instead of an empty reply.
     """
     parsed = state.get("last_parsed") or {}
 
@@ -136,6 +140,15 @@ async def supervisor_node(
     # A CHAT/DONE reply IS the answer — terminal regardless of the flag.
     if parsed.get("intent") in ("CHAT", "DONE"):
         return {**state, "decision": DECISION_DONE, "final_answer": parsed.get("message", "")}
+
+    # Parse failed entirely (no usable model output) -> terminal failure
+    # with a clear message rather than an empty reply.
+    if parsed is None or not parsed.get("intent"):
+        return {
+            **state,
+            "decision": DECISION_FAIL,
+            "final_answer": "（我没能理解或生成有效的执行指令，请换一种说法重试。）",
+        }
 
     if state.get("last_tool_result") is None:
         # No action taken and no tool result -> nothing to supervise yet.
@@ -159,21 +172,47 @@ async def supervisor_node(
     )
     decision = dec.decision
     if decision == DECISION_BLOCK:
-        # LangGraph HITL: pause for operator approval.
-        approval = interrupt({"question": dec.reason, "decision": "block"})
-        if not (isinstance(approval, dict) and approval.get("approve")):
-            return {**state, "decision": DECISION_FAIL, "final_answer": "Blocked by operator."}
-        decision = DECISION_PASS
+        if hitl:
+            # LangGraph HITL: pause for operator approval.
+            approval = interrupt({"question": dec.reason, "decision": "block"})
+            if not (isinstance(approval, dict) and approval.get("approve")):
+                return {**state, "decision": DECISION_FAIL, "final_answer": "Blocked by operator."}
+            decision = DECISION_PASS
+        else:
+            # No human-in-the-loop available: degrade to a clear failure so
+            # the user gets a useful message instead of an empty reply.
+            reason = dec.reason or "step blocked"
+            return {
+                **state,
+                "decision": DECISION_FAIL,
+                "final_answer": f"（执行被阻断：{reason}。请调整请求或提供更多上下文后重试。）",
+            }
     return {**state, "decision": decision}
 
 
 async def responder_node(state: AgentState) -> dict[str, Any]:
     """Format the final answer for the user."""
-    if not state.get("final_answer"):
-        scratchpad = state.get("scratchpad", [])
-        last_text = scratchpad[-1].get("content", "") if scratchpad else ""
-        # Prefer a CHAT/DONE message if present in last_parsed.
-        parsed = state.get("last_parsed") or {}
-        answer = parsed.get("message") or last_text or "（任务未完成）"
-        return {**state, "final_answer": answer}
-    return state
+    if state.get("final_answer"):
+        return state
+    # No answer was set by a node: synthesize a clean, non-empty message so
+    # the user never sees a blank "（未生成回复）". Prefer the last model
+    # message, then a short note about the last tool outcome.
+    parsed = state.get("last_parsed") or {}
+    if parsed.get("message"):
+        return {**state, "final_answer": parsed["message"]}
+    scratchpad = state.get("scratchpad", [])
+    last_obs = ""
+    for entry in reversed(scratchpad):
+        if entry.get("role") == "observation":
+            last_obs = entry.get("content", "")
+            break
+    if last_obs:
+        try:
+            obs = json.loads(last_obs)
+            err = obs.get("error") or obs.get("data", {}).get("output", "")
+        except Exception:
+            err = last_obs
+        err = str(err)[:200]
+        msg = f"（任务未能完成：{err}）" if err else "（任务未能完成。）"
+        return {**state, "final_answer": msg}
+    return {**state, "final_answer": "（任务未能完成，请换一种说法或提供更多上下文。）"}

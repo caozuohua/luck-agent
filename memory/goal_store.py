@@ -10,6 +10,9 @@ from enum import Enum
 from typing import Any
 
 from memory.db import Database
+from core.log import get_logger
+
+log = get_logger("goal_store")
 
 
 class GoalStatus(Enum):

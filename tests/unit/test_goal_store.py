@@ -47,3 +47,15 @@ async def test_get_in_progress_returns_only_non_terminal_goals(memory_db) -> Non
     in_progress = await store.get_in_progress("u1")
 
     assert [goal.id for goal in in_progress] == [running.id]
+
+
+@pytest.mark.asyncio
+async def test_queued_status_write_ignores_aiosqlite_closed_connection() -> None:
+    class ClosedDatabase:
+        async def fetchone(self, *_args):
+            raise ValueError("no active connection")
+
+    store = GoalStore(ClosedDatabase())
+    store.schedule_status_update("goal-1", GoalStatus.ROUTING)
+
+    await store.drain_pending()

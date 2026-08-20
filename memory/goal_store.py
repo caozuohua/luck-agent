@@ -10,6 +10,9 @@ from enum import Enum
 from typing import Any
 
 from memory.db import Database
+from core.log import get_logger
+
+log = get_logger("goal_store")
 
 
 class GoalStatus(Enum):
@@ -148,13 +151,25 @@ class GoalStore:
                 if previous is not None:
                     await previous
                 await self.update_status(goal_id, status, **kwargs)
-            except sqlite3.ProgrammingError as exc:
+            except (sqlite3.ProgrammingError, InvalidGoalTransition) as exc:
                 # A background status write that fails because the DB is
-                # closing (shutdown / test teardown) is non-critical and must
-                # not surface as an unretrieved-task exception.
+                # closing (shutdown / test teardown) or requests an invalid
+                # transition is non-critical and must not surface as an
+                # unretrieved-task exception.
+                event = (
+                    "goal_status_update_skipped_db_closed"
+                    if isinstance(exc, sqlite3.ProgrammingError)
+                    else "goal_status_update_skipped_invalid"
+                )
+                log.debug(event, goal_id=goal_id, error=str(exc))
+            except ValueError as exc:
+                # aiosqlite raises ValueError when a close races with a
+                # queued status write. This is the async equivalent of the
+                # sqlite3 closed-connection error above; other ValueErrors
+                # must remain visible instead of being swallowed.
+                if str(exc) != "no active connection":
+                    raise
                 log.debug("goal_status_update_skipped_db_closed", goal_id=goal_id, error=str(exc))
-            except InvalidGoalTransition as exc:
-                log.debug("goal_status_update_skipped_invalid", goal_id=goal_id, error=str(exc))
 
         task = asyncio.create_task(run_after_previous())
         self._last_task = task

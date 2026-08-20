@@ -86,7 +86,7 @@ async def run_graph(
     config: dict[str, Any],
     max_steps: int = 12,
     db_path: str = "graph_state.db",
-    hitl: bool = False,
+    hitl: bool = True,
     **deps: Any,
 ) -> AgentState:
     """Compile (with SQLite checkpointer + recursion cap) and run to END.
@@ -94,8 +94,10 @@ async def run_graph(
     `deps` are per-run dependencies (llm, tools/executor, supervisor,
     prompt_builder, parser, intent_classifier, router, history, goal,
     hitl). `hitl=True` enables interrupt()-based human approval on a
-    `block` decision; when False (web/local default) a block degrades to a
-    clear FAIL answer so the run never hangs for an approval that won't come.
+    `block` decision. The production agent passes `hitl=False` explicitly
+    because its Lark confirmation boundary runs before the graph; when False,
+    a block degrades to a clear FAIL answer so the run never hangs for an
+    approval that won't come.
     On `GraphRecursionError` (step cap hit) returns a graceful answer.
     """
     node_deps = _bind_deps(**deps, hitl=hitl)
@@ -116,7 +118,7 @@ async def run_graph(
         # an interrupt marker instead of a final answer. With no approver
         # wired up this would otherwise surface as an empty reply, so we
         # synthesize a clear message and mark it failed.
-        if "__interrupt__" in result:
+        if "__interrupt__" in result and not hitl:
             result = {
                 **state,
                 "decision": "fail",

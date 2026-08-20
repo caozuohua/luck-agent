@@ -6,16 +6,28 @@ from collections import OrderedDict
 from typing import Any, Protocol
 
 from core.log import get_logger
+from interface.lark_access import LarkAccessPolicy
+from interface.lark_approval import LarkApprovalManager, PendingApproval
 
 log = get_logger("interface.lark_ws")
 
 
 class AgentProtocol(Protocol):
-    async def run_turn(self, text: str, *, user_id: str = "default") -> str: ...
+    async def run_turn(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str: ...
 
 
 class CardSenderProtocol(Protocol):
     async def send_card(self, chat_id: str, card: dict[str, Any]) -> None: ...
+
+
+class QuickCommandProtocol(Protocol):
+    async def handle(self, text: str, *, user_id: str = "default") -> str | None: ...
 
 
 class LarkMessageDeduper:
@@ -53,12 +65,18 @@ class LarkWebSocketInterface:
         *,
         agent: AgentProtocol,
         sender: CardSenderProtocol,
+        quick_commands: QuickCommandProtocol | None = None,
+        access_policy: LarkAccessPolicy | None = None,
+        approval_manager: LarkApprovalManager | None = None,
         deduper: LarkMessageDeduper | None = None,
         reconnect_delay_seconds: float = 3.0,
         heartbeat_timeout_seconds: float = 60.0,
     ) -> None:
         self.agent = agent
         self.sender = sender
+        self.quick_commands = quick_commands
+        self.access_policy = access_policy
+        self.approval_manager = approval_manager
         self.deduper = deduper or LarkMessageDeduper(ttl_seconds=60)
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
@@ -90,7 +108,56 @@ class LarkWebSocketInterface:
         chat_id = str(event.get("chat_id") or "")
         text = str(event.get("text") or "")
         started = time.perf_counter()
-        response = await self.agent.run_turn(text, user_id=user_id)
+        if self.access_policy is not None and not self.access_policy.is_allowed(
+            user_id=user_id,
+            chat_id=chat_id,
+        ):
+            log.warning("lark_access_denied", user_id=user_id, chat_id=chat_id)
+            return False
+
+        approved: PendingApproval | None = None
+        if self.approval_manager is not None:
+            approval_result = self._consume_approval_command(text, user_id=user_id)
+            if approval_result == "__CANCELLED__":
+                response = "✅ 已取消待确认操作"
+                await self.sender.send_card(chat_id, self.build_card(response))
+                return True
+            if approval_result == "__INVALID__":
+                response = "⚠️ 确认码无效或已过期"
+                await self.sender.send_card(chat_id, self.build_card(response))
+                return True
+            if isinstance(approval_result, PendingApproval):
+                approved = approval_result
+            if approval_result is None and self.approval_manager.requires_confirmation(text):
+                pending = self.approval_manager.issue(user_id=user_id, request=text)
+                response = (
+                    "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
+                    f"• 请求：{text.strip()}\n"
+                    f"• 确认：`/confirm {pending.token}`\n"
+                    "• 取消：`/cancel`\n"
+                    f"• 有效期：{int(self.approval_manager.ttl_seconds // 60)} 分钟"
+                )
+                await self.sender.send_card(chat_id, self.build_card(response))
+                log.info("lark_approval_requested", user_id=user_id, chat_id=chat_id)
+                return True
+
+        approval_token = approved.token if approved is not None else None
+        if approved is not None:
+            text = approved.request
+        response = None
+        if self.quick_commands is not None:
+            response = await self.quick_commands.handle(text, user_id=user_id)
+            if response is not None:
+                log.info("lark_quick_command_handled", command=text.strip().lower())
+        if response is None:
+            if approval_token is None:
+                response = await self.agent.run_turn(text, user_id=user_id)
+            else:
+                response = await self.agent.run_turn(
+                    text,
+                    user_id=user_id,
+                    approval_token=approval_token,
+                )
         card = self.build_card(response)
         await self.sender.send_card(chat_id, card)
         log.info(
@@ -100,6 +167,28 @@ class LarkWebSocketInterface:
             message_id=message_id,
         )
         return True
+
+    def _consume_approval_command(
+        self,
+        text: str,
+        *,
+        user_id: str,
+    ) -> PendingApproval | str | None:
+        normalized = " ".join(text.strip().split())
+        lowered = normalized.lower()
+        if lowered in {"/cancel", "cancel", "取消", "/取消"}:
+            self.approval_manager.cancel(user_id=user_id)  # type: ignore[union-attr]
+            return "__CANCELLED__"
+        prefixes = ("/confirm ", "confirm ", "确认 ", "/确认 ")
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                token = normalized[len(prefix) :].strip().strip("`")
+                request = self.approval_manager.confirm(  # type: ignore[union-attr]
+                    user_id=user_id,
+                    token=token,
+                )
+                return request if request is not None else "__INVALID__"
+        return None
 
     def build_card(self, text: str) -> dict[str, Any]:
         return {
@@ -156,8 +245,8 @@ class LarkWebSocketInterface:
 
     def start(self, connect_once=None) -> asyncio.Task[None] | None:
         if connect_once is None:
-            self.connected = True
-            self.mark_heartbeat()
+            self._running = True
+            self.connected = False
             log.info("lark_websocket_interface_started")
             return None
         if self._task is None or self._task.done():

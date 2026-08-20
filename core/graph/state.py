@@ -13,6 +13,7 @@ class AgentState(TypedDict, total=False):
 
     goal: str
     user_id: str
+    approval_token: str | None
     messages: list[dict[str, Any]]
     scratchpad: list[dict[str, str]]
     step_count: int

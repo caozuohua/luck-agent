@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,16 @@ class Database:
             CREATE VIRTUAL TABLE IF NOT EXISTS patterns_fts USING fts5(
                 trigger, outcome, tool_name,
                 content=patterns, content_rowid=rowid
+            );
+
+            CREATE TABLE IF NOT EXISTS operation_audit (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                tool_name   TEXT NOT NULL,
+                operation   TEXT NOT NULL,
+                decision    TEXT NOT NULL,
+                details     TEXT DEFAULT '',
+                created_at  INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS context_summaries (
@@ -115,6 +126,34 @@ class Database:
             "INSERT INTO patterns_fts(rowid, trigger, outcome, tool_name) "
             "SELECT rowid, trigger, outcome, tool_name FROM patterns WHERE id = ?",
             (pattern_id,),
+        )
+        await conn.commit()
+
+    async def insert_operation_audit(
+        self,
+        *,
+        user_id: str,
+        tool_name: str,
+        operation: str,
+        decision: str,
+        details: str = "",
+    ) -> None:
+        conn = await self.connect()
+        await conn.execute(
+            """
+            INSERT INTO operation_audit
+                (id, user_id, tool_name, operation, decision, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                user_id,
+                tool_name,
+                operation,
+                decision,
+                details[:1000],
+                int(time.time()),
+            ),
         )
         await conn.commit()
 

@@ -9,10 +9,16 @@ from interface.lark_ws import LarkWebSocketInterface
 
 class FakeAgent:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, str | None]] = []
 
-    async def run_turn(self, text: str, *, user_id: str = "default") -> str:
-        self.calls.append((text, user_id))
+    async def run_turn(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str:
+        self.calls.append((text, user_id, approval_token))
         return "执行完成"
 
 
@@ -78,4 +84,5 @@ async def test_dangerous_request_requires_one_time_confirmation() -> None:
     assert await interface.handle_message(
         {**base, "message_id": "m2", "text": f"/confirm {match.group(1)}"}
     )
-    assert agent.calls == [("重启服务", "ou_allowed")]
+    assert agent.calls[0][0:2] == ("重启服务", "ou_allowed")
+    assert agent.calls[0][2]

@@ -69,6 +69,14 @@ class Runtime:
             llm_client=self.llm_client,
             periodic_interval_seconds=settings.curator_periodic_interval_seconds,
         )
+        self.lark_access_policy = LarkAccessPolicy.from_csv(
+            user_ids=settings.lark_allowed_user_ids,
+            chat_ids=settings.lark_allowed_chat_ids,
+            allow_unconfigured=settings.lark_allow_unconfigured,
+        )
+        self.lark_approval_manager = LarkApprovalManager(
+            ttl_seconds=settings.lark_approval_ttl_seconds,
+        )
         self.agent = MinimalAgent(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
@@ -82,6 +90,8 @@ class Runtime:
             max_steps=settings.max_steps,
             max_retry=settings.max_retry,
             graph_db_path=settings.graph_db_path,
+            approval_checker=self.lark_approval_manager.consume_grant,
+            audit_writer=self.db.insert_operation_audit,
         )
         self.health = HealthService(
             db=self.db,
@@ -112,14 +122,6 @@ class Runtime:
             vps=self.vps_status,
             sysops=self.vps_sysops,
             mem0=self.mem0,
-        )
-        self.lark_access_policy = LarkAccessPolicy.from_csv(
-            user_ids=settings.lark_allowed_user_ids,
-            chat_ids=settings.lark_allowed_chat_ids,
-            allow_unconfigured=settings.lark_allow_unconfigured,
-        )
-        self.lark_approval_manager = LarkApprovalManager(
-            ttl_seconds=settings.lark_approval_ttl_seconds,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

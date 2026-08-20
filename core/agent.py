@@ -49,6 +49,8 @@ class MinimalAgent:
         prompt_builder: PromptBuilder | None = None,
         output_parser: OutputParser | None = None,
         tool_executor: ToolExecutor | None = None,
+        approval_checker: Any | None = None,
+        audit_writer: Any | None = None,
         result_summarizer: ResultSummarizer | None = None,
         history_summary: str = "",
         experience_patterns: list[Any] | None = None,
@@ -81,6 +83,8 @@ class MinimalAgent:
         self.tool_executor = tool_executor or ToolExecutor(
             tool_registry,
             pattern_writer=pattern_writer,
+            approval_checker=approval_checker,
+            audit_writer=audit_writer,
         )
         self.result_summarizer = result_summarizer or ResultSummarizer()
         self.history_summary = history_summary
@@ -94,12 +98,32 @@ class MinimalAgent:
         self.completed_goal_count = 0
         self._background_tasks: list[asyncio.Task[Any]] = []
 
-    async def run_turn(self, user_input: str, *, user_id: str = "default") -> str:
+    async def run_turn(
+        self,
+        user_input: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str:
         if self.execution_mode == "legacy":
-            return await self._run_turn_legacy(user_input, user_id=user_id)
-        return await self._run_turn_graph(user_input, user_id=user_id)
+            return await self._run_turn_legacy(
+                user_input,
+                user_id=user_id,
+                approval_token=approval_token,
+            )
+        return await self._run_turn_graph(
+            user_input,
+            user_id=user_id,
+            approval_token=approval_token,
+        )
 
-    async def _run_turn_graph(self, user_input: str, *, user_id: str = "default") -> str:
+    async def _run_turn_graph(
+        self,
+        user_input: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str:
         """ReAct loop via LangGraph: multi-step Think->Act->Observe->Supervise.
 
         Non-breaking: same signature as legacy. Reuses PromptBuilder,
@@ -122,6 +146,7 @@ class MinimalAgent:
         seed: GraphState = {
             "goal": user_input,
             "user_id": user_id,
+            "approval_token": approval_token,
             "messages": [],
             "scratchpad": [],
             "step_count": 0,
@@ -168,7 +193,13 @@ class MinimalAgent:
         self._record_turn(user_input, answer)
         return answer
 
-    async def _run_turn_legacy(self, user_input: str, *, user_id: str = "default") -> str:
+    async def _run_turn_legacy(
+        self,
+        user_input: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str:
         self.state = AgentState.IDLE
         goal = await self._create_goal(user_id, user_input)
         intent = self.intent_classifier.classify(user_input)
@@ -188,7 +219,14 @@ class MinimalAgent:
 
         raw_output = await self.llm_client.generate(system_prompt, task_prompt)
         parsed = await self._parse_with_retry(raw_output)
-        response = await self._respond(parsed, user_input, goal, intent, user_id)
+        response = await self._respond(
+            parsed,
+            user_input,
+            goal,
+            intent,
+            user_id,
+            approval_token,
+        )
         self._record_turn(user_input, response)
         return response
 
@@ -208,6 +246,7 @@ class MinimalAgent:
         goal: Goal | None,
         classified_intent: IntentType,
         user_id: str,
+        approval_token: str | None = None,
     ) -> str:
         if parsed.intent is IntentType.CHAT:
             self._transition(goal, AgentState.EVALUATING)
@@ -234,6 +273,7 @@ class MinimalAgent:
                 parsed.tool_call.name,
                 parsed.tool_call.args,
                 user_id=user_id,
+                approval_token=approval_token,
             )
         )
         self._transition(goal, AgentState.AWAITING_RESULT)
@@ -405,5 +445,6 @@ class MinimalAgent:
         if self.goal_store is not None:
             await self.goal_store.drain_pending()
         await self.tool_executor.drain_pending_patterns()
+        await self.tool_executor.drain_pending_audits()
         while self._background_tasks:
             await asyncio.gather(*list(self._background_tasks))

@@ -7,13 +7,19 @@ from typing import Any, Protocol
 
 from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
-from interface.lark_approval import LarkApprovalManager
+from interface.lark_approval import LarkApprovalManager, PendingApproval
 
 log = get_logger("interface.lark_ws")
 
 
 class AgentProtocol(Protocol):
-    async def run_turn(self, text: str, *, user_id: str = "default") -> str: ...
+    async def run_turn(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str: ...
 
 
 class CardSenderProtocol(Protocol):
@@ -109,18 +115,20 @@ class LarkWebSocketInterface:
             log.warning("lark_access_denied", user_id=user_id, chat_id=chat_id)
             return False
 
-        approved_request: str | None = None
+        approved: PendingApproval | None = None
         if self.approval_manager is not None:
-            approved_request = self._consume_approval_command(text, user_id=user_id)
-            if approved_request == "__CANCELLED__":
+            approval_result = self._consume_approval_command(text, user_id=user_id)
+            if approval_result == "__CANCELLED__":
                 response = "✅ 已取消待确认操作"
                 await self.sender.send_card(chat_id, self.build_card(response))
                 return True
-            if approved_request == "__INVALID__":
+            if approval_result == "__INVALID__":
                 response = "⚠️ 确认码无效或已过期"
                 await self.sender.send_card(chat_id, self.build_card(response))
                 return True
-            if approved_request is None and self.approval_manager.requires_confirmation(text):
+            if isinstance(approval_result, PendingApproval):
+                approved = approval_result
+            if approval_result is None and self.approval_manager.requires_confirmation(text):
                 pending = self.approval_manager.issue(user_id=user_id, request=text)
                 response = (
                     "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
@@ -133,15 +141,23 @@ class LarkWebSocketInterface:
                 log.info("lark_approval_requested", user_id=user_id, chat_id=chat_id)
                 return True
 
-        if approved_request is not None:
-            text = approved_request
+        approval_token = approved.token if approved is not None else None
+        if approved is not None:
+            text = approved.request
         response = None
         if self.quick_commands is not None:
             response = await self.quick_commands.handle(text, user_id=user_id)
             if response is not None:
                 log.info("lark_quick_command_handled", command=text.strip().lower())
         if response is None:
-            response = await self.agent.run_turn(text, user_id=user_id)
+            if approval_token is None:
+                response = await self.agent.run_turn(text, user_id=user_id)
+            else:
+                response = await self.agent.run_turn(
+                    text,
+                    user_id=user_id,
+                    approval_token=approval_token,
+                )
         card = self.build_card(response)
         await self.sender.send_card(chat_id, card)
         log.info(
@@ -152,7 +168,12 @@ class LarkWebSocketInterface:
         )
         return True
 
-    def _consume_approval_command(self, text: str, *, user_id: str) -> str | None:
+    def _consume_approval_command(
+        self,
+        text: str,
+        *,
+        user_id: str,
+    ) -> PendingApproval | str | None:
         normalized = " ".join(text.strip().split())
         lowered = normalized.lower()
         if lowered in {"/cancel", "cancel", "取消", "/取消"}:

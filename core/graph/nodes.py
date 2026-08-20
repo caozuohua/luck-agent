@@ -97,7 +97,10 @@ async def executor_node(state: AgentState, *, tools: ToolExecutor) -> dict[str, 
             "decision": DECISION_DONE if intent in ("CHAT", "DONE") else DECISION_FAIL,
         }
     result = await tools.execute(
-        str(tc["name"]), dict(tc.get("args", {})), user_id=state.get("user_id", "default")
+        str(tc["name"]),
+        dict(tc.get("args", {})),
+        user_id=state.get("user_id", "default"),
+        approval_token=state.get("approval_token"),
     )
     rd = result.to_dict()
     scratchpad = list(state.get("scratchpad", []))

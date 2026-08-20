@@ -63,7 +63,11 @@ class VpsSysopsAdapter:
         "logs": "scripts/09_logs.sh",
     }
     SERVICE_PROBES: dict[str, str] = {
-        "a2a": "curl -fsS --max-time 5 http://127.0.0.1:8765/.well-known/agent-card.json",
+        "a2a": (
+            "endpoint=$(ss -H -ltn 'sport = :8765' | awk 'NR==1 {print $4}'); "
+            "test -n \"$endpoint\"; "
+            "curl -fsS --max-time 5 \"http://${endpoint}/.well-known/agent-card.json\""
+        ),
     }
 
     def __init__(

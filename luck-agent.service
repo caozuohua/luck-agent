@@ -14,7 +14,7 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=no
 ProtectSystem=strict
-ReadWritePaths=/opt/luck-agent/data /opt/luck-agent/workspace
+ReadWritePaths=/opt/luck-agent/data /opt/luck-agent/workspace /opt/luck-agent/soul
 StandardOutput=append:/var/log/luck-agent.log
 StandardError=append:/var/log/luck-agent.log
 

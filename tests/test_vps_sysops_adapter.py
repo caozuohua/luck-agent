@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.targets import VpsTarget, VpsTargetRegistry
-from tools.vps_sysops import VpsSysopsAdapter
+from tools.vps_sysops import VpsSysopsAdapter, _truncate_output
 
 
 async def test_missing_vps_sysops_root_is_reported(tmp_path: Path) -> None:
@@ -45,3 +45,13 @@ async def test_unconfigured_remote_target_is_rejected_instead_of_running_locally
     assert "SSH" in result.error
     assert result.target is not None
     assert result.target.label == "gcp-01"
+
+
+def test_long_output_keeps_head_and_tail() -> None:
+    output, truncated = _truncate_output("HEAD\n" + ("x" * 100) + "\nTAIL", 40)
+
+    assert truncated is True
+    assert len(output) <= 40
+    assert output.startswith("HEAD")
+    assert output.endswith("TAIL")
+    assert "已保留首尾" in output

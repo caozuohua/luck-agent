@@ -29,6 +29,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
+  输出默认限制为 5000 字符，长输出保留首尾；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。

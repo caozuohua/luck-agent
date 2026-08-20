@@ -22,6 +22,7 @@ class VpsSysopsResult:
     error: str = ""
     returncode: int | None = None
     target: VpsTarget | None = None
+    truncated: bool = False
 
 
 class VpsSysopsAdapter:
@@ -140,15 +141,19 @@ class VpsSysopsAdapter:
             )
 
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
-        if len(output) > self.max_output_chars:
-            output = output[: self.max_output_chars].rstrip() + "\n…（输出已截断）"
+        output, truncated = _truncate_output(output, self.max_output_chars)
+        returncode = process.returncode
+        error = "" if returncode == 0 else f"脚本退出码 {returncode}"
+        if operation == "logs" and returncode in {1, 123} and output:
+            error = "日志部分读取受限：当前运维用户无权读取部分系统日志，已返回可读取内容"
         return VpsSysopsResult(
             operation=operation,
-            ok=process.returncode == 0,
+            ok=returncode == 0,
             output=output,
-            error="" if process.returncode == 0 else f"脚本退出码 {process.returncode}",
-            returncode=process.returncode,
+            error=error,
+            returncode=returncode,
             target=target,
+            truncated=truncated,
         )
 
     def _is_local_target(self, target: VpsTarget | None) -> bool | None:
@@ -242,3 +247,14 @@ def format_vps_sysops_result(result: VpsSysopsResult) -> str:
 
 def _clean_output(value: str) -> str:
     return _ANSI_RE.sub("", value).replace("\r\n", "\n").strip()
+
+
+def _truncate_output(value: str, limit: int) -> tuple[str, bool]:
+    if len(value) <= limit:
+        return value, False
+    marker = "\n…（输出较长，已保留首尾）…\n"
+    if limit <= len(marker) + 2:
+        return value[:limit], True
+    head = (limit - len(marker)) // 2
+    tail = limit - len(marker) - head
+    return value[:head].rstrip() + marker + value[-tail:].lstrip(), True

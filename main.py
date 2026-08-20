@@ -138,6 +138,7 @@ class Runtime:
             ssh_config=settings.vps_sysops_ssh_config,
             ssh_identity_file=settings.vps_sysops_ssh_identity_file,
             timeout_seconds=settings.vps_sysops_timeout_seconds,
+            max_output_chars=settings.vps_sysops_max_output_chars,
         )
         self.mem0 = (
             Mem0Client(

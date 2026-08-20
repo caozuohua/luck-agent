@@ -72,6 +72,7 @@ class AgentSettings:
     vps_sysops_ssh_config: str = ""
     vps_sysops_ssh_identity_file: str = ""
     vps_sysops_timeout_seconds: float = 15.0
+    vps_sysops_max_output_chars: int = 5000
     mem0_base_url: str = ""
     mem0_api_key: str = ""
     mem0_user_id: str = "personal"
@@ -133,6 +134,9 @@ def load_settings() -> AgentSettings:
         vps_sysops_ssh_identity_file=os.environ.get("VPS_SYSOPS_SSH_IDENTITY_FILE", ""),
         vps_sysops_timeout_seconds=float(
             os.environ.get("VPS_SYSOPS_TIMEOUT_SECONDS", "15")
+        ),
+        vps_sysops_max_output_chars=int(
+            os.environ.get("VPS_SYSOPS_MAX_OUTPUT_CHARS", "5000")
         ),
         mem0_base_url=os.environ.get("MEM0_BASE_URL", ""),
         mem0_api_key=os.environ.get("MEM0_API_KEY", ""),

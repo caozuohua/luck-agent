@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from tools.vps_sysops import VpsSysopsAdapter, VpsSysopsResult, _truncate_output
 
@@ -56,6 +57,26 @@ async def test_unconfigured_remote_target_is_rejected_instead_of_running_locally
     assert "SSH" in result.error
     assert result.target is not None
     assert result.target.label == "gcp-01"
+
+
+async def test_unauthorized_target_is_rejected_before_transport(tmp_path: Path) -> None:
+    local = VpsTarget(provider="aws", target_id="aws-local")
+    registry = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal|gcp-ts|caozuohua99|22",
+        default_target=local,
+    )
+    registry.select("user-1", "gcp-01")
+    adapter = VpsSysopsAdapter(
+        root=str(tmp_path),
+        target=local,
+        target_registry=registry,
+        permission_policy=OperationPermissionPolicy.from_csv(targets="aws-local"),
+    )
+
+    result = await adapter.run("resources", user_id="user-1")
+
+    assert result.ok is False
+    assert "目标未授权" in result.error
 
 
 async def test_log_report_with_known_partial_exit_is_classified_as_partial(

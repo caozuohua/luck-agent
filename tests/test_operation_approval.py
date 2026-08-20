@@ -132,6 +132,14 @@ def test_operation_permission_policy_matches_target_service_and_operation() -> N
     )
 
 
+def test_operation_permission_policy_applies_target_allowlist_to_read_commands() -> None:
+    policy = OperationPermissionPolicy.from_csv(targets="gcp-01, azure-01")
+
+    assert policy.allows_target("gcp-01") is True
+    assert policy.allows_target("AWS-01") is False
+    assert policy.allows("vps_resources", {"target": "aws-01"}) is False
+
+
 def test_lark_grant_is_consumed_once() -> None:
     manager = LarkApprovalManager()
     pending = manager.issue(user_id="ou_user", request="重启服务")

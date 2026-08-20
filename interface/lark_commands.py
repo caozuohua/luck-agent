@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from core.log import get_logger
+from core.operation_policy import OperationPermissionPolicy
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
@@ -38,12 +39,14 @@ class QuickCommandRouter:
         sysops: VpsSysopsProvider | None = None,
         mem0: Mem0Client | None = None,
         targets: VpsTargetRegistry | None = None,
+        permission_policy: OperationPermissionPolicy | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
         self.sysops = sysops
         self.mem0 = mem0
         self.targets = targets
+        self.permission_policy = permission_policy
 
     async def handle(
         self,
@@ -116,17 +119,32 @@ class QuickCommandRouter:
         if self.targets is None:
             return QuickCommandResult("🎯 尚未配置 VPS 目标")
         current = self.targets.current(user_id)
+        allowed_targets = [
+            target for target in self.targets.list() if self._target_allowed(target.label)
+        ]
+        if not allowed_targets:
+            return QuickCommandResult("🎯 当前用户没有已授权的 VPS 目标")
+        current_for_card = current if self._target_allowed(current.label) else None
+        current_text = (
+            current_for_card.display if current_for_card is not None else "未选择已授权目标"
+        )
         return QuickCommandResult(
-            f"🎯 当前目标：{current.display}",
-            build_target_selection_card(self.targets.list(), current=current),
+            f"🎯 当前目标：{current_text}",
+            build_target_selection_card(allowed_targets, current=current_for_card),
         )
 
     def _select_target(self, target_id: str, user_id: str) -> QuickCommandResult:
         if self.targets is None:
             return QuickCommandResult("🎯 尚未配置 VPS 目标")
-        target = self.targets.select(user_id, target_id)
+        target = next(
+            (item for item in self.targets.list() if item.label.lower() == target_id.lower()),
+            None,
+        )
         if target is None:
             return QuickCommandResult(f"⚠️ 未找到目标：`{target_id}`，请发送 `/targets` 查看列表")
+        if not self._target_allowed(target.label):
+            return QuickCommandResult(f"⛔ 当前用户无权访问目标：`{target.label}`")
+        self.targets.select(user_id, target.label)
         return self._targets(user_id)
 
     def select_target(self, target_id: str, user_id: str = "default") -> QuickCommandResult:
@@ -134,6 +152,9 @@ class QuickCommandRouter:
 
     async def _vps(self, user_id: str) -> str:
         try:
+            denied = self._target_denial(user_id)
+            if denied:
+                return denied
             if self._is_remote_target(user_id):
                 return await self._sysops("resources", user_id)
             try:
@@ -160,6 +181,9 @@ class QuickCommandRouter:
         if self.sysops is None:
             return "🖥️ vps_sysops：⚠️ 尚未部署"
         try:
+            denied = self._target_denial(user_id)
+            if denied:
+                return denied
             try:
                 result = await self.sysops.run(operation, user_id=user_id)
             except TypeError as exc:
@@ -170,6 +194,17 @@ class QuickCommandRouter:
         except Exception as exc:
             log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
             return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"
+
+    def _target_allowed(self, target_id: str) -> bool:
+        return self.permission_policy is None or self.permission_policy.allows_target(target_id)
+
+    def _target_denial(self, user_id: str) -> str | None:
+        if self.targets is None:
+            return None
+        target = self.targets.current(user_id)
+        if self._target_allowed(target.label):
+            return None
+        return f"⛔ 当前用户无权访问目标：`{target.label}`"
 
     async def _mem0_status(self) -> str:
         if self.mem0 is None:

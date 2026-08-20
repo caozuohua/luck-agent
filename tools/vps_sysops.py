@@ -8,6 +8,7 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 
 
@@ -69,6 +70,7 @@ class VpsSysopsAdapter:
         profile: str = "aws",
         target: VpsTarget | None = None,
         target_registry: VpsTargetRegistry | None = None,
+        permission_policy: OperationPermissionPolicy | None = None,
         ssh_config: str = "",
         ssh_identity_file: str = "",
         timeout_seconds: float = 15.0,
@@ -78,6 +80,7 @@ class VpsSysopsAdapter:
         self.profile = profile.strip()
         self.target = target
         self.target_registry = target_registry
+        self.permission_policy = permission_policy
         self.ssh_config = ssh_config.strip()
         self.ssh_identity_file = ssh_identity_file.strip()
         self.timeout_seconds = timeout_seconds
@@ -94,6 +97,15 @@ class VpsSysopsAdapter:
                 error=f"不支持的 vps_sysops 操作: {operation or '(empty)'}",
                 target=target,
             )
+
+        if target is not None and self.permission_policy is not None:
+            if not self.permission_policy.allows_target(target.label):
+                return VpsSysopsResult(
+                    operation=operation,
+                    ok=False,
+                    error=f"目标未授权：{target.label}",
+                    target=target,
+                )
 
         is_local = self._is_local_target(target)
         if is_local is None:

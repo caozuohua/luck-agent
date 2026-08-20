@@ -135,6 +135,7 @@ class Runtime:
             profile=settings.vps_sysops_profile,
             target=self.vps_target,
             target_registry=self.target_registry,
+            permission_policy=self.operation_permission_policy,
             ssh_config=settings.vps_sysops_ssh_config,
             ssh_identity_file=settings.vps_sysops_ssh_identity_file,
             timeout_seconds=settings.vps_sysops_timeout_seconds,
@@ -157,6 +158,7 @@ class Runtime:
             sysops=self.vps_sysops,
             mem0=self.mem0,
             targets=self.target_registry,
+            permission_policy=self.operation_permission_policy,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

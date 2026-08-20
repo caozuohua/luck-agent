@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
@@ -153,3 +154,28 @@ async def test_vps_command_uses_sysops_resources_for_remote_target() -> None:
 
     result = await router.handle("/vps", user_id="alice")
     assert "checked resources" in (result or "")
+
+
+async def test_quick_commands_hide_and_reject_unauthorized_targets() -> None:
+    default = VpsTarget(provider="aws", target_id="aws-01")
+    targets = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal|gcp-ts|caozuohua99|22",
+        default_target=default,
+    )
+    policy = OperationPermissionPolicy.from_csv(targets="gcp-01")
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        targets=targets,
+        permission_policy=policy,
+    )
+
+    listing = await router.handle("/targets", user_id="alice")
+    assert listing.card is not None
+    options = listing.card["body"]["elements"][1]["options"]
+    assert [item["value"] for item in options] == ["gcp-01"]
+    assert "无权访问目标" in (await router.handle("/vps", user_id="alice") or "")
+    denied = await router.handle("/target aws-01", user_id="alice")
+    assert denied is not None
+    assert "无权访问目标" in (denied.text if hasattr(denied, "text") else str(denied))

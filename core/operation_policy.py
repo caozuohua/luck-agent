@@ -53,7 +53,7 @@ _REQUEST_OPERATION_PATTERNS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True)
 class OperationPermissionPolicy:
-    """Optional target/service/operation allowlist for tool execution."""
+    """Optional target/service/operation allowlist for tools and quick commands."""
 
     allowed_targets: frozenset[str] = frozenset()
     allowed_services: frozenset[str] = frozenset()
@@ -78,7 +78,7 @@ class OperationPermissionPolicy:
             return True
         if self.allowed_targets:
             target = _operation_target(args)
-            if not target or target not in self.allowed_targets:
+            if not self.allows_target(target):
                 return False
         if self.allowed_services:
             service = _operation_service(tool_name, args)
@@ -89,6 +89,11 @@ class OperationPermissionPolicy:
             if not operation or operation not in self.allowed_operations:
                 return False
         return True
+
+    def allows_target(self, target: str) -> bool:
+        """Check a target ID for both read-only commands and tool execution."""
+        normalized = str(target or "").strip().lower()
+        return not self.allowed_targets or bool(normalized and normalized in self.allowed_targets)
 
 
 @dataclass(frozen=True)

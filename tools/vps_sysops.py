@@ -72,7 +72,6 @@ class VpsSysopsAdapter:
                 target=target,
             )
 
-        script = self.root / relative_script
         is_local = self._is_local_target(target)
         if is_local is None:
             return VpsSysopsResult(
@@ -84,14 +83,18 @@ class VpsSysopsAdapter:
                 ),
                 target=target,
             )
-        if not self.root.is_dir():
+        script_root = self.root
+        if not is_local and target is not None and target.sysops_root:
+            script_root = Path(target.sysops_root).expanduser()
+        script = script_root / relative_script
+        if is_local and not self.root.is_dir():
             return VpsSysopsResult(
                 operation=operation,
                 ok=False,
                 error=f"vps_sysops 未部署: {self.root}",
                 target=target,
             )
-        if not script.is_file():
+        if is_local and not script.is_file():
             return VpsSysopsResult(
                 operation=operation,
                 ok=False,

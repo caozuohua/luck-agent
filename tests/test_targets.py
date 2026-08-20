@@ -45,7 +45,7 @@ def test_status_renderers_include_target_when_available() -> None:
 def test_target_registry_parses_targets_and_keeps_selection_per_user() -> None:
     default = VpsTarget(provider="aws", target_id="aws-01", region="us-east-1")
     registry = VpsTargetRegistry.from_csv(
-        "gcp-01|gcp|project-a|us-west1|staging;azure-01|azure||east|prod",
+        "gcp-01|gcp|project-a|us-west1|staging|gcp-ts|caozuohua99|22|/opt/vps_sysops;azure-01|azure||east|prod||||/home/caozuohua/vps_sysops",
         default_target=default,
     )
 
@@ -54,6 +54,7 @@ def test_target_registry_parses_targets_and_keeps_selection_per_user() -> None:
     assert registry.select("alice", "gcp-01").display == "GCP / gcp-01 / us-west1"
     assert registry.current("alice").label == "gcp-01"
     assert registry.current("bob").label == "aws-01"
+    assert registry.current("alice").sysops_root == "/opt/vps_sysops"
     assert registry.select("alice", "missing") is None
 
 

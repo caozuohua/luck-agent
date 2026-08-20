@@ -16,6 +16,7 @@ class VpsTarget:
     ssh_host: str = ""
     ssh_user: str = ""
     ssh_port: int = 22
+    sysops_root: str = ""
 
     def __post_init__(self) -> None:
         provider = self.provider.strip().lower() or "other"
@@ -26,6 +27,7 @@ class VpsTarget:
         object.__setattr__(self, "role", self.role.strip().lower() or "other")
         object.__setattr__(self, "ssh_host", self.ssh_host.strip())
         object.__setattr__(self, "ssh_user", self.ssh_user.strip())
+        object.__setattr__(self, "sysops_root", self.sysops_root.strip())
         try:
             ssh_port = int(self.ssh_port)
         except (TypeError, ValueError):
@@ -61,7 +63,7 @@ class VpsTargetRegistry:
 
     @classmethod
     def from_csv(cls, value: str, *, default_target: VpsTarget) -> "VpsTargetRegistry":
-        """Parse ``id|provider|account|region|role|ssh_host|ssh_user|ssh_port;...`` entries."""
+        """Parse ``id|provider|account|region|role|ssh_host|ssh_user|ssh_port|sysops_root;...`` entries."""
         targets = [default_target]
         for raw in value.split(";"):
             fields = [field.strip() for field in raw.split("|")]
@@ -77,6 +79,7 @@ class VpsTargetRegistry:
                     ssh_host=fields[5] if len(fields) > 5 else "",
                     ssh_user=fields[6] if len(fields) > 6 else "",
                     ssh_port=fields[7] if len(fields) > 7 and fields[7] else 22,
+                    sysops_root=fields[8] if len(fields) > 8 else "",
                 )
             )
         return cls(targets, default_target=default_target.label)

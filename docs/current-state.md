@@ -24,12 +24,14 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - OpenAI-compatible 客户端已支持可配置超时、有限重试、429/5xx/空响应处理和冷却熔断；401/403 等请求错误不重复重试。
 - SQLite 保存 Goal、上下文、模式和运行时状态。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
+- Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；尚未接入带回调的按钮/下拉框。
 - `core/lark_ws_runner.py` 已有生命周期封装，但尚未在 `main.py` 中完成生产接线。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入执行层；空配置保持兼容。
+- VPS 已使用 `VpsTarget(provider/account/region/target_id/role)` 统一描述目标，并将元数据传给状态与 vps_sysops 适配器；当前仍只执行本机 AWS profile。
 
 ## 目标对象模型
 
@@ -80,7 +82,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前阻塞项
 
 1. 命令结果还未统一为适合手机查看的结构化卡片；确认码已按请求中明确的操作、目标和服务进行执行级匹配。
-2. AWS 适配器已可用，但 Provider → Account → Region → Target → Service 模型尚未统一。
+2. Provider → Account → Region → Target → Service 模型已有元数据基础，但多目标选择和云厂商执行路由尚未统一。
 3. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
 4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
 5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。

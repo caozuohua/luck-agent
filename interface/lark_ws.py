@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
+from interface.lark_cards import build_text_card
 
 log = get_logger("interface.lark_ws")
 
@@ -191,18 +192,7 @@ class LarkWebSocketInterface:
         return None
 
     def build_card(self, text: str) -> dict[str, Any]:
-        return {
-            "schema": "2.0",
-            "config": {"update_multi": True},
-            "body": {
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": text,
-                    }
-                ]
-            },
-        }
+        return build_text_card(text)
 
     def mark_heartbeat(self) -> None:
         self.last_heartbeat_at = time.time()

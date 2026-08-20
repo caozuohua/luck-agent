@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.targets import VpsTarget
+
 
 @dataclass(frozen=True)
 class HostStatus:
@@ -23,13 +25,15 @@ class HostStatus:
     disk_total_bytes: int | None
     disk_free_bytes: int | None
     collected_at: float
+    target: VpsTarget | None = None
 
 
 class VpsStatusService:
     """Collect local VPS metrics without shell commands or an LLM."""
 
-    def __init__(self, *, name: str = "") -> None:
+    def __init__(self, *, name: str = "", target: VpsTarget | None = None) -> None:
         self.name = name.strip()
+        self.target = target
 
     async def collect(self) -> HostStatus:
         return await asyncio.to_thread(self._collect_sync)
@@ -60,6 +64,7 @@ class VpsStatusService:
             disk_total_bytes=disk_total,
             disk_free_bytes=disk_free,
             collected_at=time.time(),
+            target=self.target,
         )
 
     def _read_uptime(self) -> float | None:
@@ -92,6 +97,8 @@ def format_host_status(status: HostStatus) -> str:
     """Render a compact mobile-friendly status message."""
 
     lines = [f"🖥️ VPS 状态：✅ 正常", f"• 主机：`{status.hostname}`"]
+    if status.target is not None:
+        lines.insert(1, f"• 目标：`{status.target.display}`")
     if status.uptime_seconds is not None:
         lines.append(f"• 运行：{_format_duration(status.uptime_seconds)}")
     if status.load_1m is not None:

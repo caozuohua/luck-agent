@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.targets import VpsTarget
+
 
 _ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
@@ -17,6 +19,7 @@ class VpsSysopsResult:
     output: str = ""
     error: str = ""
     returncode: int | None = None
+    target: VpsTarget | None = None
 
 
 class VpsSysopsAdapter:
@@ -39,11 +42,13 @@ class VpsSysopsAdapter:
         *,
         root: str = "/opt/vps_sysops",
         profile: str = "aws",
+        target: VpsTarget | None = None,
         timeout_seconds: float = 15.0,
         max_output_chars: int = 3500,
     ) -> None:
         self.root = Path(root).expanduser()
         self.profile = profile.strip()
+        self.target = target
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
 
@@ -74,6 +79,16 @@ class VpsSysopsAdapter:
         env = os.environ.copy()
         if self.profile:
             env["VPS_PROFILE"] = self.profile
+        if self.target is not None:
+            env.update(
+                {
+                    "VPS_PROVIDER": self.target.provider,
+                    "VPS_ACCOUNT": self.target.account,
+                    "VPS_REGION": self.target.region,
+                    "VPS_TARGET_ID": self.target.target_id,
+                    "VPS_ROLE": self.target.role,
+                }
+            )
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -112,6 +127,7 @@ class VpsSysopsAdapter:
             output=output,
             error="" if process.returncode == 0 else f"脚本退出码 {process.returncode}",
             returncode=process.returncode,
+            target=self.target,
         )
 
 
@@ -125,9 +141,10 @@ def format_vps_sysops_result(result: VpsSysopsResult) -> str:
     title = labels.get(result.operation, result.operation)
     mark = "✅" if result.ok else "⚠️"
     body = result.output.strip() or result.error or "无输出"
+    target_line = f"\n• 目标：`{result.target.display}`" if result.target else ""
     if not result.ok and result.error and result.output.strip():
         body = f"{result.error}\n{body}"
-    return f"🖥️ vps_sysops · {title} {mark}\n{body}"
+    return f"🖥️ vps_sysops · {title} {mark}{target_line}\n{body}"
 
 
 def _clean_output(value: str) -> str:

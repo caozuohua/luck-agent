@@ -9,6 +9,7 @@ from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
 from core.operation_policy import OperationPermissionPolicy
+from core.targets import VpsTarget
 from interface.health import HealthService
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager
@@ -113,10 +114,18 @@ class Runtime:
             host=settings.health_host,
             port=settings.health_port,
         )
-        self.vps_status = VpsStatusService(name=settings.vps_name)
+        self.vps_target = VpsTarget(
+            provider=settings.vps_provider,
+            account=settings.vps_account,
+            region=settings.vps_region,
+            target_id=settings.vps_target_id or settings.vps_name,
+            role=settings.vps_role,
+        )
+        self.vps_status = VpsStatusService(name=settings.vps_name, target=self.vps_target)
         self.vps_sysops = VpsSysopsAdapter(
             root=settings.vps_sysops_root,
             profile=settings.vps_sysops_profile,
+            target=self.vps_target,
             timeout_seconds=settings.vps_sysops_timeout_seconds,
         )
         self.mem0 = (

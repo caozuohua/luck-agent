@@ -1,5 +1,7 @@
-# 极简智能体框架构建规范
+# 历史设计规范（V1 / 已废弃）
 # Minimal Agent Framework — Build Specification for Codex
+
+> 本文件保留用于追溯早期设计，不再作为当前实现规范。V2 的正式状态、产品定位和实施顺序见 [`docs/current-state.md`](docs/current-state.md)。当前 LLM 使用 OpenAI-compatible endpoint，V1 的 Vertex AI/Gemini 方案已退出路线图。
 
 ---
 

@@ -9,6 +9,8 @@ from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
 from interface.health import HealthService
+from interface.lark_api import LarkApiSender
+from interface.lark_sdk import LarkSdkRunner
 from interface.web import WebInterface
 from llm.fake import FakeLLMClient
 from llm.openai_compat import OpenAICompatClient
@@ -31,11 +33,6 @@ INITIALIZATION_SEQUENCE = [
     "start_curator_periodic_task",
     "register_signal_handlers",
 ]
-
-
-class NoopLarkSender:
-    async def send_card(self, chat_id: str, card: dict[str, Any]) -> None:
-        log.info("lark_card_ready", chat_id=chat_id, message="card prepared")
 
 
 class Runtime:
@@ -84,16 +81,28 @@ class Runtime:
         # a local web page for manual testing (no Lark app needed).
         if settings.lark_app_id and settings.lark_app_secret:
             from interface.lark_ws import LarkWebSocketInterface
+            import lark_oapi as lark
+
+            self.lark_api_client = (
+                lark.Client.builder()
+                .app_id(settings.lark_app_id)
+                .app_secret(settings.lark_app_secret)
+                .domain(settings.lark_domain)
+                .build()
+            )
 
             self.lark = LarkWebSocketInterface(
-                agent=self.agent, sender=NoopLarkSender()
+                agent=self.agent,
+                sender=LarkApiSender(self.lark_api_client),
             )
+            self.lark_runner: LarkSdkRunner | None = None
         else:
             self.lark = WebInterface(
                 agent=self.agent,
                 host=settings.web_host,
                 port=settings.web_port,
             )
+            self.lark_runner = None
         self.health = HealthService(
             db=self.db,
             goal_store=self.goal_store,
@@ -109,6 +118,22 @@ class Runtime:
         log.info("goals_recovered", message="in-progress goals recovered", recovered=len(recovered))
         self.router.start_watchdog()
         self.lark.start()
+        if self.lark_runner is None and self.settings.lark_app_id and self.settings.lark_app_secret:
+            from interface.lark_ws import LarkWebSocketInterface
+
+            if isinstance(self.lark, LarkWebSocketInterface):
+                loop = asyncio.get_running_loop()
+                self.lark_runner = LarkSdkRunner(
+                    app_id=self.settings.lark_app_id,
+                    app_secret=self.settings.lark_app_secret,
+                    domain=self.settings.lark_domain,
+                    application_loop=loop,
+                    on_message=self.lark.handle_message,
+                    on_connected=self.lark.mark_heartbeat,
+                    on_disconnected=lambda: setattr(self.lark, "connected", False),
+                    stop_timeout=self.settings.shutdown_timeout_seconds,
+                )
+                self.lark_runner.start()
         await self.health.start()
         self.curator.start_periodic()
         self._register_signal_handlers()
@@ -129,6 +154,8 @@ class Runtime:
         except TimeoutError:
             log.warning("shutdown_timeout", message="forced shutdown after timeout")
         await self.router.stop_watchdog()
+        if self.lark_runner is not None:
+            await self.lark_runner.stop()
         await self.lark.stop()
         await self.curator.stop_periodic()
         await self.health.stop()

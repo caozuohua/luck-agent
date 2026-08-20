@@ -156,8 +156,8 @@ class LarkWebSocketInterface:
 
     def start(self, connect_once=None) -> asyncio.Task[None] | None:
         if connect_once is None:
-            self.connected = True
-            self.mark_heartbeat()
+            self._running = True
+            self.connected = False
             log.info("lark_websocket_interface_started")
             return None
         if self._task is None or self._task.done():

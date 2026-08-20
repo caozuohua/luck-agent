@@ -39,6 +39,7 @@ class AgentSettings:
 
     lark_app_id: str = ""
     lark_app_secret: str = ""
+    lark_domain: str = "https://open.larksuite.com"
     web_host: str = "127.0.0.1"
     web_port: int = 8000
     serper_api_key: str = ""
@@ -66,6 +67,10 @@ def load_settings() -> AgentSettings:
         llm_model=os.environ.get("LLM_MODEL", "nvidia/llama-3.1-nemotron-nano-8b-v1"),
         lark_app_id=os.environ.get("LARK_APP_ID", ""),
         lark_app_secret=os.environ.get("LARK_APP_SECRET", ""),
+        lark_domain=os.environ.get(
+            "LARK_DOMAIN",
+            "https://open.larksuite.com",
+        ),
         web_host=os.environ.get("WEB_HOST", "127.0.0.1"),
         web_port=int(os.environ.get("WEB_PORT", "8000")),
         serper_api_key=os.environ.get("SERPER_API_KEY", ""),

@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Luck Agent is a Python-based Lark (飞书) bot. The repository contains **two
-coexisting architectures**:
+Luck Agent is a Python-based Lark international bot for multi-cloud VPS
+operations and Lark platform automation. The repository has one formal
+architecture:
 
-- **V2 (current, in `main.py`)** — the Goal Runtime: `interface/` (Lark WS +
+- **V2 (in `main.py`)** — the Goal Runtime: `interface/` (Lark WS +
   health), `llm/` (model client), `core/` (agent loop, routing, tools,
   goals), `tools/`, `skills/`, `memory/`, `runtime/`. The LLM layer is
   **OpenAI-compatible** (`llm/openai_compat.py`, any `/chat/completions`
@@ -15,13 +16,8 @@ coexisting architectures**:
   `LLM_BASE_URL` is unset the runtime uses an offline `FakeLLMClient`
   (`llm/fake.py`) so the whole stack — and the test suite — runs with no model
   backend.
-- **V1 (deployed, in `agent.py`)** — the original minimal bot. Its model layer
-  (`core/model_router.py`) still uses **Google Gemini** via the `google-genai`
-  library (Gemini AI Studio API, *not* Vertex AI). V1 is what `deploy.sh`
-  ships to the GCP VPS today.
-
-> NOTE: Vertex AI was removed. V2 no longer imports `google.auth` / Vertex.
-> V1's Gemini usage is separate and retained for now.
+The V1/Gemini/Vertex implementation is historical and is not part of the
+current deployment or development target.
 
 ## Commands
 
@@ -29,8 +25,8 @@ coexisting architectures**:
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the agent
-python agent.py
+# Run the V2 runtime
+python main.py
 
 # Deploy to GCP VPS
 bash deploy.sh [--update]
@@ -39,14 +35,13 @@ bash deploy.sh [--update]
 ## Architecture
 
 ### Entry Flow
-`agent.py` → `AgentApp` class initializes all components and starts WebSocket connection to Lark. Messages arrive via `_on_message()` and are dispatched to:
-- `CommandHandler` (`handlers/command.py`) — direct slash commands (`/sh`, `/git`, `/deploy`, `/schedule`, `/mem`, etc.)
-- `AgentMessageHandler` (`handlers/message.py`) — AI-powered ReAct loop with tool calling
-- `FileMessageHandler` (`handlers/file_handler.py`) — file/image uploads
+`main.py` → `Runtime` initializes SQLite, Goal Runtime, health endpoint and the
+Lark interface. Real Lark WebSocket acceptance is still pending; local runs
+without Lark credentials use the Web interface.
 
 ### Core Modules (`core/`)
-- **model_router.py** — *(V1)* Multi-model routing with fallback chain (pro → flash → lite). Uses `google-genai` (Gemini AI Studio API). **V2 does not use this.**
-- **agent.py (V2)** — `MinimalAgent` loop: classify intent → route tools → generate → parse → execute → transition goal state. See `runtime/` for the Goal Runtime that drives it.
+- **Provider Router** — planned multi-provider fallback, quota detection and circuit breaking for LLM limits. LLM is an enhancement layer, never the VPS control plane.
+- **core/agent.py (V2)** — `MinimalAgent` loop: classify intent → route tools → generate → parse → execute → transition goal state. See `runtime/` for the Goal Runtime that drives it.
 - **router.py (V2)** — `ToolRouter`: zero-LLM rule-based tool routing from `config/routing_rules.yaml`, with a file-watchdog for hot reload.
 - **memory.py (V1)** — SQLite persistence (WAL mode) for conversation history, user profiles, task records, and success patterns. Thread-safe via `threading.local()`.
 - **goal.py / execution_engine.py (V2)** — Goal lifecycle + skill execution.
@@ -70,8 +65,8 @@ bash deploy.sh [--update]
 
 ## Configuration
 
-All config via `.env` file (loaded by `config.py` at startup). Required keys:
-- `GCP_PROJECT`, `LARK_APP_ID`, `LARK_APP_SECRET`, `GITHUB_TOKEN`
+All config via `.env` file (loaded by `settings.py` at startup). Lark and cloud
+credentials are deployment-specific.
 
 Optional: `GCP_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS`, `GITHUB_OWNER`, `LARK_DOMAIN`, `HUGO_REPO`, `DB_PATH`, `SHELL_WORK_DIR`, `FILE_DIR`
 
@@ -98,10 +93,6 @@ pwsh ./scripts/test-local.ps1 -All       # full suite
 
 ## Key Patterns
 
-**Model Selection (V1)**: `Config.pick_model(text)` auto-selects based on keywords (分析/写作/规划 → pro) and length (>500 chars → flash, else → lite). Users can force with `/pro`, `/flash`, `/lite` prefix.
-
-**Tool Calling Loop (V1)**: ReAct style in `AgentMessageHandler.handle()` — model generates tool calls → execute → inject results → model continues. Max 6 rounds to prevent loops.
-
 **Goal Runtime (V2)**: messages → `RuntimeManager` → Skill → persistent `Goal` → background `Worker` → `ExecutionEngine`. Goals survive restart (`goal_store.recover`).
 
 **Lark Message Splitting**: `LarkSender` automatically chunks long text (3800 chars) and cards (3500 chars markdown) to stay within Lark API limits.
@@ -109,7 +100,7 @@ pwsh ./scripts/test-local.ps1 -All       # full suite
 ## Development Notes
 
 - Python 3.10+ required (uses `from __future__ import annotations`, `X | Y` union types)
-- All tool functions are async — V1 `ModelRouter` wraps sync `google-genai` calls via `run_in_executor`
-- SQLite connections are thread-local (`threading.local()`), not shared across async tasks
+- All tool functions are async and must preserve explicit user/target boundaries.
+- LLM calls are optional; no-LLM VPS operations must remain deterministic and testable.
 - Test suite exists: `pytest tests/` (see Testing above). Verify changes with `pwsh ./scripts/test-local.ps1 -All`
-- GCP auth priority (V1): `.env` key file → GCE ADC → `gcloud auth application-default login`
+- Real Lark WebSocket acceptance and multi-cloud provider integration are pending.

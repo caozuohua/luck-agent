@@ -1,6 +1,6 @@
 # Luck Agent
 
-基于 Python 的 Lark 智能体，面向 GCP e2-micro（永久免费层）和长期稳定运营场景：通过 WebSocket 实时连接 Lark，集成 Gemini 多模型路由、GitHub/Shell/搜索工具链、ReAct 工具调用闭环和 SQLite 持久化记忆。
+基于 Python 的 Lark 国际版智能体，面向 GCP、AWS、Azure 等多云 VPS 的长期运维，以及 Lark 消息、文档、多维表格、表格、日历、邮件、任务、会议和知识库操作。系统以消息卡片为主要交互界面，并要求核心运维在 LLM 限额或故障时仍可用。
 
 [公开案例页](https://caozuohua.github.io/portal/projects/luck-agent/) · [项目 Portal](https://caozuohua.github.io/portal/)
 
@@ -26,19 +26,19 @@
 Lark WebSocket
       │
       ▼
-  agent.py ──── 组件装配 + 消息分发
+  main.py ────── V2 Runtime 组件装配 + 生命周期管理
       │
-      ├─ command.py ──── /sh /git /deploy /mem /status ...（零 AI，纯规则）
-      ├─ message.py ──── AI ReAct 工具调用闭环（意图路由 → 模型 → 工具 → 推理）
-      └─ file_handler.py ─ Lark 文件/图片 ↔ VPS 双向传输
+      ├─ interface/ ───── Lark 消息处理 + 本地 Web 测试入口
+      ├─ core/ ─────────── Goal Runtime、路由、执行和安全边界
+      ├─ runtime/ ──────── 队列、Worker、通知和可观测性
+      └─ tools/ ────────── 无 LLM 运维和外部平台工具
               │
               ▼
-  tools/ ──── github_tools / shell_tools / search_tools / file_bridge
-  core/  ──── model_router / memory / task_queue / scheduler / health / log
-  cards/ ──── Lark Card 2.0 消息卡片构建器
+  LLM 可用时：模型 → 受控工具调用 → Goal 状态机
+  LLM 不可用时：Lark 卡片 → 规则校验 → 直接执行 → 结果卡片
 ```
 
-**设计原则：意图路由（零 AI）优先，工具调用最小化，记忆持久化，指令与 AI 完全解耦，模型不可用时仍保留完整本地运维能力。**
+**设计原则：LLM 是增强层而不是控制面；规则化运维优先；工具调用受权限和确认约束；模型不可用时仍保留核心 VPS 运维能力。**
 
 ---
 
@@ -68,7 +68,7 @@ Lark WebSocket
 ## 设计原则
 
 - 小原语优先：把高频运维动作做成稳定、可验证的本地指令，而不是依赖自然语言猜测
-- 模型可替换：Vertex AI 只作为增强层，失败时系统仍可完整运转
+- 模型可替换：LLM 只作为增强层，限额或失败时核心运维仍可继续
 - 卡片化输出：搜索、状态、博客发布都以 Lark 卡片呈现，减少碎片时间里的阅读成本
 
 ## 使用方式
@@ -91,20 +91,20 @@ Lark WebSocket
 
 ---
 
+## 当前状态
+
+V2 是唯一正式架构，V1 已退出路线图。真实 Lark WebSocket 尚未完成验收，当前测试目标 Bot 为 `cli_aaba382935b8de18`。多云 VPS、卡片交互和 LLM 多 Provider 容错正在建设中，详细状态见 [`docs/current-state.md`](docs/current-state.md)。
+
 ## 环境要求
 
 | 组件 | 版本 |
 |------|------|
 | Python | 3.10+ |
-| GCP | e2-micro 或更高（VPC + Cloud Logging 可选） |
-| Lark 应用 | 飞书开放平台自建应用（含机器人能力） |
-| GitHub Token | `Contents:Read & Write`（博客写入）、`Actions:Read & Write`（CI 触发）|
-| Gemini API | Google AI Studio API Key（仅 V1 `core/model_router.py` 使用） |
+| 云环境 | GCP、AWS、Azure 等；按目标实例配置 |
+| Lark 应用 | Lark 国际版自建应用（含机器人能力） |
+| LLM | OpenAI-compatible endpoint；可选，未配置时使用离线 FakeLLM |
 
-> **架构现状（2026-07）**：仓库内并存两套架构。
-> - **V1（当前已部署，`agent.py`）**：沿用 Gemini（`google-genai`，Google AI Studio API，**非 Vertex**）。
-> - **V2（开发中，`main.py` + `llm/` + `core/` + `runtime/` + `skills/` + `memory/`）**：LLM 层改为 **OpenAI 兼容**（`llm/openai_compat.py`，可接 OpenRouter / ModelRoute / Hermes proxy / Ollama / 本地）。**Vertex AI 已从 V2 移除**；`LLM_BASE_URL` 不设置时 V2 使用离线 `FakeLLMClient`，整套测试可无模型后端运行。
-> - 本 README 主要描述已上线的 V1；V2 的接入与测试见 `CLAUDE.md` / `AGENTS.md`。
+> **架构现状**：V2（`main.py` + `llm/` + `core/` + `runtime/` + `skills/` + `memory/`）是唯一正式架构。LLM 层使用 OpenAI-compatible endpoint；未配置 `LLM_BASE_URL` 时使用离线 FakeLLM。V1、Vertex 和旧 Gemini 方案仅保留在历史资料中。
 
 ---
 
@@ -124,9 +124,9 @@ PYTHONPATH= .venv/Scripts/python -m pytest tests/ -q
 
 ```
 luck-agent/
-├── agent.py                # 主入口：WebSocket + 组件装配 + 优雅退出
-├── config.py               # 配置中心（.env 加载 + GCP 认证检测）
-├── requirements.txt        # 4 个外部依赖（零额外运行时依赖）
+├── main.py                 # V2 入口：Runtime 组件装配 + 生命周期管理
+├── settings.py             # V2 配置中心（.env 加载）
+├── requirements.txt        # V2 运行时与测试依赖
 ├── CLAUDE.md               # 项目约定（AI 协作上下文）
 │
 ├── core/                   # 基础设施
@@ -155,9 +155,11 @@ luck-agent/
 
 ---
 
-## 部署方法
+## 部署方法（V2 说明待补齐）
 
-### 方式一：VPS 手动部署（推荐）
+> 注意：本 README 后续仍有部分历史 V1 部署、命令和验收内容，不能作为当前 V2 的操作手册。当前实现事实与待办以 [`docs/current-state.md`](docs/current-state.md) 为准。
+
+### 历史 V1 VPS 部署示例（不可直接使用）
 
 **1. 克隆项目**
 
@@ -271,7 +273,7 @@ sudo journalctl -u luck-agent -n 50 --no-pager
 
 ---
 
-### 方式二：Docker 部署（可选）
+### 历史 V1 Docker 部署示例（不可直接使用）
 
 ```dockerfile
 FROM python:3.10-slim
@@ -284,7 +286,7 @@ CMD ["python", "agent.py"]
 
 ---
 
-## 直接指令（零 AI 依赖，Lark 前缀 `/`）
+## 历史 V1 直接指令（已废弃）
 
 | 分类 | 指令 | 说明 |
 |------|------|------|
@@ -327,7 +329,7 @@ CMD ["python", "agent.py"]
 
 ---
 
-## 意图路由（自动触发，无需用户输入）
+## 历史 V1 意图路由（已废弃）
 
 智能体通过正则 + 关键词自动识别用户意图，注入专用 prompt 和最小工具子集，无需模型自行选择工具：
 
@@ -347,7 +349,7 @@ CMD ["python", "agent.py"]
 
 ---
 
-## 模型路由
+## 历史 V1 模型路由（已废弃）
 
 根据消息长度和关键词自动选择模型，支持故障切换链：
 
@@ -370,7 +372,7 @@ MODEL_LITE=gemini-2.5-flash-lite
 
 ---
 
-## 记忆系统
+## 历史 V1 记忆系统（已废弃）
 
 SQLite WAL 模式，自动积累三类记忆：
 
@@ -384,7 +386,7 @@ SQLite WAL 模式，自动积累三类记忆：
 
 ---
 
-## 热更新
+## 历史 V1 热更新（已废弃）
 
 ```bash
 # 只更新代码，不重建 venv
@@ -393,7 +395,7 @@ git pull && sudo systemctl restart luck-agent
 
 ---
 
-## 常见故障
+## 历史 V1 常见故障（已废弃）
 
 - Lark 发消息失败：先看 `/status`，再查 `/logs error 24`
 - 文件发送失败：优先确认 Lark 权限、上传目录和文件大小限制
@@ -403,7 +405,7 @@ git pull && sudo systemctl restart luck-agent
 
 ---
 
-## 验收清单
+## 历史 V1 验收清单（已废弃）
 
 在真实 Lark 环境里，建议按下面顺序做一次完整验收：
 

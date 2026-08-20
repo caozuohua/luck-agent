@@ -49,6 +49,7 @@ class AgentSettings:
     shell_max_output_chars: int = 4000
     health_host: str = "0.0.0.0"
     health_port: int = 8080
+    vps_name: str = ""
     curator_trigger_interval: int = 50
     curator_periodic_interval_seconds: float = 24 * 60 * 60
     shutdown_timeout_seconds: float = 30.0
@@ -80,6 +81,7 @@ def load_settings() -> AgentSettings:
         shell_max_output_chars=int(os.environ.get("SHELL_MAX_OUTPUT_CHARS", "4000")),
         health_host=os.environ.get("HEALTH_HOST", "0.0.0.0"),
         health_port=int(os.environ.get("HEALTH_PORT", "8080")),
+        vps_name=os.environ.get("VPS_NAME", ""),
         curator_trigger_interval=int(os.environ.get("CURATOR_TRIGGER_INTERVAL", "50")),
         curator_periodic_interval_seconds=float(
             os.environ.get("CURATOR_PERIODIC_INTERVAL_SECONDS", str(24 * 60 * 60))

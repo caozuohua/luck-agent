@@ -18,6 +18,10 @@ class CardSenderProtocol(Protocol):
     async def send_card(self, chat_id: str, card: dict[str, Any]) -> None: ...
 
 
+class QuickCommandProtocol(Protocol):
+    async def handle(self, text: str, *, user_id: str = "default") -> str | None: ...
+
+
 class LarkMessageDeduper:
     def __init__(self, *, ttl_seconds: float = 60.0, max_size: int = 2048) -> None:
         self.ttl_seconds = ttl_seconds
@@ -53,12 +57,14 @@ class LarkWebSocketInterface:
         *,
         agent: AgentProtocol,
         sender: CardSenderProtocol,
+        quick_commands: QuickCommandProtocol | None = None,
         deduper: LarkMessageDeduper | None = None,
         reconnect_delay_seconds: float = 3.0,
         heartbeat_timeout_seconds: float = 60.0,
     ) -> None:
         self.agent = agent
         self.sender = sender
+        self.quick_commands = quick_commands
         self.deduper = deduper or LarkMessageDeduper(ttl_seconds=60)
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
@@ -90,7 +96,13 @@ class LarkWebSocketInterface:
         chat_id = str(event.get("chat_id") or "")
         text = str(event.get("text") or "")
         started = time.perf_counter()
-        response = await self.agent.run_turn(text, user_id=user_id)
+        response = None
+        if self.quick_commands is not None:
+            response = await self.quick_commands.handle(text, user_id=user_id)
+            if response is not None:
+                log.info("lark_quick_command_handled", command=text.strip().lower())
+        if response is None:
+            response = await self.agent.run_turn(text, user_id=user_id)
         card = self.build_card(response)
         await self.sender.send_card(chat_id, card)
         log.info(

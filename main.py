@@ -9,6 +9,7 @@ from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
 from interface.health import HealthService
+from interface.lark_commands import QuickCommandRouter
 from interface.lark_api import LarkApiSender
 from interface.lark_sdk import LarkSdkRunner
 from interface.web import WebInterface
@@ -21,6 +22,7 @@ from memory.goal_store import GoalStore
 from memory.pattern_store import PatternStore
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
+from tools.vps_status import VpsStatusService
 
 log = get_logger("main")
 
@@ -77,6 +79,18 @@ class Runtime:
             max_retry=settings.max_retry,
             graph_db_path=settings.graph_db_path,
         )
+        self.health = HealthService(
+            db=self.db,
+            goal_store=self.goal_store,
+            curator=self.curator,
+            host=settings.health_host,
+            port=settings.health_port,
+        )
+        self.vps_status = VpsStatusService(name=settings.vps_name)
+        self.quick_commands = QuickCommandRouter(
+            health=self.health,
+            vps=self.vps_status,
+        )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).
         if settings.lark_app_id and settings.lark_app_secret:
@@ -94,6 +108,7 @@ class Runtime:
             self.lark = LarkWebSocketInterface(
                 agent=self.agent,
                 sender=LarkApiSender(self.lark_api_client),
+                quick_commands=self.quick_commands,
             )
             self.lark_runner: LarkSdkRunner | None = None
         else:
@@ -103,13 +118,6 @@ class Runtime:
                 port=settings.web_port,
             )
             self.lark_runner = None
-        self.health = HealthService(
-            db=self.db,
-            goal_store=self.goal_store,
-            curator=self.curator,
-            host=settings.health_host,
-            port=settings.health_port,
-        )
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:

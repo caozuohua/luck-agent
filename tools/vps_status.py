@@ -122,7 +122,7 @@ def _format_disk(total: int | None, free: int | None) -> str:
 
 
 def _format_bytes(value: int) -> str:
-    units = ("B", "MB", "GB", "TB")
+    units = ("B", "KB", "MB", "GB", "TB")
     amount = float(value)
     unit = units[0]
     for unit in units:

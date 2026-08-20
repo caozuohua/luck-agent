@@ -28,3 +28,5 @@ class OpsScriptTests(unittest.TestCase):
         self.assertNotIn("luck-agent-upgrade", source)
         self.assertIn("systemd-run", restart)
         self.assertIn("--on-active=3s", restart)
+        self.assertIn("--no-block", restart)
+        self.assertIn("--collect", restart)

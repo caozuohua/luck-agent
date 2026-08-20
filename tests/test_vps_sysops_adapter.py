@@ -36,6 +36,15 @@ async def test_arbitrary_operation_is_rejected(tmp_path: Path) -> None:
     assert "不支持" in result.error
 
 
+async def test_arbitrary_service_restart_is_rejected(tmp_path: Path) -> None:
+    adapter = VpsSysopsAdapter(root=str(tmp_path))
+
+    result = await adapter.restart_service("shell rm -rf /")
+
+    assert result.ok is False
+    assert "不支持重启服务" in result.error
+
+
 async def test_unconfigured_remote_target_is_rejected_instead_of_running_locally(
     tmp_path: Path,
 ) -> None:

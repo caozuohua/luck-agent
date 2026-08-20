@@ -143,6 +143,7 @@ async def test_vps_command_uses_sysops_resources_for_remote_target() -> None:
         "gcp-01|gcp|||personal|gcp-ts|caozuohua99|22",
         default_target=default,
     )
+    targets.select("alice", "gcp-01")
     router = QuickCommandRouter(
         health=FakeHealth(),
         vps=FakeVps(),

@@ -23,6 +23,28 @@ class VpsSysopsResult:
     returncode: int | None = None
     target: VpsTarget | None = None
     truncated: bool = False
+    partial: bool = False
+
+    @property
+    def status(self) -> str:
+        """Return a stable result status for cards, audit, and API callers."""
+        if self.partial:
+            return "partial"
+        return "ok" if self.ok else "error"
+
+    def as_dict(self) -> dict[str, object]:
+        """Expose a secret-free, machine-readable result contract."""
+        return {
+            "operation": self.operation,
+            "status": self.status,
+            "ok": self.ok,
+            "partial": self.partial,
+            "output": self.output,
+            "error": self.error,
+            "returncode": self.returncode,
+            "truncated": self.truncated,
+            "target": self.target.as_dict() if self.target is not None else None,
+        }
 
 
 class VpsSysopsAdapter:
@@ -144,7 +166,13 @@ class VpsSysopsAdapter:
         output, truncated = _truncate_output(output, self.max_output_chars)
         returncode = process.returncode
         error = "" if returncode == 0 else f"脚本退出码 {returncode}"
-        if operation == "logs" and returncode in {1, 123} and output:
+        partial = (
+            operation == "logs"
+            and returncode in {1, 123}
+            and bool(output)
+            and _looks_like_partial_logs(output)
+        )
+        if partial:
             error = "日志部分读取受限：当前运维用户无权读取部分系统日志，已返回可读取内容"
         return VpsSysopsResult(
             operation=operation,
@@ -154,6 +182,7 @@ class VpsSysopsAdapter:
             returncode=returncode,
             target=target,
             truncated=truncated,
+            partial=partial,
         )
 
     def _is_local_target(self, target: VpsTarget | None) -> bool | None:
@@ -247,6 +276,21 @@ def format_vps_sysops_result(result: VpsSysopsResult) -> str:
 
 def _clean_output(value: str) -> str:
     return _ANSI_RE.sub("", value).replace("\r\n", "\n").strip()
+
+
+def _looks_like_partial_logs(value: str) -> bool:
+    """Recognize the known non-root log-read degradation without hiding errors."""
+    lowered = value.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "permission denied",
+            "journalctl",
+            "xargs",
+            "无权限",
+            "拒绝访问",
+        )
+    )
 
 
 def _truncate_output(value: str, limit: int) -> tuple[str, bool]:

@@ -152,6 +152,8 @@ class QuickCommandRouter:
             return False
         selected = self.targets.current(user_id)
         local = getattr(self.vps, "target", None)
+        if selected.ssh_host and local is None:
+            return True
         return local is not None and selected.label != local.label
 
     async def _sysops(self, operation: str, user_id: str) -> str:

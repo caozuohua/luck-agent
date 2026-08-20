@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.targets import VpsTarget, VpsTargetRegistry
-from tools.vps_sysops import VpsSysopsAdapter, _truncate_output
+from tools.vps_sysops import VpsSysopsAdapter, VpsSysopsResult, _truncate_output
 
 
 async def test_missing_vps_sysops_root_is_reported(tmp_path: Path) -> None:
@@ -55,3 +55,28 @@ def test_long_output_keeps_head_and_tail() -> None:
     assert output.startswith("HEAD")
     assert output.endswith("TAIL")
     assert "已保留首尾" in output
+
+
+def test_result_exposes_stable_status_and_secret_free_dict() -> None:
+    result = VpsSysopsResult(
+        operation="logs",
+        ok=False,
+        output="readable logs",
+        error="部分读取受限",
+        returncode=123,
+        partial=True,
+        truncated=True,
+    )
+
+    assert result.status == "partial"
+    assert result.as_dict() == {
+        "operation": "logs",
+        "status": "partial",
+        "ok": False,
+        "partial": True,
+        "output": "readable logs",
+        "error": "部分读取受限",
+        "returncode": 123,
+        "truncated": True,
+        "target": None,
+    }

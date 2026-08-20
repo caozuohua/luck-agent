@@ -41,7 +41,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 
 - V2（`main.py`）作为唯一正式架构；
 - Lark 国际版 Bot `cli_aaba382935b8de18` 已完成 WebSocket 收发和卡片发送；
-- AWS VPS 已部署当前 Agent，生产 commit 为 `cf6a9dc`；
+- AWS VPS 已部署当前 Agent，本次受控重启功能提交为 `1d047d5`；
 - 已有免 LLM 命令：`/ping`、`/health`、`/vps`；
 - 已接入独立 vps_sysops 的只读适配器：
   `/vps status|resources|services|logs`；
@@ -61,6 +61,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 可选 `OPS_ALLOWED_TARGETS/SERVICES/OPERATIONS` 已接入工具执行层，越界操作在审批前拒绝；
 - `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，避免只读路径绕过目标授权；
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
+- 已开放受控的 `/vps service luck-agent restart`：一次性确认码、目标/服务/操作 allowlist、
+  SQLite 审计和固定 sudo wrapper 均已接入；确认结果先发送，再由 systemd 延迟重启。
 
 ## 4. 当前执行顺序
 
@@ -92,9 +94,10 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 
 仍需完成：
 
-1. 已为目标主机和服务建立统一 allowlist 检查；仍需补充用户级和操作级细粒度授权；
+1. 已为目标主机、服务和操作建立 allowlist 检查；仍需补充更细的用户级授权；
 2. 将命令结果继续统一为适合手机查看的结构化卡片，并补充长日志分页；
-3. 为目标选择后的服务操作增加服务级权限和变更操作路由，避免仅切换展示上下文。
+3. 已完成 Luck Agent 自身的受控重启路由；继续扩展其他服务前，必须为每个操作单独定义固定入口、
+   回滚策略和验收测试，不能复用任意 Shell。
 
 已完成：
 
@@ -119,7 +122,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 Provider → Account → Region → Target → Service → Operation
 ```
 
-AWS、GCP、Azure 的只读目标路由和固定服务目录已完成；下一步扩展服务级健康检查和变更审批。
+AWS、GCP、Azure 的只读目标路由、固定服务目录和独立健康检查已完成；Luck Agent 自身的重启
+变更路径已完成。下一步扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
 Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略

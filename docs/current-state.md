@@ -34,7 +34,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|smoke|search` 调用 Mem0 API，
   `a2a` 通过目标 SSH 上的固定 Agent Card probe 检查，`new-api` 只读访问 `/v1/models`，
-  `luck-agent` 通过 vps_sysops 服务清单查看宿主机状态；不接受任意服务名或 Shell。
+  `luck-agent` 可查看宿主机服务状态；`/vps service luck-agent restart` 是当前唯一开放的
+  变更操作，必须通过一次性确认、目标/服务/操作 allowlist 和固定 sudo wrapper；不接受任意服务名或 Shell。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；
@@ -47,6 +48,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   远程通道时，Agent 会拒绝把 AWS 本机资源错误标记成 GCP/Azure。
 - AWS、GCP、Azure 三个已配置目标的 `resources` 远程执行已在线验证成功；三个目标的 `logs`
   均可返回可读报告，权限不足部分以 `partial` 状态呈现。
+- AWS 上的 `luck-agent` 受控重启已在线验证：确认结果先返回，3 秒后由 systemd 调度重启；
+  wrapper 只允许 `luck-agent` 调用固定服务重启入口，服务重启后保持 `active`。
 
 ## 目标对象模型
 
@@ -96,14 +99,15 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 命令结果还未全部统一为适合手机查看的结构化卡片；确认码已按请求中明确的操作、目标和服务进行执行级匹配。
+1. 命令结果还未全部统一为适合手机查看的结构化卡片；长日志分页仍未完成。
 2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标和服务 allowlist、
-   AWS/GCP/Azure 只读 SSH 执行路由已可用，但用户级权限和变更操作仍未统一。
+   AWS/GCP/Azure 只读 SSH 执行路由已可用；目前只有 luck-agent 重启具备受限变更路径，
+   其他服务的变更操作仍未开放。
 3. A2A、new-api 独立只读健康检查已完成；A2A 通过 GCP/Azure 目标 SSH 执行固定 probe，
    new-api 使用 OpenAI-compatible token 访问 `/models`，尚未开放写操作或任务 smoke。
-3. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
-4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
-5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。
+4. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
+5. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
+6. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。
 
 ## 实施顺序
 

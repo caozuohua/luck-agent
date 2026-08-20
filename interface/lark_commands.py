@@ -3,13 +3,19 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from core.log import get_logger
+from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
+from tools.vps_sysops import format_vps_sysops_result
 
 log = get_logger("interface.lark_commands")
 
 
 class HealthProvider(Protocol):
     async def collect_status(self) -> dict[str, Any]: ...
+
+
+class VpsSysopsProvider(Protocol):
+    async def run(self, operation: str) -> Any: ...
 
 
 class QuickCommandRouter:
@@ -20,12 +26,17 @@ class QuickCommandRouter:
         *,
         health: HealthProvider,
         vps: VpsStatusService,
+        sysops: VpsSysopsProvider | None = None,
+        mem0: Mem0Client | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
+        self.sysops = sysops
+        self.mem0 = mem0
 
     async def handle(self, text: str, *, user_id: str = "default") -> str | None:
-        command = " ".join(text.strip().lower().split())
+        raw_command = " ".join(text.strip().split())
+        command = raw_command.lower()
         if command in {"/ping", "ping"}:
             return "🏓 pong"
         if command in {"/help", "help", "帮助", "/帮助"}:
@@ -33,19 +44,30 @@ class QuickCommandRouter:
                 "可用快捷命令：\n"
                 "• `/ping` 连通性\n"
                 "• `/health` Bot 与数据库健康状态\n"
-                "• `/vps` 当前 VPS 资源状态"
+                "• `/vps` 当前 VPS 资源状态\n"
+                "• `/vps status|resources|services|logs` 运维检查\n"
+                "• `/mem0 status` Mem0 API 状态\n"
+                "• `/mem0 smoke` Mem0 写入/搜索/清理测试\n"
+                "• `/mem0 search 关键词` 搜索记忆"
             )
         if command in {"/health", "health", "健康", "/健康"}:
             return await self._health()
-        if command in {
-            "/vps",
-            "vps",
-            "/status",
-            "status",
-            "/vps status",
-            "vps status",
-        }:
+        if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps()
+        for prefix in ("/vps ", "vps "):
+            if command.startswith(prefix):
+                operation = command[len(prefix) :].strip()
+                if operation in {"status", "resources", "services", "logs"}:
+                    return await self._sysops(operation)
+                return None
+        if command in {"/mem0 status", "mem0 status"}:
+            return await self._mem0_status()
+        if command in {"/mem0 smoke", "mem0 smoke"}:
+            return await self._mem0_smoke()
+        for prefix in ("/mem0 search ", "mem0 search "):
+            if command.startswith(prefix):
+                query = raw_command[len(prefix) :].strip()
+                return await self._mem0_search(query)
         return None
 
     async def _health(self) -> str:
@@ -73,3 +95,73 @@ class QuickCommandRouter:
         except Exception as exc:
             log.error("quick_vps_status_failed", error=str(exc))
             return "🖥️ VPS 状态：⚠️ 暂时无法读取主机资源"
+
+    async def _sysops(self, operation: str) -> str:
+        if self.sysops is None:
+            return "🖥️ vps_sysops：⚠️ 尚未部署"
+        try:
+            return format_vps_sysops_result(await self.sysops.run(operation))
+        except Exception as exc:
+            log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
+            return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"
+
+    async def _mem0_status(self) -> str:
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        try:
+            status = await self.mem0.health()
+            mark = "✅" if status.ok else "❌"
+            detail = f"\n• 说明：{status.detail}" if status.detail else ""
+            return f"🧠 Mem0 API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+        except Exception as exc:
+            log.error("quick_mem0_status_failed", error=str(exc))
+            return "🧠 Mem0 API：⚠️ 暂时无法读取状态"
+
+    async def _mem0_smoke(self) -> str:
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        try:
+            result: Mem0SmokeResult = await self.mem0.smoke()
+            mark = "✅" if result.ok and result.cleanup_confirmed else "⚠️"
+            detail = f"\n• 说明：{result.detail}" if result.detail else ""
+            return (
+                f"🧠 Mem0 smoke：{mark}\n"
+                f"• 写入：{result.added}\n"
+                f"• 搜索命中：{result.found}\n"
+                f"• 清理：{result.deleted}\n"
+                f"• 临时标识：`{result.marker}`{detail}"
+            )
+        except Exception as exc:
+            log.error("quick_mem0_smoke_failed", error=str(exc))
+            return "🧠 Mem0 smoke：⚠️ 测试失败"
+
+    async def _mem0_search(self, query: str) -> str:
+        if not query:
+            return "用法：`/mem0 search 关键词`"
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        try:
+            results = await self.mem0.search(query)
+            if not results:
+                return f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆"
+            lines = [f"🧠 Mem0 搜索：{len(results)} 条结果"]
+            for index, item in enumerate(results[:5], start=1):
+                text = _memory_text(item) or "（无文本）"
+                memory_id = str(item.get("id", ""))
+                score = item.get("score")
+                suffix = f" · {memory_id[:12]}" if memory_id else ""
+                if isinstance(score, (int, float)):
+                    suffix += f" · score {score:.3f}"
+                lines.append(f"{index}. {text[:180]}{suffix}")
+            return "\n".join(lines)
+        except Exception as exc:
+            log.error("quick_mem0_search_failed", error=str(exc))
+            return "🧠 Mem0 搜索：⚠️ 查询失败"
+
+
+def _memory_text(item: dict[str, Any]) -> str:
+    for key in ("memory", "text", "content"):
+        value = item.get(key)
+        if isinstance(value, str):
+            return " ".join(value.split())
+    return ""

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
+from tools.mem0_client import Mem0Health, Mem0SmokeResult
 from tools.vps_status import HostStatus
+from tools.vps_sysops import VpsSysopsResult
 
 
 class FakeHealth:
@@ -29,6 +31,29 @@ class FakeVps:
         )
 
 
+class FakeSysops:
+    async def run(self, operation: str) -> VpsSysopsResult:
+        return VpsSysopsResult(operation=operation, ok=True, output=f"checked {operation}")
+
+
+class FakeMem0:
+    async def health(self) -> Mem0Health:
+        return Mem0Health(ok=True, latency_ms=4, detail="test")
+
+    async def smoke(self) -> Mem0SmokeResult:
+        return Mem0SmokeResult(
+            ok=True,
+            marker="test-marker",
+            added=1,
+            found=1,
+            deleted=1,
+            cleanup_confirmed=True,
+        )
+
+    async def search(self, query: str) -> list[dict]:
+        return [{"id": "memory-1", "memory": f"remember {query}", "score": 0.9}]
+
+
 class FakeAgent:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -47,11 +72,20 @@ class FakeSender:
 
 
 async def test_quick_commands_return_without_llm() -> None:
-    router = QuickCommandRouter(health=FakeHealth(), vps=FakeVps())
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        mem0=FakeMem0(),
+    )
 
     assert await router.handle("/ping") == "🏓 pong"
     assert "SQLite：✅" in (await router.handle("/health") or "")
     assert "aws-test" in (await router.handle("/vps") or "")
+    assert "checked resources" in (await router.handle("/vps resources") or "")
+    assert "延迟：4 ms" in (await router.handle("/mem0 status") or "")
+    assert "临时标识" in (await router.handle("/mem0 smoke") or "")
+    assert "remember database" in (await router.handle("/mem0 search database") or "")
     assert await router.handle("check the server") is None
 
 

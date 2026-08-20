@@ -50,6 +50,14 @@ class AgentSettings:
     health_host: str = "0.0.0.0"
     health_port: int = 8080
     vps_name: str = ""
+    vps_sysops_root: str = "/opt/vps_sysops"
+    vps_sysops_profile: str = "aws"
+    vps_sysops_timeout_seconds: float = 15.0
+    mem0_base_url: str = ""
+    mem0_api_key: str = ""
+    mem0_user_id: str = "personal"
+    mem0_agent_id: str = "luck-agent"
+    mem0_timeout_seconds: float = 10.0
     curator_trigger_interval: int = 50
     curator_periodic_interval_seconds: float = 24 * 60 * 60
     shutdown_timeout_seconds: float = 30.0
@@ -82,6 +90,16 @@ def load_settings() -> AgentSettings:
         health_host=os.environ.get("HEALTH_HOST", "0.0.0.0"),
         health_port=int(os.environ.get("HEALTH_PORT", "8080")),
         vps_name=os.environ.get("VPS_NAME", ""),
+        vps_sysops_root=os.environ.get("VPS_SYSOPS_ROOT", "/opt/vps_sysops"),
+        vps_sysops_profile=os.environ.get("VPS_SYSOPS_PROFILE", "aws"),
+        vps_sysops_timeout_seconds=float(
+            os.environ.get("VPS_SYSOPS_TIMEOUT_SECONDS", "15")
+        ),
+        mem0_base_url=os.environ.get("MEM0_BASE_URL", ""),
+        mem0_api_key=os.environ.get("MEM0_API_KEY", ""),
+        mem0_user_id=os.environ.get("MEM0_USER_ID", "personal"),
+        mem0_agent_id=os.environ.get("MEM0_AGENT_ID", "luck-agent"),
+        mem0_timeout_seconds=float(os.environ.get("MEM0_TIMEOUT_SECONDS", "10")),
         curator_trigger_interval=int(os.environ.get("CURATOR_TRIGGER_INTERVAL", "50")),
         curator_periodic_interval_seconds=float(
             os.environ.get("CURATOR_PERIODIC_INTERVAL_SECONDS", str(24 * 60 * 60))

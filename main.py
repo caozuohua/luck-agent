@@ -22,7 +22,9 @@ from memory.goal_store import GoalStore
 from memory.pattern_store import PatternStore
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
+from tools.mem0_client import Mem0Client
 from tools.vps_status import VpsStatusService
+from tools.vps_sysops import VpsSysopsAdapter
 
 log = get_logger("main")
 
@@ -87,9 +89,27 @@ class Runtime:
             port=settings.health_port,
         )
         self.vps_status = VpsStatusService(name=settings.vps_name)
+        self.vps_sysops = VpsSysopsAdapter(
+            root=settings.vps_sysops_root,
+            profile=settings.vps_sysops_profile,
+            timeout_seconds=settings.vps_sysops_timeout_seconds,
+        )
+        self.mem0 = (
+            Mem0Client(
+                base_url=settings.mem0_base_url,
+                api_key=settings.mem0_api_key,
+                user_id=settings.mem0_user_id,
+                agent_id=settings.mem0_agent_id,
+                timeout_seconds=settings.mem0_timeout_seconds,
+            )
+            if settings.mem0_base_url
+            else None
+        )
         self.quick_commands = QuickCommandRouter(
             health=self.health,
             vps=self.vps_status,
+            sysops=self.vps_sysops,
+            mem0=self.mem0,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

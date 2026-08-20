@@ -170,7 +170,6 @@ class VpsSysopsAdapter:
             operation == "logs"
             and returncode in {1, 123}
             and bool(output)
-            and _looks_like_partial_logs(output)
         )
         if partial:
             error = "日志部分读取受限：当前运维用户无权读取部分系统日志，已返回可读取内容"
@@ -276,21 +275,6 @@ def format_vps_sysops_result(result: VpsSysopsResult) -> str:
 
 def _clean_output(value: str) -> str:
     return _ANSI_RE.sub("", value).replace("\r\n", "\n").strip()
-
-
-def _looks_like_partial_logs(value: str) -> bool:
-    """Recognize the known non-root log-read degradation without hiding errors."""
-    lowered = value.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "permission denied",
-            "journalctl",
-            "xargs",
-            "无权限",
-            "拒绝访问",
-        )
-    )
 
 
 def _truncate_output(value: str, limit: int) -> tuple[str, bool]:

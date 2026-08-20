@@ -6,6 +6,17 @@ from core.targets import VpsTarget, VpsTargetRegistry
 from tools.vps_sysops import VpsSysopsAdapter, VpsSysopsResult, _truncate_output
 
 
+class _FakeProcess:
+    returncode = 123
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"partial log report\n", b""
+
+
+async def _fake_create_subprocess_exec(*args, **kwargs) -> _FakeProcess:
+    return _FakeProcess()
+
+
 async def test_missing_vps_sysops_root_is_reported(tmp_path: Path) -> None:
     adapter = VpsSysopsAdapter(root=str(tmp_path / "missing"))
 
@@ -45,6 +56,26 @@ async def test_unconfigured_remote_target_is_rejected_instead_of_running_locally
     assert "SSH" in result.error
     assert result.target is not None
     assert result.target.label == "gcp-01"
+
+
+async def test_log_report_with_known_partial_exit_is_classified_as_partial(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = tmp_path / "scripts" / "09_logs.sh"
+    script.parent.mkdir()
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "tools.vps_sysops.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+
+    result = await VpsSysopsAdapter(root=str(tmp_path)).run("logs")
+
+    assert result.status == "partial"
+    assert result.ok is False
+    assert result.returncode == 123
+    assert "部分读取受限" in result.error
 
 
 def test_long_output_keeps_head_and_tail() -> None:

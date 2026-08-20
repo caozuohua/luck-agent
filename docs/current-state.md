@@ -25,12 +25,14 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - SQLite 保存 Goal、上下文、模式和运行时状态。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；`/targets` 会返回
-  VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他运维按钮仍未开放。
+  VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他变更运维按钮仍未开放。
+  `/vps logs` 超过单页长度时返回带上一页/下一页 callback 的分页卡片，分页令牌按用户隔离并在
+  10 分钟后过期。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
-  输出默认限制为 5000 字符，长输出保留首尾；结果提供 `ok/partial/error` 三态和
-  `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
+  非日志输出按 `VPS_SYSOPS_MAX_OUTPUT_CHARS` 限制并保留首尾；日志按单页长度切分，最多缓存 12 页；结果提供
+  `ok/partial/error` 三态和 `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|smoke|search` 调用 Mem0 API，
   `a2a` 通过目标 SSH 上的固定 Agent Card probe 检查，`new-api` 只读访问 `/v1/models`，
@@ -99,7 +101,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 命令结果还未全部统一为适合手机查看的结构化卡片；长日志分页仍未完成。
+1. 命令结果还未全部统一为适合手机查看的结构化卡片；日志分页已完成，其他长结果仍采用首尾保留。
 2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标和服务 allowlist、
    AWS/GCP/Azure 只读 SSH 执行路由已可用；目前只有 luck-agent 重启具备受限变更路径，
    其他服务的变更操作仍未开放。

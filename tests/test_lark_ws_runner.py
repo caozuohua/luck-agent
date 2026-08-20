@@ -18,8 +18,10 @@ class FakeLarkClient:
         self.disconnected = False
 
     def start(self) -> None:
-        self.started.set()
         self.sdk_loop.create_task(self._background_loop())
+        # Signal readiness only after the task is queued.  Signalling before
+        # create_task() lets the test race shutdown against client startup.
+        self.started.set()
         # Use run_forever (not run_until_complete) so an external loop.stop()
         # — issued during shutdown — cleanly returns and lets the thread join.
         self.sdk_loop.run_forever()

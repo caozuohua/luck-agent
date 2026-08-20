@@ -91,6 +91,39 @@ async def test_quick_commands_return_without_llm() -> None:
     assert await router.handle("check the server") is None
 
 
+async def test_service_catalog_routes_mem0_and_host_services() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        mem0=FakeMem0(),
+    )
+
+    catalog = await router.handle("/vps service list")
+    assert "`mem0`" in (catalog or "")
+    assert "`a2a`" in (catalog or "")
+    assert "延迟：4 ms" in (await router.handle("/vps service mem0 status") or "")
+    assert "checked services" in (
+        await router.handle("/vps service a2a status") or ""
+    )
+
+
+async def test_service_catalog_honors_service_allowlist() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        mem0=FakeMem0(),
+        permission_policy=OperationPermissionPolicy.from_csv(services="mem0"),
+    )
+
+    catalog = await router.handle("/vps service list")
+    assert "`mem0`" in (catalog or "")
+    assert "`a2a`" not in (catalog or "")
+    denied = await router.handle("/vps service a2a status")
+    assert "无权访问服务" in (denied or "")
+
+
 async def test_lark_interface_short_circuits_quick_command() -> None:
     agent = FakeAgent()
     sender = FakeSender()

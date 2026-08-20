@@ -159,6 +159,7 @@ class Runtime:
             mem0=self.mem0,
             targets=self.target_registry,
             permission_policy=self.operation_permission_policy,
+            mem0_target_id=self.vps_target.label,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

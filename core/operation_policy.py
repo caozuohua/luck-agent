@@ -82,7 +82,7 @@ class OperationPermissionPolicy:
                 return False
         if self.allowed_services:
             service = _operation_service(tool_name, args)
-            if not service or service not in self.allowed_services:
+            if not self.allows_service(service):
                 return False
         if self.allowed_operations:
             operation = _operation_name(tool_name, args)
@@ -94,6 +94,13 @@ class OperationPermissionPolicy:
         """Check a target ID for both read-only commands and tool execution."""
         normalized = str(target or "").strip().lower()
         return not self.allowed_targets or bool(normalized and normalized in self.allowed_targets)
+
+    def allows_service(self, service: str) -> bool:
+        """Check a service ID for both quick commands and tool execution."""
+        normalized = str(service or "").strip().lower()
+        return not self.allowed_services or bool(
+            normalized and normalized in self.allowed_services
+        )
 
 
 @dataclass(frozen=True)

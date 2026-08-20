@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from core.log import get_logger
 from core.operation_policy import OperationPermissionPolicy
+from core.services import format_service_catalog, get_service
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
@@ -40,6 +41,7 @@ class QuickCommandRouter:
         mem0: Mem0Client | None = None,
         targets: VpsTargetRegistry | None = None,
         permission_policy: OperationPermissionPolicy | None = None,
+        mem0_target_id: str = "",
     ) -> None:
         self.health = health
         self.vps = vps
@@ -47,6 +49,7 @@ class QuickCommandRouter:
         self.mem0 = mem0
         self.targets = targets
         self.permission_policy = permission_policy
+        self.mem0_target_id = mem0_target_id.strip().lower()
 
     async def handle(
         self,
@@ -65,6 +68,8 @@ class QuickCommandRouter:
                 "• `/health` Bot 与数据库健康状态\n"
                 "• `/vps` 当前 VPS 资源状态\n"
                 "• `/vps status|resources|services|logs` 运维检查\n"
+                "• `/vps service list` 服务目录\n"
+                "• `/vps service mem0 status|smoke|search 关键词` Mem0 服务操作\n"
                 "• `/targets` 选择 VPS 目标\n"
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
@@ -80,6 +85,11 @@ class QuickCommandRouter:
             return await self._health()
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
+        for prefix in ("/vps service ", "vps service ", "/service ", "service "):
+            if command.startswith(prefix):
+                return await self._service(raw_command[len(prefix) :].strip(), user_id)
+        if command in {"/vps service", "vps service", "/service", "service"}:
+            return self._service_catalog()
         for prefix in ("/vps ", "vps "):
             if command.startswith(prefix):
                 operation = command[len(prefix) :].strip()
@@ -205,6 +215,51 @@ class QuickCommandRouter:
         if self._target_allowed(target.label):
             return None
         return f"⛔ 当前用户无权访问目标：`{target.label}`"
+
+    def _service_catalog(self) -> str:
+        allowed = None
+        if self.permission_policy is not None and self.permission_policy.allowed_services:
+            allowed = self.permission_policy.allowed_services
+        return format_service_catalog(allowed=allowed)
+
+    async def _service(self, request: str, user_id: str) -> str:
+        parts = request.split(maxsplit=2)
+        service_id = parts[0].lower() if parts else ""
+        if service_id in {"list", "catalog", "help"}:
+            return self._service_catalog()
+        spec = get_service(service_id)
+        if spec is None:
+            return f"🧩 未登记服务：`{service_id or '(empty)'}`\n{self._service_catalog()}"
+        if self.permission_policy is not None and not self.permission_policy.allows_service(
+            spec.service_id
+        ):
+            return f"⛔ 当前用户无权访问服务：`{spec.service_id}`"
+        denied = self._target_denial(user_id)
+        if denied:
+            return denied
+
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        argument = parts[2].strip() if len(parts) > 2 else ""
+        if spec.backend == "mem0":
+            if self.mem0_target_id and self.targets is not None:
+                target = self.targets.current(user_id)
+                if target.label.lower() != self.mem0_target_id:
+                    return (
+                        f"🧩 {spec.label} 当前绑定目标为 `{self.mem0_target_id}`；"
+                        f"当前选择为 `{target.label}`，请先切换目标"
+                    )
+            if action in {"status", "health"}:
+                return await self._mem0_status()
+            if action == "smoke":
+                return await self._mem0_smoke()
+            if action == "search":
+                return await self._mem0_search(argument)
+            return "用法：`/vps service mem0 status|smoke|search 关键词`"
+
+        if action not in {"status", "health", "list"}:
+            return f"用法：`/vps service {spec.service_id} status`"
+        result = await self._sysops("services", user_id)
+        return f"🧩 {spec.label} · 宿主机服务清单\n{result}"
 
     async def _mem0_status(self) -> str:
         if self.mem0 is None:

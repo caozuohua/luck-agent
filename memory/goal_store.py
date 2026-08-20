@@ -162,6 +162,14 @@ class GoalStore:
                     else "goal_status_update_skipped_invalid"
                 )
                 log.debug(event, goal_id=goal_id, error=str(exc))
+            except ValueError as exc:
+                # aiosqlite raises ValueError when a close races with a
+                # queued status write. This is the async equivalent of the
+                # sqlite3 closed-connection error above; other ValueErrors
+                # must remain visible instead of being swallowed.
+                if str(exc) != "no active connection":
+                    raise
+                log.debug("goal_status_update_skipped_db_closed", goal_id=goal_id, error=str(exc))
 
         task = asyncio.create_task(run_after_previous())
         self._last_task = task

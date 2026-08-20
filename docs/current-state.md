@@ -75,17 +75,17 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 全套测试仍有一个 Graph 多步集成基线失败，需要修复并补充异步状态写入收尾。
-2. Lark 用户/群聊 allowlist 和危险操作确认尚未完整落地。
-3. AWS 适配器已可用，但 Provider → Account → Region → Target → Service 模型尚未统一。
-4. LLM Provider Router、配额熔断和多 Provider 降级尚未完成。
+1. Lark 用户/群聊 allowlist 和危险操作确认尚未完整落地。
+2. AWS 适配器已可用，但 Provider → Account → Region → Target → Service 模型尚未统一。
+3. LLM Provider Router、配额熔断和多 Provider 降级尚未完成。
+4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
 5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。
 
 ## 实施顺序
 
 详细基线见 [`docs/roadmap.md`](roadmap.md)。当前顺序为：
 
-1. 稳定性、Graph 基线和真实 AWS 验收；
+1. LLM 容错、AWS 重启恢复和运行时配置一致性；
 2. Lark 用户/群聊权限与危险操作确认；
 3. 无 LLM VPS 运维控制面和多云目标模型；
 4. Mem0 记忆策略与 LLM Provider Router；

@@ -48,13 +48,14 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已接入 Mem0：`/mem0 status`、`/mem0 smoke`、`/mem0 search 关键词`；
 - Mem0 API Key、API health 和写入/搜索/清理 smoke 已验证；
 - 本地新增适配器测试已通过；
+- Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 49 passed；
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
 
 ## 4. 当前执行顺序
 
 ### 阶段一：稳定性和真实验收（当前最高优先级）
 
-1. 修复现有 Graph 多步集成测试失败，并消除异步状态写入告警；
+1. 已修复 Graph 多步集成测试失败，并处理异步状态写入关闭竞态；
 2. 完成 LLM 429、限额耗尽、超时、5xx、空响应和上下文过长的降级；
 3. 为模型调用增加超时、重试上限、熔断和冷却，不重复执行有副作用工具；
 4. 固化 AWS Lark 真实验收：收发、卡片、快捷命令、异常恢复和重启恢复；
@@ -66,6 +67,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - AWS systemd 服务 active，WebSocket 稳定连接；
 - 核心快捷命令不调用 LLM；
 - LLM 不可用时，健康检查和只读运维仍可用。
+
+当前阶段状态：Graph 基线已完成；LLM 容错、AWS 重启恢复和运行时配置一致性
+仍待完成。
 
 ### 阶段二：权限和无 LLM 运维控制面
 

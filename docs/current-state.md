@@ -79,7 +79,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 确认码还未持久化绑定到具体目标/服务/操作，当前内存授权仍按一次请求授予一次危险工具调用。
+1. 命令结果还未统一为适合手机查看的结构化卡片；确认码已按请求中明确的操作、目标和服务进行执行级匹配。
 2. AWS 适配器已可用，但 Provider → Account → Region → Target → Service 模型尚未统一。
 3. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
 4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。

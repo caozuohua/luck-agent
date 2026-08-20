@@ -5,6 +5,8 @@ import secrets
 import time
 from dataclasses import dataclass
 
+from core.operation_policy import OperationScope, scope_from_request, scope_from_tool
+
 
 _DANGEROUS_REQUEST_RE = re.compile(
     r"(?:"
@@ -23,6 +25,7 @@ class PendingApproval:
     user_id: str
     request: str
     expires_at: float
+    scope: OperationScope = OperationScope()
 
 
 class LarkApprovalManager:
@@ -47,6 +50,7 @@ class LarkApprovalManager:
             user_id=user_id,
             request=request.strip(),
             expires_at=time.time() + self.ttl_seconds,
+            scope=scope_from_request(request),
         )
         self._pending[(user_id, token.lower())] = pending
         return pending
@@ -68,13 +72,15 @@ class LarkApprovalManager:
     ) -> bool:
         """Consume the grant exactly once at the tool execution boundary.
 
-        The tool and args are accepted so the checker can later enforce a
-        request-to-operation binding without changing the executor contract.
-        The current grant is intentionally scoped to one approved request.
+        The grant is intentionally scoped to one approved request. Explicit
+        operation, target, and service fields in that request must match the
+        actual tool call; omitted fields remain wildcards.
         """
-        del tool_name, args
         self._purge()
-        return self._approved.pop((user_id, token.strip().lower()), None) is not None
+        pending = self._approved.pop((user_id, token.strip().lower()), None)
+        if pending is None:
+            return False
+        return pending.scope.matches(scope_from_tool(tool_name, args or {}))
 
     def cancel(self, *, user_id: str) -> bool:
         removed = False

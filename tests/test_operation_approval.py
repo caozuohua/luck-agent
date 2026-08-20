@@ -4,6 +4,8 @@ from typing import Any
 
 from core.operation_policy import (
     OperationPermissionPolicy,
+    scope_from_request,
+    scope_from_tool,
     operation_description,
     operation_requires_approval,
 )
@@ -137,3 +139,46 @@ def test_lark_grant_is_consumed_once() -> None:
     assert manager.confirm(user_id="ou_user", token=pending.token) == pending
     assert manager.consume_grant("ou_user", pending.token, "service_restart", {})
     assert not manager.consume_grant("ou_user", pending.token, "service_restart", {})
+
+
+def test_confirmation_scope_matches_operation_target_and_service() -> None:
+    manager = LarkApprovalManager()
+    pending = manager.issue(
+        user_id="ou_user",
+        request="重启 target=aws-prod 的 luck-agent 服务",
+    )
+    assert pending.scope == scope_from_request("重启 target=aws-prod 的 luck-agent 服务")
+    assert manager.confirm(user_id="ou_user", token=pending.token) == pending
+
+    assert manager.consume_grant(
+        "ou_user",
+        pending.token,
+        "service_restart",
+        {"target": "aws-prod", "service": "luck-agent"},
+    )
+
+    pending = manager.issue(
+        user_id="ou_user",
+        request="重启 target=aws-prod 的 luck-agent 服务",
+    )
+    manager.confirm(user_id="ou_user", token=pending.token)
+    assert not manager.consume_grant(
+        "ou_user",
+        pending.token,
+        "service_stop",
+        {"target": "aws-prod", "service": "luck-agent"},
+    )
+
+
+def test_confirmation_scope_omitted_fields_are_wildcards() -> None:
+    manager = LarkApprovalManager()
+    pending = manager.issue(user_id="ou_user", request="重启服务")
+    manager.confirm(user_id="ou_user", token=pending.token)
+
+    assert manager.consume_grant(
+        "ou_user",
+        pending.token,
+        "service_restart",
+        {"target": "aws-prod", "service": "luck-agent"},
+    )
+    assert scope_from_tool("service_restart", {"service": "luck-agent"}).operation == "restart"

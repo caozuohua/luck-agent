@@ -34,6 +34,22 @@ _SYSTEMCTL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_REQUEST_OPERATION_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"重启|重启服务|\brestart\b|\breboot\b", "restart"),
+    (r"停止|停止服务|\bstop\b", "stop"),
+    (r"启动|启动服务|\bstart\b", "start"),
+    (r"部署|\bdeploy\b", "deploy"),
+    (r"升级|\bupgrade\b", "upgrade"),
+    (r"回滚|\brollback\b", "rollback"),
+    (r"删除|清理|\bdelete\b|\bremove\b|\brm\b", "delete"),
+    (r"安装|\binstall\b", "install"),
+    (r"卸载|\buninstall\b", "uninstall"),
+    (r"推送|\bpush\b", "push"),
+    (r"写入|修改|\bwrite\b|\bupdate\b", "write"),
+    (r"备份|\bbackup\b", "backup"),
+    (r"恢复|\brestore\b", "restore"),
+)
+
 
 @dataclass(frozen=True)
 class OperationPermissionPolicy:
@@ -73,6 +89,60 @@ class OperationPermissionPolicy:
             if not operation or operation not in self.allowed_operations:
                 return False
         return True
+
+
+@dataclass(frozen=True)
+class OperationScope:
+    operation: str = ""
+    target: str = ""
+    service: str = ""
+
+    def matches(self, actual: "OperationScope") -> bool:
+        """Match only fields explicitly named by the approved request."""
+        return all(
+            not expected or expected == observed
+            for expected, observed in (
+                (self.operation, actual.operation),
+                (self.target, actual.target),
+                (self.service, actual.service),
+            )
+        )
+
+
+def scope_from_request(text: str) -> OperationScope:
+    normalized = " ".join(text.strip().split())
+    operation = ""
+    for pattern, value in _REQUEST_OPERATION_PATTERNS:
+        if re.search(pattern, normalized, re.IGNORECASE):
+            operation = value
+            break
+
+    target = ""
+    target_match = re.search(
+        r"(?:目标|target|host|server|instance)\s*(?:为|是|=|:)?\s*([\w.@:-]+)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if target_match:
+        target = target_match.group(1).lower()
+
+    service = ""
+    service_match = re.search(
+        r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if service_match:
+        service = (service_match.group(1) or service_match.group(2)).lower()
+    return OperationScope(operation=operation, target=target, service=service)
+
+
+def scope_from_tool(tool_name: str, args: dict[str, Any]) -> OperationScope:
+    return OperationScope(
+        operation=_operation_name(tool_name, args),
+        target=_operation_target(args),
+        service=_operation_service(tool_name, args),
+    )
 
 
 def operation_requires_approval(tool_name: str, args: dict[str, Any]) -> bool:
@@ -127,6 +197,17 @@ def _operation_name(tool_name: str, args: dict[str, Any]) -> str:
     match = _SYSTEMCTL_RE.search(command)
     if match:
         return match.group("operation").lower()
+    command_lower = command.lower()
+    if re.search(r"\bgit\s+push\b", command_lower):
+        return "push"
+    if re.search(r"\bgit\s+commit\b", command_lower):
+        return "commit"
+    if re.search(r"\b(?:pip|pip3)\s+install\b", command_lower):
+        return "install"
+    if re.search(r"\b(?:curl|wget)\b.*(?:-x|--request)\s*(?:post|put|patch|delete)", command_lower):
+        return "write"
+    if re.search(r"\brm\b", command_lower):
+        return "delete"
     return tool_name.lower()
 
 

@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from interface.lark_api import LarkApiSender
-from interface.lark_sdk import normalize_message_event
+from interface.lark_sdk import normalize_card_action_event, normalize_message_event
 
 
 def _message_event(*, message_type: str = "text", content: str = '{"text":"ping"}'):
@@ -36,6 +36,33 @@ def test_normalize_lark_message_event() -> None:
 
 def test_normalize_ignores_non_text_events() -> None:
     assert normalize_message_event(_message_event(message_type="image")) is None
+
+
+def test_normalize_lark_card_action_event() -> None:
+    event = SimpleNamespace(
+        event=SimpleNamespace(
+            operator=SimpleNamespace(open_id="ou_user"),
+            context=SimpleNamespace(open_message_id="om_card", open_chat_id="oc_chat"),
+            action=SimpleNamespace(
+                tag="select_static",
+                value={"target_id": "gcp-01"},
+                option="",
+                name="target_select",
+            ),
+        )
+    )
+
+    assert normalize_card_action_event(event) == {
+        "message_id": "om_card",
+        "chat_id": "oc_chat",
+        "user_id": "ou_user",
+        "action": {
+            "tag": "select_static",
+            "value": {"target_id": "gcp-01"},
+            "option": "",
+            "name": "target_select",
+        },
+    }
 
 
 async def test_lark_api_sender_builds_interactive_chat_message() -> None:

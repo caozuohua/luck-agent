@@ -86,7 +86,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 仍需完成：
 
 1. 为目标主机、服务和操作建立细粒度权限检查；
-2. 将命令结果统一为适合手机查看的卡片结构。
+2. 将命令结果统一为适合手机查看的卡片结构；
+3. 为目标选择后的服务操作增加真正的 Provider/Target 路由，避免仅切换展示上下文。
 
 已完成：
 
@@ -96,6 +97,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 确认码已绑定请求中明确的操作、目标和服务；未明确字段按通配处理，工具不匹配时拒绝并消费确认码。
 - Lark Card 2.0 已增加移动端标题和状态模板，保留 Markdown 正文兼容现有消息发送链路；
 - `VpsTarget` 已统一 provider/account/region/target/role 元数据，并传入本机状态与 vps_sysops 适配器。
+- `VPS_TARGETS` 已支持注册多个目标；`/targets` 返回 Card 2.0 下拉框，按 Lark 用户保存选择，
+  同时保留 `/target TARGET_ID` 文本后备命令；Lark `select_static` 回调已接入。
 
 ### 阶段三：多云目标模型
 

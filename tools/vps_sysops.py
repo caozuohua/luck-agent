@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.targets import VpsTarget
+from core.targets import VpsTarget, VpsTargetRegistry
 
 
 _ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -43,16 +43,19 @@ class VpsSysopsAdapter:
         root: str = "/opt/vps_sysops",
         profile: str = "aws",
         target: VpsTarget | None = None,
+        target_registry: VpsTargetRegistry | None = None,
         timeout_seconds: float = 15.0,
         max_output_chars: int = 3500,
     ) -> None:
         self.root = Path(root).expanduser()
         self.profile = profile.strip()
         self.target = target
+        self.target_registry = target_registry
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
 
-    async def run(self, operation: str) -> VpsSysopsResult:
+    async def run(self, operation: str, *, user_id: str = "default") -> VpsSysopsResult:
+        target = self.target_registry.current(user_id) if self.target_registry else self.target
         operation = operation.strip().lower()
         relative_script = self.OPERATIONS.get(operation)
         if relative_script is None:
@@ -60,6 +63,7 @@ class VpsSysopsAdapter:
                 operation=operation,
                 ok=False,
                 error=f"不支持的 vps_sysops 操作: {operation or '(empty)'}",
+                target=target,
             )
 
         script = self.root / relative_script
@@ -68,25 +72,27 @@ class VpsSysopsAdapter:
                 operation=operation,
                 ok=False,
                 error=f"vps_sysops 未部署: {self.root}",
+                target=target,
             )
         if not script.is_file():
             return VpsSysopsResult(
                 operation=operation,
                 ok=False,
                 error=f"vps_sysops 脚本不存在: {relative_script}",
+                target=target,
             )
 
         env = os.environ.copy()
         if self.profile:
             env["VPS_PROFILE"] = self.profile
-        if self.target is not None:
+        if target is not None:
             env.update(
                 {
-                    "VPS_PROVIDER": self.target.provider,
-                    "VPS_ACCOUNT": self.target.account,
-                    "VPS_REGION": self.target.region,
-                    "VPS_TARGET_ID": self.target.target_id,
-                    "VPS_ROLE": self.target.role,
+                    "VPS_PROVIDER": target.provider,
+                    "VPS_ACCOUNT": target.account,
+                    "VPS_REGION": target.region,
+                    "VPS_TARGET_ID": target.target_id,
+                    "VPS_ROLE": target.role,
                 }
             )
 
@@ -110,12 +116,14 @@ class VpsSysopsAdapter:
                 operation=operation,
                 ok=False,
                 error=f"vps_sysops 操作超时（>{self.timeout_seconds:g}s）",
+                target=target,
             )
         except OSError as exc:
             return VpsSysopsResult(
                 operation=operation,
                 ok=False,
                 error=f"无法启动 vps_sysops: {exc}",
+                target=target,
             )
 
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
@@ -127,7 +135,7 @@ class VpsSysopsAdapter:
             output=output,
             error="" if process.returncode == 0 else f"脚本退出码 {process.returncode}",
             returncode=process.returncode,
-            target=self.target,
+            target=target,
         )
 
 

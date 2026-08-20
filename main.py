@@ -9,7 +9,7 @@ from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
 from core.operation_policy import OperationPermissionPolicy
-from core.targets import VpsTarget
+from core.targets import VpsTarget, VpsTargetRegistry
 from interface.health import HealthService
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager
@@ -121,11 +121,20 @@ class Runtime:
             target_id=settings.vps_target_id or settings.vps_name,
             role=settings.vps_role,
         )
-        self.vps_status = VpsStatusService(name=settings.vps_name, target=self.vps_target)
+        self.target_registry = VpsTargetRegistry.from_csv(
+            settings.vps_targets,
+            default_target=self.vps_target,
+        )
+        self.vps_status = VpsStatusService(
+            name=settings.vps_name,
+            target=self.vps_target,
+            target_registry=self.target_registry,
+        )
         self.vps_sysops = VpsSysopsAdapter(
             root=settings.vps_sysops_root,
             profile=settings.vps_sysops_profile,
             target=self.vps_target,
+            target_registry=self.target_registry,
             timeout_seconds=settings.vps_sysops_timeout_seconds,
         )
         self.mem0 = (
@@ -144,6 +153,7 @@ class Runtime:
             vps=self.vps_status,
             sysops=self.vps_sysops,
             mem0=self.mem0,
+            targets=self.target_registry,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).
@@ -193,6 +203,7 @@ class Runtime:
                     domain=self.settings.lark_domain,
                     application_loop=loop,
                     on_message=self.lark.handle_message,
+                    on_card_action=self.lark.handle_card_action,
                     on_connected=self.lark.mark_heartbeat,
                     on_disconnected=lambda: setattr(self.lark, "connected", False),
                     stop_timeout=self.settings.shutdown_timeout_seconds,

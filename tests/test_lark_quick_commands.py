@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
@@ -110,3 +111,27 @@ async def test_lark_interface_short_circuits_quick_command() -> None:
     assert processed is True
     assert agent.calls == []
     assert "pong" in str(sender.cards[0])
+
+
+async def test_target_commands_return_card_and_keep_user_selection() -> None:
+    default = VpsTarget(provider="aws", target_id="aws-01")
+    targets = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp||us-west1|staging",
+        default_target=default,
+    )
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        targets=targets,
+    )
+
+    result = await router.handle("/targets", user_id="alice")
+    assert result is not None
+    assert result.text == "🎯 当前目标：AWS / aws-01"
+    assert result.card is not None
+    assert result.card["body"]["elements"][1]["options"]
+
+    selected = await router.handle("/target gcp-01", user_id="alice")
+    assert selected.text == "🎯 当前目标：GCP / gcp-01 / us-west1"
+    assert targets.current("alice").label == "gcp-01"
+    assert targets.current("bob").label == "aws-01"

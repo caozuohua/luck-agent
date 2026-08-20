@@ -66,6 +66,7 @@ class AgentSettings:
     vps_region: str = ""
     vps_target_id: str = ""
     vps_role: str = "personal"
+    vps_targets: str = ""
     vps_sysops_root: str = "/opt/vps_sysops"
     vps_sysops_profile: str = "aws"
     vps_sysops_timeout_seconds: float = 15.0
@@ -123,6 +124,7 @@ def load_settings() -> AgentSettings:
         vps_region=os.environ.get("VPS_REGION", ""),
         vps_target_id=os.environ.get("VPS_TARGET_ID", ""),
         vps_role=os.environ.get("VPS_ROLE", "personal"),
+        vps_targets=os.environ.get("VPS_TARGETS", ""),
         vps_sysops_root=os.environ.get("VPS_SYSOPS_ROOT", "/opt/vps_sysops"),
         vps_sysops_profile=os.environ.get("VPS_SYSOPS_PROFILE", "aws"),
         vps_sysops_timeout_seconds=float(

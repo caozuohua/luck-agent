@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from core.log import get_logger
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
+from core.targets import VpsTargetRegistry
+from interface.lark_cards import build_target_selection_card
 
 log = get_logger("interface.lark_commands")
 
@@ -15,7 +18,13 @@ class HealthProvider(Protocol):
 
 
 class VpsSysopsProvider(Protocol):
-    async def run(self, operation: str) -> Any: ...
+    async def run(self, operation: str, *, user_id: str = "default") -> Any: ...
+
+
+@dataclass(frozen=True)
+class QuickCommandResult:
+    text: str
+    card: dict[str, Any] | None = None
 
 
 class QuickCommandRouter:
@@ -28,13 +37,20 @@ class QuickCommandRouter:
         vps: VpsStatusService,
         sysops: VpsSysopsProvider | None = None,
         mem0: Mem0Client | None = None,
+        targets: VpsTargetRegistry | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
         self.sysops = sysops
         self.mem0 = mem0
+        self.targets = targets
 
-    async def handle(self, text: str, *, user_id: str = "default") -> str | None:
+    async def handle(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+    ) -> str | QuickCommandResult | None:
         raw_command = " ".join(text.strip().split())
         command = raw_command.lower()
         if command in {"/ping", "ping"}:
@@ -46,19 +62,26 @@ class QuickCommandRouter:
                 "• `/health` Bot 与数据库健康状态\n"
                 "• `/vps` 当前 VPS 资源状态\n"
                 "• `/vps status|resources|services|logs` 运维检查\n"
+                "• `/targets` 选择 VPS 目标\n"
+                "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 smoke` Mem0 写入/搜索/清理测试\n"
                 "• `/mem0 search 关键词` 搜索记忆"
             )
+        if command in {"/targets", "targets", "目标", "/目标", "/target", "target"}:
+            return self._targets(user_id)
+        for prefix in ("/target ", "target ", "/目标 ", "目标 "):
+            if command.startswith(prefix):
+                return self._select_target(raw_command[len(prefix) :].strip(), user_id)
         if command in {"/health", "health", "健康", "/健康"}:
             return await self._health()
         if command in {"/vps", "vps", "/status", "status"}:
-            return await self._vps()
+            return await self._vps(user_id)
         for prefix in ("/vps ", "vps "):
             if command.startswith(prefix):
                 operation = command[len(prefix) :].strip()
                 if operation in {"status", "resources", "services", "logs"}:
-                    return await self._sysops(operation)
+                    return await self._sysops(operation, user_id)
                 return None
         if command in {"/mem0 status", "mem0 status"}:
             return await self._mem0_status()
@@ -89,18 +112,50 @@ class QuickCommandRouter:
             log.error("quick_health_failed", error=str(exc))
             return "🩺 Luck Agent 健康：⚠️ 暂时无法读取状态"
 
-    async def _vps(self) -> str:
+    def _targets(self, user_id: str) -> QuickCommandResult:
+        if self.targets is None:
+            return QuickCommandResult("🎯 尚未配置 VPS 目标")
+        current = self.targets.current(user_id)
+        return QuickCommandResult(
+            f"🎯 当前目标：{current.display}",
+            build_target_selection_card(self.targets.list(), current=current),
+        )
+
+    def _select_target(self, target_id: str, user_id: str) -> QuickCommandResult:
+        if self.targets is None:
+            return QuickCommandResult("🎯 尚未配置 VPS 目标")
+        target = self.targets.select(user_id, target_id)
+        if target is None:
+            return QuickCommandResult(f"⚠️ 未找到目标：`{target_id}`，请发送 `/targets` 查看列表")
+        return self._targets(user_id)
+
+    def select_target(self, target_id: str, user_id: str = "default") -> QuickCommandResult:
+        return self._select_target(target_id, user_id)
+
+    async def _vps(self, user_id: str) -> str:
         try:
-            return format_host_status(await self.vps.collect())
+            try:
+                status = await self.vps.collect(user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                status = await self.vps.collect()
+            return format_host_status(status)
         except Exception as exc:
             log.error("quick_vps_status_failed", error=str(exc))
             return "🖥️ VPS 状态：⚠️ 暂时无法读取主机资源"
 
-    async def _sysops(self, operation: str) -> str:
+    async def _sysops(self, operation: str, user_id: str) -> str:
         if self.sysops is None:
             return "🖥️ vps_sysops：⚠️ 尚未部署"
         try:
-            return format_vps_sysops_result(await self.sysops.run(operation))
+            try:
+                result = await self.sysops.run(operation, user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                result = await self.sysops.run(operation)
+            return format_vps_sysops_result(result)
         except Exception as exc:
             log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
             return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"

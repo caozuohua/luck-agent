@@ -4,6 +4,7 @@ import re
 
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager
+from interface.lark_commands import QuickCommandResult
 from interface.lark_ws import LarkWebSocketInterface
 
 
@@ -86,3 +87,34 @@ async def test_dangerous_request_requires_one_time_confirmation() -> None:
     )
     assert agent.calls[0][0:2] == ("重启服务", "ou_allowed")
     assert agent.calls[0][2]
+
+
+def test_allowed_card_action_switches_target() -> None:
+    selected: list[tuple[str, str]] = []
+
+    class FakeQuickCommands:
+        def select_target(self, target_id: str, user_id: str) -> QuickCommandResult:
+            selected.append((target_id, user_id))
+            return QuickCommandResult(f"🎯 当前目标：{target_id}")
+
+    interface = LarkWebSocketInterface(
+        agent=FakeAgent(),
+        sender=FakeSender(),
+        quick_commands=FakeQuickCommands(),
+        access_policy=LarkAccessPolicy(allowed_chat_ids=frozenset({"oc_allowed"})),
+    )
+
+    response = interface.handle_card_action(
+        {
+            "chat_id": "oc_allowed",
+            "user_id": "ou_user",
+            "action": {
+                "tag": "select_static",
+                "value": {"target_id": "gcp-01"},
+            },
+        }
+    )
+
+    assert selected == [("gcp-01", "ou_user")]
+    assert response["toast"]["type"] == "success"
+    assert "gcp-01" in response["toast"]["content"]

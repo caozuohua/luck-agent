@@ -11,6 +11,7 @@ from core.log import get_logger
 log = get_logger("interface.lark_sdk")
 
 MessageHandler = Callable[[dict[str, Any]], Awaitable[bool]]
+CardActionHandler = Callable[[dict[str, Any]], dict[str, Any]]
 StateCallback = Callable[[], None]
 
 
@@ -61,6 +62,31 @@ def normalize_message_event(data: Any) -> dict[str, Any] | None:
     }
 
 
+def normalize_card_action_event(data: Any) -> dict[str, Any] | None:
+    """Convert a Card 2.0 callback object to a small internal event shape."""
+    event = getattr(data, "event", None)
+    action = getattr(event, "action", None)
+    context = getattr(event, "context", None)
+    operator = getattr(event, "operator", None)
+    if event is None or action is None:
+        return None
+    return {
+        "message_id": str(getattr(context, "open_message_id", "") or ""),
+        "chat_id": str(getattr(context, "open_chat_id", "") or ""),
+        "user_id": str(
+            getattr(operator, "open_id", None)
+            or getattr(operator, "user_id", None)
+            or "default"
+        ),
+        "action": {
+            "tag": str(getattr(action, "tag", "") or ""),
+            "value": getattr(action, "value", None),
+            "option": str(getattr(action, "option", "") or ""),
+            "name": str(getattr(action, "name", "") or ""),
+        },
+    }
+
+
 class LarkSdkRunner:
     """Run lark-oapi's blocking WebSocket client on its own event loop.
 
@@ -79,6 +105,7 @@ class LarkSdkRunner:
         domain: str,
         application_loop: asyncio.AbstractEventLoop,
         on_message: MessageHandler,
+        on_card_action: CardActionHandler | None = None,
         on_connected: StateCallback | None = None,
         on_disconnected: StateCallback | None = None,
         stop_timeout: float = 10.0,
@@ -88,6 +115,7 @@ class LarkSdkRunner:
         self.domain = domain
         self.application_loop = application_loop
         self.on_message = on_message
+        self.on_card_action = on_card_action
         self.on_connected = on_connected
         self.on_disconnected = on_disconnected
         self.stop_timeout = stop_timeout
@@ -154,11 +182,11 @@ class LarkSdkRunner:
             import lark_oapi.ws.client as ws_module
 
             ws_module.loop = sdk_loop
-            event_handler = (
-                lark.EventDispatcherHandler.builder("", "")
-                .register_p2_im_message_receive_v1(self._handle_sdk_event)
-                .build()
-            )
+            builder = lark.EventDispatcherHandler.builder("", "")
+            builder.register_p2_im_message_receive_v1(self._handle_sdk_event)
+            if self.on_card_action is not None:
+                builder.register_p2_card_action_trigger(self._handle_sdk_card_action)
+            event_handler = builder.build()
             client = lark.ws.Client(
                 self.app_id,
                 self.app_secret,
@@ -223,6 +251,32 @@ class LarkSdkRunner:
             self.application_loop,
         )
         future.add_done_callback(self._report_message_result)
+
+    def _handle_sdk_card_action(self, data: Any) -> Any:
+        event = normalize_card_action_event(data)
+        if event is None or self.on_card_action is None:
+            return self._card_action_response({})
+        try:
+            result = self.on_card_action(event)
+            log.info(
+                "lark_card_action_received",
+                message_id=event["message_id"],
+                chat_id=event["chat_id"],
+            )
+            return self._card_action_response(result)
+        except Exception as error:  # pragma: no cover - SDK callback guard
+            log.error("lark_card_action_failed", error_type=type(error).__name__, message=str(error))
+            return self._card_action_response(
+                {"toast": {"type": "error", "content": "卡片操作失败"}}
+            )
+
+    @staticmethod
+    def _card_action_response(payload: dict[str, Any]) -> Any:
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            P2CardActionTriggerResponse,
+        )
+
+        return P2CardActionTriggerResponse(payload)
 
     @staticmethod
     def _report_message_result(future: Any) -> None:

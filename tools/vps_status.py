@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.targets import VpsTarget
+from core.targets import VpsTarget, VpsTargetRegistry
 
 
 @dataclass(frozen=True)
@@ -31,14 +31,22 @@ class HostStatus:
 class VpsStatusService:
     """Collect local VPS metrics without shell commands or an LLM."""
 
-    def __init__(self, *, name: str = "", target: VpsTarget | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        name: str = "",
+        target: VpsTarget | None = None,
+        target_registry: VpsTargetRegistry | None = None,
+    ) -> None:
         self.name = name.strip()
         self.target = target
+        self.target_registry = target_registry
 
-    async def collect(self) -> HostStatus:
-        return await asyncio.to_thread(self._collect_sync)
+    async def collect(self, *, user_id: str = "default") -> HostStatus:
+        target = self.target_registry.current(user_id) if self.target_registry else self.target
+        return await asyncio.to_thread(self._collect_sync, target)
 
-    def _collect_sync(self) -> HostStatus:
+    def _collect_sync(self, target: VpsTarget | None = None) -> HostStatus:
         disk_path = Path.cwd().anchor or Path.cwd()
         try:
             disk = shutil.disk_usage(disk_path)
@@ -64,7 +72,7 @@ class VpsStatusService:
             disk_total_bytes=disk_total,
             disk_free_bytes=disk_free,
             collected_at=time.time(),
-            target=self.target,
+            target=target,
         )
 
     def _read_uptime(self) -> float | None:

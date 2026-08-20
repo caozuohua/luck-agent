@@ -9,6 +9,7 @@ from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
 from interface.lark_cards import build_text_card
+from interface.lark_commands import QuickCommandResult
 
 log = get_logger("interface.lark_ws")
 
@@ -146,9 +147,13 @@ class LarkWebSocketInterface:
         if approved is not None:
             text = approved.request
         response = None
+        response_card: dict[str, Any] | None = None
         if self.quick_commands is not None:
             response = await self.quick_commands.handle(text, user_id=user_id)
             if response is not None:
+                if isinstance(response, QuickCommandResult):
+                    response_card = response.card
+                    response = response.text
                 log.info("lark_quick_command_handled", command=text.strip().lower())
         if response is None:
             if approval_token is None:
@@ -159,7 +164,7 @@ class LarkWebSocketInterface:
                     user_id=user_id,
                     approval_token=approval_token,
                 )
-        card = self.build_card(response)
+        card = response_card or self.build_card(response)
         await self.sender.send_card(chat_id, card)
         log.info(
             "lark_message_processed",
@@ -168,6 +173,36 @@ class LarkWebSocketInterface:
             message_id=message_id,
         )
         return True
+
+    def handle_card_action(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Handle a Card 2.0 action synchronously on the SDK callback thread."""
+        user_id = str(event.get("user_id") or "default")
+        chat_id = str(event.get("chat_id") or "")
+        if self.access_policy is not None and not self.access_policy.is_allowed(
+            user_id=user_id,
+            chat_id=chat_id,
+        ):
+            log.warning("lark_card_access_denied", user_id=user_id, chat_id=chat_id)
+            return {"toast": {"type": "error", "content": "无权操作此卡片"}}
+        action = event.get("action") or {}
+        if str(action.get("tag") or "") != "select_static":
+            return {"toast": {"type": "warning", "content": "暂不支持此卡片操作"}}
+        raw_value = action.get("value")
+        if isinstance(raw_value, dict):
+            target_id = str(raw_value.get("target_id") or raw_value.get("target") or "")
+        else:
+            target_id = str(raw_value or action.get("option") or "")
+        target_id = target_id.strip()
+        selector = getattr(self.quick_commands, "select_target", None)
+        if not target_id or selector is None:
+            return {"toast": {"type": "error", "content": "目标选择无效"}}
+        result = selector(target_id, user_id)
+        if isinstance(result, QuickCommandResult):
+            text = result.text
+        else:
+            text = str(result or "目标已更新")
+        log.info("lark_target_selected", user_id=user_id, chat_id=chat_id, target_id=target_id)
+        return {"toast": {"type": "success", "content": text[:100]}}
 
     def _consume_approval_command(
         self,

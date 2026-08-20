@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.targets import VpsTarget
+from core.targets import VpsTarget, VpsTargetRegistry
 from tools.vps_status import HostStatus, format_host_status
 from tools.vps_sysops import VpsSysopsResult, format_vps_sysops_result
 
@@ -38,3 +38,18 @@ def test_status_renderers_include_target_when_available() -> None:
 
     result = VpsSysopsResult(operation="status", ok=True, output="ok", target=target)
     assert "GCP / gcp-01 / us-west1" in format_vps_sysops_result(result)
+
+
+def test_target_registry_parses_targets_and_keeps_selection_per_user() -> None:
+    default = VpsTarget(provider="aws", target_id="aws-01", region="us-east-1")
+    registry = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|project-a|us-west1|staging;azure-01|azure||east|prod",
+        default_target=default,
+    )
+
+    assert [target.label for target in registry.list()] == ["aws-01", "gcp-01", "azure-01"]
+    assert registry.current("alice").label == "aws-01"
+    assert registry.select("alice", "gcp-01").display == "GCP / gcp-01 / us-west1"
+    assert registry.current("alice").label == "gcp-01"
+    assert registry.current("bob").label == "aws-01"
+    assert registry.select("alice", "missing") is None

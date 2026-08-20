@@ -55,6 +55,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 危险工具已接入执行层二次审批：未带有效确认码不会执行，确认码一次性消费；
 - 审批拒绝、放行和实际执行结果写入 SQLite `operation_audit`，Shell 审计不记录完整命令；
 - 可选 `OPS_ALLOWED_TARGETS/SERVICES/OPERATIONS` 已接入工具执行层，越界操作在审批前拒绝；
+- `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，避免只读路径绕过目标授权；
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
 
 ## 4. 当前执行顺序
@@ -87,7 +88,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 
 仍需完成：
 
-1. 为目标主机、服务和操作建立细粒度权限检查；
+1. 已为目标主机建立统一 allowlist 检查；仍需补充用户级、服务级和操作级细粒度授权；
 2. 将命令结果继续统一为适合手机查看的结构化卡片，并补充长日志分页；
 3. 为目标选择后的服务操作增加服务级权限和变更操作路由，避免仅切换展示上下文。
 

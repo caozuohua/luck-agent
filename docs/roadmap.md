@@ -41,10 +41,12 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 
 - V2（`main.py`）作为唯一正式架构；
 - Lark 国际版 Bot `cli_aaba382935b8de18` 已完成 WebSocket 收发和卡片发送；
-- AWS VPS 已部署当前 Agent，生产 commit 为 `01359f4`；
+- AWS VPS 已部署当前 Agent，生产 commit 为 `cf6a9dc`；
 - 已有免 LLM 命令：`/ping`、`/health`、`/vps`；
 - 已接入独立 vps_sysops 的只读适配器：
   `/vps status|resources|services|logs`；
+- 适配器结果已统一为 `ok/partial/error` 三态；AWS、GCP、Azure 的资源路由已完成线上验证，
+  日志权限不足时仍返回可读内容并标注为 `partial`；
 - 已接入 Mem0：`/mem0 status`、`/mem0 smoke`、`/mem0 search 关键词`；
 - Mem0 API Key、API health 和写入/搜索/清理 smoke 已验证；
 - 本地新增适配器测试已通过；
@@ -72,8 +74,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 核心快捷命令不调用 LLM；
 - LLM 不可用时，健康检查和只读运维仍可用。
 
-当前阶段状态：Graph 基线和 LLM 客户端基础容错已完成；AWS 重启恢复、运行时配置一致性、
-多 Provider 路由和配额级熔断仍待完成。
+当前阶段状态：Graph 基线、LLM 客户端基础容错、AWS 重启恢复和三目标只读路由已完成；
+运行时配置一致性、多 Provider 路由和配额级熔断仍待完成。
 
 ### 阶段二：权限和无 LLM 运维控制面
 
@@ -86,8 +88,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 仍需完成：
 
 1. 为目标主机、服务和操作建立细粒度权限检查；
-2. 将命令结果统一为适合手机查看的卡片结构；
-3. 为目标选择后的服务操作增加真正的 Provider/Target 路由，避免仅切换展示上下文。
+2. 将命令结果继续统一为适合手机查看的结构化卡片，并补充长日志分页；
+3. 为目标选择后的服务操作增加服务级权限和变更操作路由，避免仅切换展示上下文。
 
 已完成：
 
@@ -101,6 +103,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   同时保留 `/target TARGET_ID` 文本后备命令；Lark `select_static` 回调已接入。
 - `VpsTarget` 已支持可选 `ssh_host/ssh_user/ssh_port/sysops_root`；vps_sysops 适配器可按固定 allowlist
   构造 SSH 远程脚本调用，未配置通道的远程目标会安全拒绝，不再误执行本机检查。
+- AWS、GCP、Azure 三个目标的 `resources` 已通过 Agent 适配器真实执行验证；`logs` 的非零退出
+  已按可读报告与权限不足场景归类为 `partial`，不再只显示原始退出码。
 
 ### 阶段三：多云目标模型
 
@@ -110,8 +114,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 Provider → Account → Region → Target → Service → Operation
 ```
 
-先支持 AWS 本机目标，再扩展 GCP 和 Azure。Agent 不直接实现各云厂商的
-主机运维细节，而是调用 vps_sysops profile 和适配器。
+AWS、GCP、Azure 的只读目标路由已完成；下一步扩展服务级操作和变更审批。Agent 不直接实现
+各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略
 

@@ -29,7 +29,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
-  输出默认限制为 5000 字符，长输出保留首尾；日志脚本因系统日志权限产生的部分失败会明确标注。
+  输出默认限制为 5000 字符，长输出保留首尾；结果提供 `ok/partial/error` 三态和
+  `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
@@ -38,6 +39,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   元数据传给状态与 vps_sysops 适配器；`VPS_TARGETS` 支持注册多个目标并按 Lark 用户保存
   当前选择；目标还可附带 `ssh_host/ssh_user/ssh_port/sysops_root`，用于受控远程执行。未配置
   远程通道时，Agent 会拒绝把 AWS 本机资源错误标记成 GCP/Azure。
+- AWS、GCP、Azure 三个已配置目标的 `resources` 远程执行已在线验证成功；三个目标的 `logs`
+  均可返回可读报告，权限不足部分以 `partial` 状态呈现。
 
 ## 目标对象模型
 
@@ -88,8 +91,8 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前阻塞项
 
 1. 命令结果还未全部统一为适合手机查看的结构化卡片；确认码已按请求中明确的操作、目标和服务进行执行级匹配。
-2. Provider → Account → Region → Target → Service 模型已有元数据基础；多目标选择已可用，
-   远程 SSH 通道和云厂商执行路由仍需逐目标启用。
+2. Provider → Account → Region → Target → Service 模型已有元数据基础；多目标选择和 AWS/GCP/Azure
+   只读 SSH 执行路由已可用，但服务级权限和变更操作仍未统一。
 3. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
 4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
 5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。

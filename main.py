@@ -85,6 +85,7 @@ class Runtime:
             ttl_seconds=settings.lark_approval_ttl_seconds,
         )
         self.operation_permission_policy = OperationPermissionPolicy.from_csv(
+            user_ids=settings.ops_allowed_user_ids,
             targets=settings.ops_allowed_targets,
             services=settings.ops_allowed_services,
             operations=settings.ops_allowed_operations,
@@ -104,7 +105,7 @@ class Runtime:
             graph_db_path=settings.graph_db_path,
             approval_checker=self.lark_approval_manager.consume_grant,
             permission_checker=lambda user_id, tool_name, args: self.operation_permission_policy.allows(
-                tool_name, args
+                tool_name, args, user_id=user_id
             ),
             audit_writer=self.db.insert_operation_audit,
         )

@@ -53,8 +53,9 @@ _REQUEST_OPERATION_PATTERNS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True)
 class OperationPermissionPolicy:
-    """Optional target/service/operation allowlist for tools and quick commands."""
+    """Optional user/target/service/operation allowlist for ops commands."""
 
+    allowed_user_ids: frozenset[str] = frozenset()
     allowed_targets: frozenset[str] = frozenset()
     allowed_services: frozenset[str] = frozenset()
     allowed_operations: frozenset[str] = frozenset()
@@ -63,19 +64,29 @@ class OperationPermissionPolicy:
     def from_csv(
         cls,
         *,
+        user_ids: str = "",
         targets: str = "",
         services: str = "",
         operations: str = "",
     ) -> "OperationPermissionPolicy":
         return cls(
+            allowed_user_ids=_parse_csv(user_ids),
             allowed_targets=_parse_csv(targets),
             allowed_services=_parse_csv(services),
             allowed_operations=_parse_csv(operations),
         )
 
-    def allows(self, tool_name: str, args: dict[str, Any]) -> bool:
+    def allows(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        user_id: str = "",
+    ) -> bool:
         if not operation_permission_applies(tool_name, args):
             return True
+        if not self.allows_user(user_id):
+            return False
         if self.allowed_targets:
             target = _operation_target(args)
             if not self.allows_target(target):
@@ -89,6 +100,13 @@ class OperationPermissionPolicy:
             if not self.allows_operation(operation):
                 return False
         return True
+
+    def allows_user(self, user_id: str) -> bool:
+        """Check the Lark operator for the VPS permission plane."""
+        normalized = str(user_id or "").strip().lower()
+        return not self.allowed_user_ids or bool(
+            normalized and normalized in self.allowed_user_ids
+        )
 
     def allows_target(self, target: str) -> bool:
         """Check a target ID for both read-only commands and tool execution."""

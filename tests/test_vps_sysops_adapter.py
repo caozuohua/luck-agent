@@ -93,6 +93,20 @@ async def test_unauthorized_target_is_rejected_before_transport(tmp_path: Path) 
     assert "目标未授权" in result.error
 
 
+async def test_unauthorized_user_is_rejected_before_transport(tmp_path: Path) -> None:
+    local = VpsTarget(provider="aws", target_id="aws-local")
+    adapter = VpsSysopsAdapter(
+        root=str(tmp_path),
+        target=local,
+        permission_policy=OperationPermissionPolicy.from_csv(user_ids="ou-ops"),
+    )
+
+    result = await adapter.run("resources", user_id="ou-viewer")
+
+    assert result.ok is False
+    assert "用户未授权" in result.error
+
+
 async def test_log_report_with_known_partial_exit_is_classified_as_partial(
     tmp_path: Path,
     monkeypatch,

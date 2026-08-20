@@ -60,6 +60,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 审批拒绝、放行和实际执行结果写入 SQLite `operation_audit`，Shell 审计不记录完整命令；
 - 可选 `OPS_ALLOWED_TARGETS/SERVICES/OPERATIONS` 已接入工具执行层，越界操作在审批前拒绝；
 - `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，避免只读路径绕过目标授权；
+- 可选 `OPS_ALLOWED_USER_IDS` 已接入运维权限层，按 Lark `open_id` 限制 VPS/服务操作，普通 LLM 工具不受影响；
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
 - 已开放受控的 `/vps service luck-agent restart`：一次性确认码、目标/服务/操作 allowlist、
   SQLite 审计和固定 sudo wrapper 均已接入；确认结果先发送，再由 systemd 延迟重启。
@@ -95,7 +96,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 
 仍需完成：
 
-1. 已为目标主机、服务和操作建立 allowlist 检查；仍需补充更细的用户级授权；
+1. 目标主机、服务、操作和用户级 allowlist 已建立；AWS 生产待取得可靠操作者 `open_id` 后再启用用户白名单；
 2. 将其余命令结果继续统一为适合手机查看的结构化卡片；日志分页已完成，仍需评估其他长结果的展示策略；
 3. 已完成 Luck Agent 自身的受控重启路由；继续扩展其他服务前，必须为每个操作单独定义固定入口、
    回滚策略和验收测试，不能复用任意 Shell。

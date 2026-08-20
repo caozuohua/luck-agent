@@ -113,6 +113,13 @@ class VpsSysopsAdapter:
                 target=target,
             )
 
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return VpsSysopsResult(
+                operation=operation,
+                ok=False,
+                error="用户未授权 VPS 运维操作",
+                target=target,
+            )
         if target is not None and self.permission_policy is not None:
             if not self.permission_policy.allows_target(target.label):
                 return VpsSysopsResult(
@@ -235,6 +242,13 @@ class VpsSysopsAdapter:
                 error=f"不支持的服务探针: {service or '(empty)'}",
                 target=target,
             )
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return VpsSysopsResult(
+                operation=f"service:{service}",
+                ok=False,
+                error="用户未授权 VPS 运维操作",
+                target=target,
+            )
         if target is not None and self.permission_policy is not None:
             if not self.permission_policy.allows_target(target.label):
                 return VpsSysopsResult(
@@ -312,6 +326,13 @@ class VpsSysopsAdapter:
                 operation="restart",
                 ok=False,
                 error=f"不支持重启服务：{service or '(empty)'}",
+                target=target,
+            )
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return VpsSysopsResult(
+                operation="restart",
+                ok=False,
+                error="用户未授权 VPS 运维操作",
                 target=target,
             )
         if target is not None and self.permission_policy is not None:

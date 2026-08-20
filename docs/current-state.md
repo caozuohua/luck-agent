@@ -42,6 +42,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；
   `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，空配置保持兼容。
+- 可选 `OPS_ALLOWED_USER_IDS` 已接入 VPS 运维权限层；配置后按 Lark `open_id` 限制 VPS、服务和
+  变更操作，普通 LLM 工具不受影响。AWS 当前未填写该项，避免在缺少可靠操作者 `open_id` 时误锁定。
 - AWS 生产当前已显式允许 `aws-codex-vps`、`gcp-free-vps-oregon`、`az-free-vm` 三个目标；
   新增目标前必须同步更新 allowlist。
 - VPS 已使用 `VpsTarget(provider/account/region/target_id/role)` 统一描述目标，并将

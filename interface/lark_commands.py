@@ -164,13 +164,17 @@ class QuickCommandRouter:
     def _targets(self, user_id: str) -> QuickCommandResult:
         if self.targets is None:
             return QuickCommandResult("🎯 尚未配置 VPS 目标")
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return QuickCommandResult("⛔ 当前用户无权执行 VPS 运维操作")
         current = self.targets.current(user_id)
         allowed_targets = [
-            target for target in self.targets.list() if self._target_allowed(target.label)
+            target
+            for target in self.targets.list()
+            if self._target_allowed(target.label, user_id)
         ]
         if not allowed_targets:
             return QuickCommandResult("🎯 当前用户没有已授权的 VPS 目标")
-        current_for_card = current if self._target_allowed(current.label) else None
+        current_for_card = current if self._target_allowed(current.label, user_id) else None
         current_text = (
             current_for_card.display if current_for_card is not None else "未选择已授权目标"
         )
@@ -188,7 +192,7 @@ class QuickCommandRouter:
         )
         if target is None:
             return QuickCommandResult(f"⚠️ 未找到目标：`{target_id}`，请发送 `/targets` 查看列表")
-        if not self._target_allowed(target.label):
+        if not self._target_allowed(target.label, user_id):
             return QuickCommandResult(f"⛔ 当前用户无权访问目标：`{target.label}`")
         self.targets.select(user_id, target.label)
         return self._targets(user_id)
@@ -298,14 +302,19 @@ class QuickCommandRouter:
             if session.expires_at <= now:
                 self._log_page_sessions.pop(key, None)
 
-    def _target_allowed(self, target_id: str) -> bool:
-        return self.permission_policy is None or self.permission_policy.allows_target(target_id)
+    def _target_allowed(self, target_id: str, user_id: str = "") -> bool:
+        return self.permission_policy is None or (
+            self.permission_policy.allows_user(user_id)
+            and self.permission_policy.allows_target(target_id)
+        )
 
     def _target_denial(self, user_id: str) -> str | None:
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return "⛔ 当前用户无权执行 VPS 运维操作"
         if self.targets is None:
             return None
         target = self.targets.current(user_id)
-        if self._target_allowed(target.label):
+        if self._target_allowed(target.label, user_id):
             return None
         return f"⛔ 当前用户无权访问目标：`{target.label}`"
 
@@ -324,14 +333,14 @@ class QuickCommandRouter:
     ) -> str:
         parts = request.split(maxsplit=2)
         service_id = parts[0].lower() if parts else ""
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return "⛔ 当前用户无权执行 VPS 运维操作"
         if service_id in {"list", "catalog", "help"}:
             return self._service_catalog()
         spec = get_service(service_id)
         if spec is None:
             return f"🧩 未登记服务：`{service_id or '(empty)'}`\n{self._service_catalog()}"
-        if self.permission_policy is not None and not self.permission_policy.allows_service(
-            spec.service_id
-        ):
+        if self.permission_policy is not None and not self.permission_policy.allows_service(spec.service_id):
             return f"⛔ 当前用户无权访问服务：`{spec.service_id}`"
         denied = self._target_denial(user_id)
         if denied:

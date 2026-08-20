@@ -48,6 +48,7 @@ class AgentSettings:
     lark_allowed_chat_ids: str = ""
     lark_allow_unconfigured: bool = False
     lark_approval_ttl_seconds: float = 300.0
+    ops_allowed_user_ids: str = ""
     ops_allowed_targets: str = ""
     ops_allowed_services: str = ""
     ops_allowed_operations: str = ""
@@ -109,6 +110,7 @@ def load_settings() -> AgentSettings:
         lark_allow_unconfigured=os.environ.get("LARK_ALLOW_UNCONFIGURED", "false").lower()
         in {"1", "true", "yes", "on"},
         lark_approval_ttl_seconds=float(os.environ.get("LARK_APPROVAL_TTL_SECONDS", "300")),
+        ops_allowed_user_ids=os.environ.get("OPS_ALLOWED_USER_IDS", ""),
         ops_allowed_targets=os.environ.get("OPS_ALLOWED_TARGETS", ""),
         ops_allowed_services=os.environ.get("OPS_ALLOWED_SERVICES", ""),
         ops_allowed_operations=os.environ.get("OPS_ALLOWED_OPERATIONS", ""),

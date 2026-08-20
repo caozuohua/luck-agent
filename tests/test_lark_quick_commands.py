@@ -191,6 +191,18 @@ async def test_service_catalog_honors_service_allowlist() -> None:
     assert "无权访问服务" in (denied or "")
 
 
+async def test_user_allowlist_blocks_vps_commands_but_not_help() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        permission_policy=OperationPermissionPolicy.from_csv(user_ids="ou-ops"),
+    )
+
+    assert "无权执行 VPS 运维" in (await router.handle("/vps", user_id="ou-viewer") or "")
+    assert "可用快捷命令" in (await router.handle("/help", user_id="ou-viewer") or "")
+
+
 async def test_service_catalog_uses_api_and_fixed_probe_backends() -> None:
     router = QuickCommandRouter(
         health=FakeHealth(),

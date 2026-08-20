@@ -154,6 +154,16 @@ def test_operation_permission_policy_applies_operation_allowlist() -> None:
     assert policy.allows_operation("deploy") is False
 
 
+def test_operation_permission_policy_applies_user_allowlist_only_to_ops() -> None:
+    policy = OperationPermissionPolicy.from_csv(user_ids="ou_ops")
+
+    assert policy.allows_user("OU_OPS") is True
+    assert policy.allows_user("ou_viewer") is False
+    assert policy.allows("vps_resources", {"target": "aws-01"}, user_id="ou_ops")
+    assert not policy.allows("vps_resources", {"target": "aws-01"}, user_id="ou_viewer")
+    assert policy.allows("web_search", {"query": "systemd"}, user_id="ou_viewer")
+
+
 def test_lark_grant_is_consumed_once() -> None:
     manager = LarkApprovalManager()
     pending = manager.issue(user_id="ou_user", request="重启服务")

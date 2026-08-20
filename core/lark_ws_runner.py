@@ -106,6 +106,11 @@ class LarkWebSocketRunner:
                 select_tasks.append(task)
             else:
                 background_tasks.append(task)
+        log.info(
+            "lark_websocket_shutdown_tasks",
+            task_names=[getattr(task.get_coro(), "__name__", "") for task in (*background_tasks, *select_tasks)],
+            task_count=len(background_tasks) + len(select_tasks),
+        )
 
         # Cancel every outstanding task (background + select) so cancellation
         # is actually delivered before the loop is torn down. On Windows the

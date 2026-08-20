@@ -29,7 +29,12 @@ class CardSenderProtocol(Protocol):
 
 
 class QuickCommandProtocol(Protocol):
-    async def handle(self, text: str, *, user_id: str = "default") -> str | None: ...
+    async def handle(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+    ) -> str | QuickCommandResult | None: ...
 
 
 class LarkMessageDeduper:

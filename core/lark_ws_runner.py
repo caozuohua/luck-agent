@@ -91,6 +91,9 @@ class LarkWebSocketRunner:
 
     async def _shutdown_sdk(self) -> None:
         loop = asyncio.get_running_loop()
+        # Let tasks queued by the blocking SDK thread reach their first await
+        # before we snapshot and cancel them.
+        await asyncio.sleep(0)
         current = asyncio.current_task(loop=loop)
         background_tasks: list[asyncio.Task] = []
         select_tasks: list[asyncio.Task] = []

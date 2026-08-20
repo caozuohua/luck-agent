@@ -45,8 +45,8 @@ def test_normalize_lark_card_action_event() -> None:
             context=SimpleNamespace(open_message_id="om_card", open_chat_id="oc_chat"),
             action=SimpleNamespace(
                 tag="select_static",
-                value={"target_id": "gcp-01"},
-                option="",
+                value=None,
+                option="gcp-01",
                 name="target_select",
             ),
         )
@@ -58,8 +58,8 @@ def test_normalize_lark_card_action_event() -> None:
         "user_id": "ou_user",
         "action": {
             "tag": "select_static",
-            "value": {"target_id": "gcp-01"},
-            "option": "",
+            "value": None,
+            "option": "gcp-01",
             "name": "target_select",
         },
     }

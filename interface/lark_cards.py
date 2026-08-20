@@ -37,9 +37,9 @@ def build_target_selection_card(
     options = [
         {
             "text": {"tag": "plain_text", "content": target.display},
-            # lark-oapi decodes card action values as JSON objects.
-            # Keep the target identity explicit if the display text changes.
-            "value": {"target_id": target.label},
+            # Card 2.0 select_static options require a string value. The
+            # callback handler also accepts the SDK's `option` field.
+            "value": target.label,
         }
         for target in targets
     ]

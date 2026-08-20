@@ -19,7 +19,7 @@ def test_card_template_reflects_failure_or_confirmation() -> None:
     assert build_text_card("⚠️ 待确认") ["header"]["template"] == "orange"
 
 
-def test_target_selection_card_uses_callback_safe_object_values() -> None:
+def test_target_selection_card_uses_lark_compatible_string_values() -> None:
     card = build_target_selection_card(
         [VpsTarget(provider="aws", target_id="aws-01")],
     )
@@ -27,4 +27,4 @@ def test_target_selection_card_uses_callback_safe_object_values() -> None:
     selector = card["body"]["elements"][1]
     assert selector["tag"] == "select_static"
     assert selector["name"] == "target_select"
-    assert selector["options"][0]["value"] == {"target_id": "aws-01"}
+    assert selector["options"][0]["value"] == "aws-01"

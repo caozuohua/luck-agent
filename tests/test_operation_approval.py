@@ -147,6 +147,13 @@ def test_operation_permission_policy_applies_service_allowlist() -> None:
     assert policy.allows_service("new-api") is False
 
 
+def test_operation_permission_policy_applies_operation_allowlist() -> None:
+    policy = OperationPermissionPolicy.from_csv(operations="restart")
+
+    assert policy.allows_operation("restart") is True
+    assert policy.allows_operation("deploy") is False
+
+
 def test_lark_grant_is_consumed_once() -> None:
     manager = LarkApprovalManager()
     pending = manager.issue(user_id="ou_user", request="重启服务")
@@ -197,3 +204,10 @@ def test_confirmation_scope_omitted_fields_are_wildcards() -> None:
         {"target": "aws-prod", "service": "luck-agent"},
     )
     assert scope_from_tool("service_restart", {"service": "luck-agent"}).operation == "restart"
+
+
+def test_confirmation_scope_parses_vps_service_command() -> None:
+    scope = scope_from_request("/vps service luck-agent restart")
+
+    assert scope.operation == "restart"
+    assert scope.service == "luck-agent"

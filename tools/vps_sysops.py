@@ -69,6 +69,12 @@ class VpsSysopsAdapter:
             "curl -fsS --max-time 5 \"http://${endpoint}/.well-known/agent-card.json\""
         ),
     }
+    SERVICE_UNITS: dict[str, str] = {
+        "luck-agent": "luck-agent.service",
+    }
+    SERVICE_RESTART_COMMANDS: dict[str, str] = {
+        "luck-agent": "sudo -n /usr/local/sbin/luck-agent-restart",
+    }
 
     def __init__(
         self,
@@ -276,6 +282,83 @@ class VpsSysopsAdapter:
             ok=returncode == 0,
             output=output,
             error="" if returncode == 0 else f"服务探针退出码 {returncode}",
+            returncode=returncode,
+            target=target,
+            truncated=truncated,
+        )
+
+    async def restart_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
+        """Restart one explicitly allowlisted systemd unit; never accepts a unit name."""
+        service = service.strip().lower()
+        unit = self.SERVICE_UNITS.get(service)
+        restart_command = self.SERVICE_RESTART_COMMANDS.get(service)
+        target = self.target_registry.current(user_id) if self.target_registry else self.target
+        if unit is None or restart_command is None:
+            return VpsSysopsResult(
+                operation="restart",
+                ok=False,
+                error=f"不支持重启服务：{service or '(empty)'}",
+                target=target,
+            )
+        if target is not None and self.permission_policy is not None:
+            if not self.permission_policy.allows_target(target.label):
+                return VpsSysopsResult(
+                    operation="restart",
+                    ok=False,
+                    error=f"目标未授权：{target.label}",
+                    target=target,
+                )
+        is_local = self._is_local_target(target)
+        if is_local is None:
+            return VpsSysopsResult(
+                operation="restart",
+                ok=False,
+                error=f"目标未配置 SSH 运维通道: {target.display if target else '(unknown)'}",
+                target=target,
+            )
+        env = self._build_environment(target, is_local=is_local)
+        command, cwd = self._build_probe_command(
+            probe=f"{restart_command} && sudo -n systemctl is-active {unit}",
+            target=target,
+            is_local=is_local,
+            env=env,
+        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=cwd,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return VpsSysopsResult(
+                operation="restart",
+                ok=False,
+                error=f"服务重启超时（>{self.timeout_seconds:g}s）",
+                target=target,
+            )
+        except OSError as exc:
+            return VpsSysopsResult(
+                operation="restart",
+                ok=False,
+                error=f"无法启动服务重启: {exc}",
+                target=target,
+            )
+        output = _clean_output(stdout.decode("utf-8", errors="replace"))
+        output, truncated = _truncate_output(output, self.max_output_chars)
+        returncode = process.returncode
+        return VpsSysopsResult(
+            operation="restart",
+            ok=returncode == 0,
+            output=output,
+            error="" if returncode == 0 else f"服务重启退出码 {returncode}",
             returncode=returncode,
             target=target,
             truncated=truncated,

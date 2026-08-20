@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -14,6 +15,9 @@ from core.targets import VpsTargetRegistry
 from interface.lark_cards import build_target_selection_card
 
 log = get_logger("interface.lark_commands")
+
+ApprovalChecker = Callable[[str, str, str, dict[str, Any]], bool]
+AuditWriter = Callable[..., Awaitable[Any]]
 
 
 class HealthProvider(Protocol):
@@ -50,6 +54,9 @@ class QuickCommandRouter:
         permission_policy: OperationPermissionPolicy | None = None,
         mem0_target_id: str = "",
         new_api: ServiceHealthProvider | None = None,
+        agent_target_id: str = "",
+        approval_checker: ApprovalChecker | None = None,
+        audit_writer: AuditWriter | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
@@ -59,12 +66,16 @@ class QuickCommandRouter:
         self.permission_policy = permission_policy
         self.mem0_target_id = mem0_target_id.strip().lower()
         self.new_api = new_api
+        self.agent_target_id = agent_target_id.strip().lower()
+        self.approval_checker = approval_checker
+        self.audit_writer = audit_writer
 
     async def handle(
         self,
         text: str,
         *,
         user_id: str = "default",
+        approval_token: str | None = None,
     ) -> str | QuickCommandResult | None:
         raw_command = " ".join(text.strip().split())
         command = raw_command.lower()
@@ -79,6 +90,7 @@ class QuickCommandRouter:
                 "• `/vps status|resources|services|logs` 运维检查\n"
                 "• `/vps service list` 服务目录\n"
                 "• `/vps service mem0 status|smoke|search 关键词` Mem0 服务操作\n"
+                "• `/vps service luck-agent restart` 重启 Agent（需确认）\n"
                 "• `/targets` 选择 VPS 目标\n"
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
@@ -96,7 +108,11 @@ class QuickCommandRouter:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
             if command.startswith(prefix):
-                return await self._service(raw_command[len(prefix) :].strip(), user_id)
+                return await self._service(
+                    raw_command[len(prefix) :].strip(),
+                    user_id,
+                    approval_token=approval_token,
+                )
         if command in {"/vps service", "vps service", "/service", "service"}:
             return self._service_catalog()
         for prefix in ("/vps ", "vps "):
@@ -231,7 +247,13 @@ class QuickCommandRouter:
             allowed = self.permission_policy.allowed_services
         return format_service_catalog(allowed=allowed)
 
-    async def _service(self, request: str, user_id: str) -> str:
+    async def _service(
+        self,
+        request: str,
+        user_id: str,
+        *,
+        approval_token: str | None = None,
+    ) -> str:
         parts = request.split(maxsplit=2)
         service_id = parts[0].lower() if parts else ""
         if service_id in {"list", "catalog", "help"}:
@@ -249,6 +271,18 @@ class QuickCommandRouter:
 
         action = parts[1].lower() if len(parts) > 1 else "status"
         argument = parts[2].strip() if len(parts) > 2 else ""
+        if action == "restart":
+            if not spec.restartable:
+                return f"⚠️ 服务 `{spec.service_id}` 当前不开放重启操作"
+            if self.permission_policy is not None and not self.permission_policy.allows_operation(
+                "restart"
+            ):
+                return "⛔ 当前用户无权执行操作：`restart`"
+            return await self._restart_service(
+                spec.service_id,
+                user_id,
+                approval_token=approval_token,
+            )
         if spec.backend == "mem0":
             if self.mem0_target_id and self.targets is not None:
                 target = self.targets.current(user_id)
@@ -308,6 +342,90 @@ class QuickCommandRouter:
         except Exception as exc:
             log.error("quick_service_probe_failed", service=service, error=str(exc))
             return f"🧩 {service}：⚠️ 服务探针失败"
+
+    async def _restart_service(
+        self,
+        service: str,
+        user_id: str,
+        *,
+        approval_token: str | None,
+    ) -> str:
+        restart = getattr(self.sysops, "restart_service", None)
+        if not callable(restart):
+            return "⚠️ 当前 vps_sysops 未提供固定重启入口"
+        if not approval_token or self.approval_checker is None:
+            return "⚠️ 重启操作必须先完成一次性确认"
+        target_id = self.targets.current(user_id).label if self.targets is not None else ""
+        if self.agent_target_id and target_id.lower() != self.agent_target_id:
+            return (
+                f"🧩 Luck Agent 当前绑定目标为 `{self.agent_target_id}`；"
+                f"当前选择为 `{target_id}`，请先切换目标"
+            )
+        args = {"target": target_id, "service": service, "operation": "restart"}
+        try:
+            approved = self.approval_checker(
+                user_id,
+                approval_token,
+                "service_restart",
+                args,
+            )
+        except Exception:
+            approved = False
+        await self._audit_service_operation(
+            user_id=user_id,
+            service=service,
+            target=target_id,
+            decision="approved" if approved else "denied",
+            details="approval_token_present=true",
+        )
+        if not approved:
+            return "⛔ 重启确认码无效、过期或与目标/服务不匹配"
+        try:
+            try:
+                result = await restart(service, user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                result = await restart(service)
+        except Exception as exc:
+            await self._audit_service_operation(
+                user_id=user_id,
+                service=service,
+                target=target_id,
+                decision="executed",
+                details=f"status=error error={str(exc)[:240]}",
+            )
+            return "⚠️ 服务重启执行失败"
+        await self._audit_service_operation(
+            user_id=user_id,
+            service=service,
+            target=target_id,
+            decision="executed",
+            details=f"status={'ok' if getattr(result, 'ok', False) else 'error'}",
+        )
+        return format_vps_sysops_result(result)
+
+    async def _audit_service_operation(
+        self,
+        *,
+        user_id: str,
+        service: str,
+        target: str,
+        decision: str,
+        details: str,
+    ) -> None:
+        if self.audit_writer is None:
+            return
+        try:
+            await self.audit_writer(
+                user_id=user_id,
+                tool_name="service_restart",
+                operation=f"restart service={service} target={target}",
+                decision=decision,
+                details=details,
+            )
+        except Exception:
+            log.warning("quick_service_audit_failed", service=service, target=target)
 
     async def _mem0_status(self) -> str:
         if self.mem0 is None:

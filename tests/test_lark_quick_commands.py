@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
+from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
@@ -37,6 +38,20 @@ class FakeVps:
 class FakeSysops:
     async def run(self, operation: str) -> VpsSysopsResult:
         return VpsSysopsResult(operation=operation, ok=True, output=f"checked {operation}")
+
+
+class FakeRestartSysops(FakeSysops):
+    def __init__(self) -> None:
+        self.restart_calls: list[tuple[str, str]] = []
+
+    async def restart_service(
+        self,
+        service: str,
+        *,
+        user_id: str = "default",
+    ) -> VpsSysopsResult:
+        self.restart_calls.append((service, user_id))
+        return VpsSysopsResult(operation="restart", ok=True, output="active")
 
 
 class FakeProbeSysops(FakeSysops):
@@ -152,6 +167,85 @@ async def test_service_catalog_uses_api_and_fixed_probe_backends() -> None:
     a2a = await router.handle("/vps service a2a status")
     assert "延迟：7 ms" in (new_api or "")
     assert "gcp-hermeslite" in (a2a or "")
+
+
+async def test_restart_requires_one_time_approval_and_audits_execution() -> None:
+    sysops = FakeRestartSysops()
+    audits: list[dict] = []
+
+    async def audit_writer(**record) -> None:
+        audits.append(record)
+
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=sysops,
+        targets=VpsTargetRegistry.from_csv(
+            "",
+            default_target=VpsTarget(provider="aws", target_id="aws-01"),
+        ),
+        permission_policy=OperationPermissionPolicy.from_csv(
+            targets="aws-01",
+            services="luck-agent",
+            operations="restart",
+        ),
+        approval_checker=lambda user, token, tool, args: token == "approved",
+        audit_writer=audit_writer,
+    )
+
+    blocked = await router.handle("/vps service luck-agent restart", user_id="alice")
+    assert "必须先完成" in (blocked or "")
+    assert sysops.restart_calls == []
+
+    denied = await router.handle(
+        "/vps service luck-agent restart",
+        user_id="alice",
+        approval_token="wrong",
+    )
+    assert "确认码无效" in (denied or "")
+    assert sysops.restart_calls == []
+
+    executed = await router.handle(
+        "/vps service luck-agent restart",
+        user_id="alice",
+        approval_token="approved",
+    )
+    assert "active" in (executed or "")
+    assert sysops.restart_calls == [("luck-agent", "alice")]
+    assert [item["decision"] for item in audits] == ["denied", "approved", "executed"]
+
+
+async def test_lark_confirmation_passes_token_to_quick_restart() -> None:
+    sysops = FakeRestartSysops()
+    manager = LarkApprovalManager()
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=sysops,
+        targets=VpsTargetRegistry.from_csv(
+            "",
+            default_target=VpsTarget(provider="aws", target_id="aws-01"),
+        ),
+        approval_checker=manager.consume_grant,
+    )
+    sender = FakeSender()
+    interface = LarkWebSocketInterface(
+        agent=FakeAgent(),
+        sender=sender,
+        quick_commands=router,
+        approval_manager=manager,
+    )
+    base = {"chat_id": "chat-1", "user_id": "alice"}
+
+    assert await interface.handle_message(
+        {**base, "message_id": "restart-1", "text": "/vps service luck-agent restart"}
+    )
+    approval_text = str(sender.cards[-1])
+    token = approval_text.split("/confirm ", 1)[1].split("`", 1)[0]
+    assert await interface.handle_message(
+        {**base, "message_id": "restart-2", "text": f"/confirm {token}"}
+    )
+    assert sysops.restart_calls == [("luck-agent", "alice")]
 
 
 async def test_lark_interface_short_circuits_quick_command() -> None:

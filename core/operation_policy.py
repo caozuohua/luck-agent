@@ -86,7 +86,7 @@ class OperationPermissionPolicy:
                 return False
         if self.allowed_operations:
             operation = _operation_name(tool_name, args)
-            if not operation or operation not in self.allowed_operations:
+            if not self.allows_operation(operation):
                 return False
         return True
 
@@ -100,6 +100,13 @@ class OperationPermissionPolicy:
         normalized = str(service or "").strip().lower()
         return not self.allowed_services or bool(
             normalized and normalized in self.allowed_services
+        )
+
+    def allows_operation(self, operation: str) -> bool:
+        """Check an operation for quick commands and tool execution."""
+        normalized = str(operation or "").strip().lower()
+        return not self.allowed_operations or bool(
+            normalized and normalized in self.allowed_operations
         )
 
 
@@ -139,13 +146,21 @@ def scope_from_request(text: str) -> OperationScope:
         target = target_match.group(1).lower()
 
     service = ""
-    service_match = re.search(
-        r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+    command_service_match = re.search(
+        r"(?:^|/)vps\s+service\s+([A-Za-z0-9_@.:-]+)",
         normalized,
         re.IGNORECASE,
     )
-    if service_match:
-        service = (service_match.group(1) or service_match.group(2)).lower()
+    if command_service_match:
+        service = command_service_match.group(1).lower()
+    else:
+        service_match = re.search(
+            r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+            normalized,
+            re.IGNORECASE,
+        )
+        if service_match:
+            service = (service_match.group(1) or service_match.group(2)).lower()
     return OperationScope(operation=operation, target=target, service=service)
 
 

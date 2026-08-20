@@ -34,6 +34,7 @@ class QuickCommandProtocol(Protocol):
         text: str,
         *,
         user_id: str = "default",
+        approval_token: str | None = None,
     ) -> str | QuickCommandResult | None: ...
 
 
@@ -154,7 +155,11 @@ class LarkWebSocketInterface:
         response = None
         response_card: dict[str, Any] | None = None
         if self.quick_commands is not None:
-            response = await self.quick_commands.handle(text, user_id=user_id)
+            response = await self.quick_commands.handle(
+                text,
+                user_id=user_id,
+                approval_token=approval_token,
+            )
             if response is not None:
                 if isinstance(response, QuickCommandResult):
                     response_card = response.card

@@ -167,6 +167,9 @@ class Runtime:
             permission_policy=self.operation_permission_policy,
             mem0_target_id=self.vps_target.label,
             new_api=self.new_api_health,
+            agent_target_id=self.vps_target.label,
+            approval_checker=self.lark_approval_manager.consume_grant,
+            audit_writer=self.db.insert_operation_audit,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

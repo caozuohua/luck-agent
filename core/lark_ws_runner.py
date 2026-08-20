@@ -90,10 +90,11 @@ class LarkWebSocketRunner:
         log.info("lark_websocket_stopped")
 
     async def _shutdown_sdk(self) -> None:
-        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        current = asyncio.current_task(loop=loop)
         background_tasks: list[asyncio.Task] = []
         select_tasks: list[asyncio.Task] = []
-        for task in asyncio.all_tasks():
+        for task in asyncio.all_tasks(loop=loop):
             if task is current:
                 continue
             coro = task.get_coro()
@@ -114,7 +115,6 @@ class LarkWebSocketRunner:
             await asyncio.gather(*pending, return_exceptions=True)
 
         await self.client._disconnect()
-        loop = asyncio.get_running_loop()
         # Any select task that re-spawned is cancelled on the next tick.
         for task in select_tasks:
             loop.call_soon(task.cancel)

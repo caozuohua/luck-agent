@@ -35,7 +35,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入执行层；空配置保持兼容。
 - VPS 已使用 `VpsTarget(provider/account/region/target_id/role)` 统一描述目标，并将
   元数据传给状态与 vps_sysops 适配器；`VPS_TARGETS` 支持注册多个目标并按 Lark 用户保存
-  当前选择，但当前执行器仍只真正执行本机 AWS profile。
+  当前选择；目标还可附带 `ssh_host/ssh_user/ssh_port`，用于受控远程执行。未配置远程通道时，
+  Agent 会拒绝把 AWS 本机资源错误标记成 GCP/Azure。
 
 ## 目标对象模型
 
@@ -86,7 +87,8 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前阻塞项
 
 1. 命令结果还未全部统一为适合手机查看的结构化卡片；确认码已按请求中明确的操作、目标和服务进行执行级匹配。
-2. Provider → Account → Region → Target → Service 模型已有元数据基础；多目标选择已可用，云厂商执行路由尚未统一。
+2. Provider → Account → Region → Target → Service 模型已有元数据基础；多目标选择已可用，
+   远程 SSH 通道和云厂商执行路由仍需逐目标启用。
 3. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
 4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
 5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。

@@ -69,6 +69,8 @@ class AgentSettings:
     vps_targets: str = ""
     vps_sysops_root: str = "/opt/vps_sysops"
     vps_sysops_profile: str = "aws"
+    vps_sysops_ssh_config: str = ""
+    vps_sysops_ssh_identity_file: str = ""
     vps_sysops_timeout_seconds: float = 15.0
     mem0_base_url: str = ""
     mem0_api_key: str = ""
@@ -127,6 +129,8 @@ def load_settings() -> AgentSettings:
         vps_targets=os.environ.get("VPS_TARGETS", ""),
         vps_sysops_root=os.environ.get("VPS_SYSOPS_ROOT", "/opt/vps_sysops"),
         vps_sysops_profile=os.environ.get("VPS_SYSOPS_PROFILE", "aws"),
+        vps_sysops_ssh_config=os.environ.get("VPS_SYSOPS_SSH_CONFIG", ""),
+        vps_sysops_ssh_identity_file=os.environ.get("VPS_SYSOPS_SSH_IDENTITY_FILE", ""),
         vps_sysops_timeout_seconds=float(
             os.environ.get("VPS_SYSOPS_TIMEOUT_SECONDS", "15")
         ),

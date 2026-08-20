@@ -135,6 +135,8 @@ class Runtime:
             profile=settings.vps_sysops_profile,
             target=self.vps_target,
             target_registry=self.target_registry,
+            ssh_config=settings.vps_sysops_ssh_config,
+            ssh_identity_file=settings.vps_sysops_ssh_identity_file,
             timeout_seconds=settings.vps_sysops_timeout_seconds,
         )
         self.mem0 = (

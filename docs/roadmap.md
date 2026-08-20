@@ -99,6 +99,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - `VpsTarget` 已统一 provider/account/region/target/role 元数据，并传入本机状态与 vps_sysops 适配器。
 - `VPS_TARGETS` 已支持注册多个目标；`/targets` 返回 Card 2.0 下拉框，按 Lark 用户保存选择，
   同时保留 `/target TARGET_ID` 文本后备命令；Lark `select_static` 回调已接入。
+- `VpsTarget` 已支持可选 `ssh_host/ssh_user/ssh_port`；vps_sysops 适配器可按固定 allowlist
+  构造 SSH 远程脚本调用，未配置通道的远程目标会安全拒绝，不再误执行本机检查。
 
 ### 阶段三：多云目标模型
 

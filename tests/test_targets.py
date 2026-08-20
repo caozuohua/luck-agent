@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from core.targets import VpsTarget, VpsTargetRegistry
-from tools.vps_status import HostStatus, format_host_status
+from tools.vps_status import HostStatus, VpsStatusService, format_host_status
 from tools.vps_sysops import VpsSysopsResult, format_vps_sysops_result
 
 
@@ -53,3 +55,16 @@ def test_target_registry_parses_targets_and_keeps_selection_per_user() -> None:
     assert registry.current("alice").label == "gcp-01"
     assert registry.current("bob").label == "aws-01"
     assert registry.select("alice", "missing") is None
+
+
+async def test_status_does_not_label_local_metrics_as_remote_target() -> None:
+    default = VpsTarget(provider="aws", target_id="aws-01")
+    registry = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal",
+        default_target=default,
+    )
+    registry.select("alice", "gcp-01")
+    service = VpsStatusService(target=default, target_registry=registry)
+
+    with pytest.raises(RuntimeError, match="拒绝返回本机资源"):
+        await service.collect(user_id="alice")

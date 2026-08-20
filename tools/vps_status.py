@@ -44,6 +44,14 @@ class VpsStatusService:
 
     async def collect(self, *, user_id: str = "default") -> HostStatus:
         target = self.target_registry.current(user_id) if self.target_registry else self.target
+        if (
+            target is not None
+            and self.target is not None
+            and target.label != self.target.label
+        ):
+            raise RuntimeError(
+                f"目标 {target.display} 尚未配置远程资源采集通道；拒绝返回本机资源"
+            )
         return await asyncio.to_thread(self._collect_sync, target)
 
     def _collect_sync(self, target: VpsTarget | None = None) -> HostStatus:

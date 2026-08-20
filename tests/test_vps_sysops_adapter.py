@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.targets import VpsTarget, VpsTargetRegistry
 from tools.vps_sysops import VpsSysopsAdapter
 
 
@@ -21,3 +22,26 @@ async def test_arbitrary_operation_is_rejected(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert "不支持" in result.error
+
+
+async def test_unconfigured_remote_target_is_rejected_instead_of_running_locally(
+    tmp_path: Path,
+) -> None:
+    local = VpsTarget(provider="aws", target_id="aws-local")
+    registry = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal",
+        default_target=local,
+    )
+    registry.select("user-1", "gcp-01")
+    adapter = VpsSysopsAdapter(
+        root=str(tmp_path),
+        target=local,
+        target_registry=registry,
+    )
+
+    result = await adapter.run("resources", user_id="user-1")
+
+    assert result.ok is False
+    assert "SSH" in result.error
+    assert result.target is not None
+    assert result.target.label == "gcp-01"

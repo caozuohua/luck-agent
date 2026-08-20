@@ -22,6 +22,8 @@ class OpsScriptTests(unittest.TestCase):
     def test_restart_install_is_least_privilege(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "ops" / "install-restart.sh").read_text(encoding="utf-8")
+        restart = (root / "ops" / "luck-agent-restart").read_text(encoding="utf-8")
         self.assertIn("luck-agent-restart", source)
         self.assertIn("NOPASSWD", source)
         self.assertNotIn("luck-agent-upgrade", source)
+        self.assertIn("systemctl --no-block restart luck-agent", restart)

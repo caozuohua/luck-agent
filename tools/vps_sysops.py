@@ -318,7 +318,7 @@ class VpsSysopsAdapter:
             )
         env = self._build_environment(target, is_local=is_local)
         command, cwd = self._build_probe_command(
-            probe=f"{restart_command} && sudo -n systemctl is-active {unit}",
+            probe=restart_command,
             target=target,
             is_local=is_local,
             env=env,

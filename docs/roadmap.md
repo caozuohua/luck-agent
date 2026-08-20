@@ -50,6 +50,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已接入 Mem0：`/mem0 status`、`/mem0 smoke`、`/mem0 search 关键词`；
 - 已增加固定服务目录：`/vps service list`、`/vps service mem0 status|smoke|search`，以及
   A2A、new-api、Luck Agent 的宿主机服务清单入口；服务名和服务 allowlist 均固定校验；
+- 已增加 A2A Agent Card 和 new-api `/models` 独立只读健康检查；A2A 探针通过目标 SSH 执行固定
+  命令，不开放任意远程 Shell；GCP/Azure A2A 与 AWS new-api 已完成线上验证；
 - Mem0 API Key、API health 和写入/搜索/清理 smoke 已验证；
 - 本地新增适配器测试已通过；
 - Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 49 passed；

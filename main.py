@@ -9,6 +9,8 @@ from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
 from interface.health import HealthService
+from interface.lark_access import LarkAccessPolicy
+from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_api import LarkApiSender
 from interface.lark_sdk import LarkSdkRunner
@@ -111,6 +113,14 @@ class Runtime:
             sysops=self.vps_sysops,
             mem0=self.mem0,
         )
+        self.lark_access_policy = LarkAccessPolicy.from_csv(
+            user_ids=settings.lark_allowed_user_ids,
+            chat_ids=settings.lark_allowed_chat_ids,
+            allow_unconfigured=settings.lark_allow_unconfigured,
+        )
+        self.lark_approval_manager = LarkApprovalManager(
+            ttl_seconds=settings.lark_approval_ttl_seconds,
+        )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).
         if settings.lark_app_id and settings.lark_app_secret:
@@ -129,6 +139,8 @@ class Runtime:
                 agent=self.agent,
                 sender=LarkApiSender(self.lark_api_client),
                 quick_commands=self.quick_commands,
+                access_policy=self.lark_access_policy,
+                approval_manager=self.lark_approval_manager,
             )
             self.lark_runner: LarkSdkRunner | None = None
         else:

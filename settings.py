@@ -40,6 +40,10 @@ class AgentSettings:
     lark_app_id: str = ""
     lark_app_secret: str = ""
     lark_domain: str = "https://open.larksuite.com"
+    lark_allowed_user_ids: str = ""
+    lark_allowed_chat_ids: str = ""
+    lark_allow_unconfigured: bool = False
+    lark_approval_ttl_seconds: float = 300.0
     web_host: str = "127.0.0.1"
     web_port: int = 8000
     serper_api_key: str = ""
@@ -80,6 +84,11 @@ def load_settings() -> AgentSettings:
             "LARK_DOMAIN",
             "https://open.larksuite.com",
         ),
+        lark_allowed_user_ids=os.environ.get("LARK_ALLOWED_USER_IDS", ""),
+        lark_allowed_chat_ids=os.environ.get("LARK_ALLOWED_CHAT_IDS", ""),
+        lark_allow_unconfigured=os.environ.get("LARK_ALLOW_UNCONFIGURED", "false").lower()
+        in {"1", "true", "yes", "on"},
+        lark_approval_ttl_seconds=float(os.environ.get("LARK_APPROVAL_TTL_SECONDS", "300")),
         web_host=os.environ.get("WEB_HOST", "127.0.0.1"),
         web_port=int(os.environ.get("WEB_PORT", "8000")),
         serper_api_key=os.environ.get("SERPER_API_KEY", ""),

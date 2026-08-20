@@ -108,6 +108,9 @@ class LarkWebSocketRunner:
                 background_tasks.append(task)
         log.info(
             "lark_websocket_shutdown_tasks",
+            sdk_loop_match=loop is self.sdk_loop,
+            sdk_loop_id=id(self.sdk_loop),
+            running_loop_id=id(loop),
             task_names=[getattr(task.get_coro(), "__name__", "") for task in (*background_tasks, *select_tasks)],
             task_count=len(background_tasks) + len(select_tasks),
         )

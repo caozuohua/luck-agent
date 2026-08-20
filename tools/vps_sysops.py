@@ -25,6 +25,8 @@ class VpsSysopsResult:
     target: VpsTarget | None = None
     truncated: bool = False
     partial: bool = False
+    output_pages: tuple[str, ...] = ()
+    pages_complete: bool = True
 
     @property
     def status(self) -> str:
@@ -188,7 +190,17 @@ class VpsSysopsAdapter:
             )
 
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
-        output, truncated = _truncate_output(output, self.max_output_chars)
+        output_pages: tuple[str, ...] = ()
+        pages_complete = True
+        if operation == "logs":
+            output_pages, pages_complete = _paginate_output(
+                output,
+                self.max_output_chars,
+            )
+            output = output_pages[0] if output_pages else ""
+            truncated = len(output_pages) > 1 or not pages_complete
+        else:
+            output, truncated = _truncate_output(output, self.max_output_chars)
         returncode = process.returncode
         error = "" if returncode == 0 else f"脚本退出码 {returncode}"
         partial = (
@@ -207,6 +219,8 @@ class VpsSysopsAdapter:
             target=target,
             truncated=truncated,
             partial=partial,
+            output_pages=output_pages,
+            pages_complete=pages_complete,
         )
 
     async def probe_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
@@ -492,6 +506,10 @@ def format_vps_sysops_result(result: VpsSysopsResult) -> str:
     target_line = f"\n• 目标：`{result.target.display}`" if result.target else ""
     if not result.ok and result.error and result.output.strip():
         body = f"{result.error}\n{body}"
+    if result.output_pages and len(result.output_pages) > 1:
+        body += f"\n\n📄 日志第 1/{len(result.output_pages)} 页"
+        if not result.pages_complete:
+            body += "（已达到分页缓存上限）"
     return f"🖥️ vps_sysops · {title} {mark}{target_line}\n{body}"
 
 
@@ -508,3 +526,18 @@ def _truncate_output(value: str, limit: int) -> tuple[str, bool]:
     head = (limit - len(marker)) // 2
     tail = limit - len(marker) - head
     return value[:head].rstrip() + marker + value[-tail:].lstrip(), True
+
+
+def _paginate_output(
+    value: str,
+    limit: int,
+    *,
+    max_pages: int = 12,
+) -> tuple[tuple[str, ...], bool]:
+    """Split log output into bounded pages without silently dropping the tail."""
+    if not value:
+        return (), True
+    if limit <= 0:
+        return (value,), False
+    pages = tuple(value[index : index + limit] for index in range(0, len(value), limit))
+    return pages[:max_pages], len(pages) <= max_pages

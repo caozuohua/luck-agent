@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import secrets
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from core.log import get_logger
@@ -12,7 +14,7 @@ from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
 from core.targets import VpsTargetRegistry
-from interface.lark_cards import build_target_selection_card
+from interface.lark_cards import build_log_page_card, build_target_selection_card
 
 log = get_logger("interface.lark_commands")
 
@@ -38,6 +40,12 @@ class ServiceHealthProvider(Protocol):
 class QuickCommandResult:
     text: str
     card: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _LogPageSession:
+    result: Any
+    expires_at: float
 
 
 class QuickCommandRouter:
@@ -69,6 +77,9 @@ class QuickCommandRouter:
         self.agent_target_id = agent_target_id.strip().lower()
         self.approval_checker = approval_checker
         self.audit_writer = audit_writer
+        self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
+        self._log_page_ttl_seconds = 10 * 60
+        self._log_page_max_sessions = 128
 
     async def handle(
         self,
@@ -87,7 +98,7 @@ class QuickCommandRouter:
                 "• `/ping` 连通性\n"
                 "• `/health` Bot 与数据库健康状态\n"
                 "• `/vps` 当前 VPS 资源状态\n"
-                "• `/vps status|resources|services|logs` 运维检查\n"
+                "• `/vps status|resources|services|logs` 运维检查（日志支持卡片翻页）\n"
                 "• `/vps service list` 服务目录\n"
                 "• `/vps service mem0 status|smoke|search 关键词` Mem0 服务操作\n"
                 "• `/vps service luck-agent restart` 重启 Agent（需确认）\n"
@@ -212,7 +223,7 @@ class QuickCommandRouter:
             return True
         return local is not None and selected.label != local.label
 
-    async def _sysops(self, operation: str, user_id: str) -> str:
+    async def _sysops(self, operation: str, user_id: str) -> str | QuickCommandResult:
         if self.sysops is None:
             return "🖥️ vps_sysops：⚠️ 尚未部署"
         try:
@@ -225,10 +236,67 @@ class QuickCommandRouter:
                 if "user_id" not in str(exc):
                     raise
                 result = await self.sysops.run(operation)
+            if operation == "logs":
+                return self._start_log_pagination(result, user_id)
             return format_vps_sysops_result(result)
         except Exception as exc:
             log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
             return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"
+
+    def render_log_page(
+        self,
+        token: str,
+        page: int,
+        *,
+        user_id: str = "default",
+    ) -> QuickCommandResult:
+        """Render one cached log page for the owning Lark user."""
+        self._purge_log_page_sessions()
+        key = (user_id, token.strip())
+        session = self._log_page_sessions.get(key)
+        if session is None:
+            return QuickCommandResult("⚠️ 日志分页已过期，请重新发送 `/vps logs`")
+        pages = tuple(getattr(session.result, "output_pages", ()) or ())
+        if not pages:
+            return QuickCommandResult(format_vps_sysops_result(session.result))
+        if page < 1 or page > len(pages):
+            return QuickCommandResult("⚠️ 日志页码无效，请重新发送 `/vps logs`")
+        result = replace(session.result, output=pages[page - 1])
+        text = format_vps_sysops_result(result).replace(
+            f"📄 日志第 1/{len(pages)} 页",
+            f"📄 日志第 {page}/{len(pages)} 页",
+        )
+        return QuickCommandResult(
+            text,
+            build_log_page_card(
+                text,
+                page=page,
+                total_pages=len(pages),
+                token=token,
+            ),
+        )
+
+    def _start_log_pagination(self, result: Any, user_id: str) -> str | QuickCommandResult:
+        pages = tuple(getattr(result, "output_pages", ()) or ())
+        if len(pages) <= 1:
+            return format_vps_sysops_result(result)
+        self._purge_log_page_sessions()
+        token = secrets.token_urlsafe(9)
+        self._log_page_sessions[(user_id, token)] = _LogPageSession(
+            result=result,
+            expires_at=time.time() + self._log_page_ttl_seconds,
+        )
+        while len(self._log_page_sessions) > self._log_page_max_sessions:
+            oldest = next(iter(self._log_page_sessions))
+            self._log_page_sessions.pop(oldest, None)
+        first = self.render_log_page(token, 1, user_id=user_id)
+        return first
+
+    def _purge_log_page_sessions(self) -> None:
+        now = time.time()
+        for key, session in list(self._log_page_sessions.items()):
+            if session.expires_at <= now:
+                self._log_page_sessions.pop(key, None)
 
     def _target_allowed(self, target_id: str) -> bool:
         return self.permission_policy is None or self.permission_policy.allows_target(target_id)

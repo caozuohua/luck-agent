@@ -3,7 +3,7 @@ from __future__ import annotations
 from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
-from interface.lark_commands import QuickCommandRouter
+from interface.lark_commands import QuickCommandResult, QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
 from tools.service_health import ServiceHealthResult
@@ -38,6 +38,19 @@ class FakeVps:
 class FakeSysops:
     async def run(self, operation: str) -> VpsSysopsResult:
         return VpsSysopsResult(operation=operation, ok=True, output=f"checked {operation}")
+
+
+class FakePagedSysops(FakeSysops):
+    async def run(self, operation: str) -> VpsSysopsResult:
+        return VpsSysopsResult(
+            operation=operation,
+            ok=False,
+            output="log page 1",
+            error="日志部分读取受限",
+            partial=True,
+            truncated=True,
+            output_pages=("log page 1", "log page 2"),
+        )
 
 
 class FakeRestartSysops(FakeSysops):
@@ -119,6 +132,30 @@ async def test_quick_commands_return_without_llm() -> None:
     assert "临时标识" in (await router.handle("/mem0 smoke") or "")
     assert "remember database" in (await router.handle("/mem0 search database") or "")
     assert await router.handle("check the server") is None
+
+
+async def test_vps_logs_returns_paged_card_and_binds_session_to_user() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakePagedSysops(),
+    )
+
+    first = await router.handle("/vps logs", user_id="alice")
+
+    assert isinstance(first, QuickCommandResult)
+    assert "第 1/2 页" in first.text
+    assert first.card is not None
+    button = first.card["body"]["elements"][-1]["columns"][0]["elements"][0]
+    callback = button["behaviors"][0]["value"]
+    assert callback["action"] == "vps_logs_page"
+
+    second = router.render_log_page(callback["token"], 2, user_id="alice")
+    assert "log page 2" in second.text
+    assert "第 2/2 页" in second.text
+
+    denied = router.render_log_page(callback["token"], 2, user_id="bob")
+    assert "已过期" in denied.text
 
 
 async def test_service_catalog_routes_mem0_and_host_services() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from core.targets import VpsTarget
-from interface.lark_cards import build_target_selection_card, build_text_card
+from interface.lark_cards import build_log_page_card, build_target_selection_card, build_text_card
 
 
 def test_card_has_mobile_header_and_compatible_markdown_body() -> None:
@@ -28,3 +28,13 @@ def test_target_selection_card_uses_lark_compatible_string_values() -> None:
     assert selector["tag"] == "select_static"
     assert selector["name"] == "target_select"
     assert selector["options"][0]["value"] == "aws-01"
+
+
+def test_log_page_card_has_callback_navigation() -> None:
+    card = build_log_page_card("log page", page=2, total_pages=3, token="token")
+
+    columns = card["body"]["elements"][-1]["columns"]
+    assert len(columns) == 2
+    assert columns[0]["elements"][0]["behaviors"][0]["type"] == "callback"
+    assert columns[0]["elements"][0]["behaviors"][0]["value"]["page"] == "1"
+    assert columns[1]["elements"][0]["behaviors"][0]["value"]["page"] == "3"

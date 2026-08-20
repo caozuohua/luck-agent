@@ -65,6 +65,36 @@ async def test_unauthorized_lark_message_is_dropped() -> None:
     assert sender.cards == []
 
 
+def test_log_page_card_action_returns_updated_card() -> None:
+    class FakeQuickCommands:
+        def render_log_page(self, token: str, page: int, *, user_id: str) -> QuickCommandResult:
+            return QuickCommandResult(
+                f"日志第 {page} 页",
+                {"schema": "2.0", "body": {"elements": []}},
+            )
+
+    interface = LarkWebSocketInterface(
+        agent=FakeAgent(),
+        sender=FakeSender(),
+        quick_commands=FakeQuickCommands(),
+        access_policy=LarkAccessPolicy(allowed_chat_ids=frozenset({"oc_allowed"})),
+    )
+
+    response = interface.handle_card_action(
+        {
+            "chat_id": "oc_allowed",
+            "user_id": "ou_user",
+            "action": {
+                "tag": "button",
+                "value": {"action": "vps_logs_page", "token": "page-token", "page": "2"},
+            },
+        }
+    )
+
+    assert response["card"]["type"] == "raw"
+    assert response["toast"]["type"] == "success"
+
+
 async def test_dangerous_request_requires_one_time_confirmation() -> None:
     agent = FakeAgent()
     sender = FakeSender()

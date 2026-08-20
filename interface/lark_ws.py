@@ -195,7 +195,40 @@ class LarkWebSocketInterface:
             log.warning("lark_card_access_denied", user_id=user_id, chat_id=chat_id)
             return {"toast": {"type": "error", "content": "无权操作此卡片"}}
         action = event.get("action") or {}
-        if str(action.get("tag") or "") != "select_static":
+        action_tag = str(action.get("tag") or "")
+        if action_tag == "button":
+            raw_value = action.get("value")
+            if isinstance(raw_value, dict) and raw_value.get("action") == "vps_logs_page":
+                renderer = getattr(self.quick_commands, "render_log_page", None)
+                if callable(renderer):
+                    try:
+                        page = int(str(raw_value.get("page") or ""))
+                    except ValueError:
+                        page = 0
+                    result = renderer(
+                        str(raw_value.get("token") or ""),
+                        page,
+                        user_id=user_id,
+                    )
+                    if isinstance(result, QuickCommandResult) and result.card is not None:
+                        log.info(
+                            "lark_log_page_selected",
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            page=page,
+                        )
+                        return {
+                            "toast": {"type": "success", "content": f"已切换到第 {page} 页"},
+                            "card": {"type": "raw", "data": result.card},
+                        }
+                    message = (
+                        result.text
+                        if isinstance(result, QuickCommandResult)
+                        else str(result or "日志分页无结果")
+                    )
+                    return {"toast": {"type": "warning", "content": message[:100]}}
+            return {"toast": {"type": "warning", "content": "日志分页操作无效"}}
+        if action_tag != "select_static":
             return {"toast": {"type": "warning", "content": "暂不支持此卡片操作"}}
         raw_value = action.get("value")
         if isinstance(raw_value, dict):

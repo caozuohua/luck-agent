@@ -65,6 +65,66 @@ def build_target_selection_card(
     }
 
 
+def build_log_page_card(
+    text: str,
+    *,
+    page: int,
+    total_pages: int,
+    token: str,
+) -> dict[str, Any]:
+    """Build a Card 2.0 log page with short-lived callback navigation."""
+    card = build_text_card(
+        text,
+        title=f"Luck Agent · 服务日志 {page}/{total_pages}",
+    )
+    buttons: list[dict[str, Any]] = []
+    if page > 1:
+        buttons.append(_log_page_button("上一页", page=page - 1, token=token))
+    if page < total_pages:
+        buttons.append(_log_page_button("下一页", page=page + 1, token=token, primary=True))
+    if buttons:
+        card["body"]["elements"].append(
+            {
+                "tag": "column_set",
+                "flex_mode": "bisect",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [button],
+                    }
+                    for button in buttons
+                ],
+            }
+        )
+    return card
+
+
+def _log_page_button(
+    label: str,
+    *,
+    page: int,
+    token: str,
+    primary: bool = False,
+) -> dict[str, Any]:
+    return {
+        "tag": "button",
+        "type": "primary" if primary else "default",
+        "text": {"tag": "plain_text", "content": label},
+        "behaviors": [
+            {
+                "type": "callback",
+                "value": {
+                    "action": "vps_logs_page",
+                    "page": str(page),
+                    "token": token,
+                },
+            }
+        ],
+    }
+
+
 def _heading(content: str) -> str:
     first = next((line.strip() for line in content.splitlines() if line.strip()), "结果")
     first = first.lstrip("✅❌⚠️🏓🩺🖥️🧠 ")

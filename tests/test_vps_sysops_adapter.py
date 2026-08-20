@@ -4,7 +4,12 @@ from pathlib import Path
 
 from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
-from tools.vps_sysops import VpsSysopsAdapter, VpsSysopsResult, _truncate_output
+from tools.vps_sysops import (
+    VpsSysopsAdapter,
+    VpsSysopsResult,
+    _paginate_output,
+    _truncate_output,
+)
 
 
 class _FakeProcess:
@@ -116,6 +121,20 @@ def test_long_output_keeps_head_and_tail() -> None:
     assert output.startswith("HEAD")
     assert output.endswith("TAIL")
     assert "已保留首尾" in output
+
+
+def test_log_output_is_split_into_bounded_pages() -> None:
+    pages, complete = _paginate_output("0123456789" * 5, 10)
+
+    assert pages == ("0123456789",) * 5
+    assert complete is True
+
+
+def test_log_pagination_has_a_hard_page_limit() -> None:
+    pages, complete = _paginate_output("x" * 130, 10, max_pages=3)
+
+    assert len(pages) == 3
+    assert complete is False
 
 
 def test_result_exposes_stable_status_and_secret_free_dict() -> None:

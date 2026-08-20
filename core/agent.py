@@ -50,6 +50,7 @@ class MinimalAgent:
         output_parser: OutputParser | None = None,
         tool_executor: ToolExecutor | None = None,
         approval_checker: Any | None = None,
+        permission_checker: Any | None = None,
         audit_writer: Any | None = None,
         result_summarizer: ResultSummarizer | None = None,
         history_summary: str = "",
@@ -84,6 +85,7 @@ class MinimalAgent:
             tool_registry,
             pattern_writer=pattern_writer,
             approval_checker=approval_checker,
+            permission_checker=permission_checker,
             audit_writer=audit_writer,
         )
         self.result_summarizer = result_summarizer or ResultSummarizer()

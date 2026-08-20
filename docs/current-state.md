@@ -26,6 +26,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `core/lark_ws_runner.py` 已有生命周期封装，但尚未在 `main.py` 中完成生产接线。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
+- Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 
 ## 目标对象模型
 
@@ -75,7 +76,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. Lark 用户/群聊 allowlist 和危险操作确认尚未完整落地。
+1. 确认机制目前是消息级前置拦截，工具执行级审批和审计日志仍待完善。
 2. AWS 适配器已可用，但 Provider → Account → Region → Target → Service 模型尚未统一。
 3. LLM Provider Router、配额熔断和多 Provider 降级尚未完成。
 4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
@@ -85,8 +86,8 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 详细基线见 [`docs/roadmap.md`](roadmap.md)。当前顺序为：
 
-1. LLM 容错、AWS 重启恢复和运行时配置一致性；
-2. Lark 用户/群聊权限与危险操作确认；
-3. 无 LLM VPS 运维控制面和多云目标模型；
+1. 工具执行级审批、审计和 LLM 容错；
+2. AWS 重启恢复、运行时配置一致性和多云目标模型；
+3. 无 LLM VPS 运维控制面扩展；
 4. Mem0 记忆策略与 LLM Provider Router；
 5. 再逐步开放 Lark 平台能力和高风险写操作。

@@ -5,6 +5,7 @@ from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
+from tools.service_health import ServiceHealthResult
 from tools.vps_status import HostStatus
 from tools.vps_sysops import VpsSysopsResult
 
@@ -36,6 +37,20 @@ class FakeVps:
 class FakeSysops:
     async def run(self, operation: str) -> VpsSysopsResult:
         return VpsSysopsResult(operation=operation, ok=True, output=f"checked {operation}")
+
+
+class FakeProbeSysops(FakeSysops):
+    async def probe_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
+        return VpsSysopsResult(
+            operation=f"service:{service}",
+            ok=True,
+            output='{"name":"gcp-hermeslite","version":"0.3.0"}',
+        )
+
+
+class FakeNewApi:
+    async def health(self) -> ServiceHealthResult:
+        return ServiceHealthResult("new-api", True, 7, "models reachable")
 
 
 class FakeMem0:
@@ -122,6 +137,21 @@ async def test_service_catalog_honors_service_allowlist() -> None:
     assert "`a2a`" not in (catalog or "")
     denied = await router.handle("/vps service a2a status")
     assert "无权访问服务" in (denied or "")
+
+
+async def test_service_catalog_uses_api_and_fixed_probe_backends() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeProbeSysops(),
+        mem0=FakeMem0(),
+        new_api=FakeNewApi(),
+    )
+
+    new_api = await router.handle("/vps service new-api status")
+    a2a = await router.handle("/vps service a2a status")
+    assert "延迟：7 ms" in (new_api or "")
+    assert "gcp-hermeslite" in (a2a or "")
 
 
 async def test_lark_interface_short_circuits_quick_command() -> None:

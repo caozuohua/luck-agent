@@ -27,6 +27,7 @@ from memory.pattern_store import PatternStore
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
 from tools.mem0_client import Mem0Client
+from tools.service_health import OpenAIServiceHealthClient
 from tools.vps_status import VpsStatusService
 from tools.vps_sysops import VpsSysopsAdapter
 
@@ -152,6 +153,11 @@ class Runtime:
             if settings.mem0_base_url
             else None
         )
+        self.new_api_health = OpenAIServiceHealthClient(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
         self.quick_commands = QuickCommandRouter(
             health=self.health,
             vps=self.vps_status,
@@ -160,6 +166,7 @@ class Runtime:
             targets=self.target_registry,
             permission_policy=self.operation_permission_policy,
             mem0_target_id=self.vps_target.label,
+            new_api=self.new_api_health,
         )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).

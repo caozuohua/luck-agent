@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -22,6 +23,12 @@ class HealthProvider(Protocol):
 class VpsSysopsProvider(Protocol):
     async def run(self, operation: str, *, user_id: str = "default") -> Any: ...
 
+    async def probe_service(self, service: str, *, user_id: str = "default") -> Any: ...
+
+
+class ServiceHealthProvider(Protocol):
+    async def health(self) -> Any: ...
+
 
 @dataclass(frozen=True)
 class QuickCommandResult:
@@ -42,6 +49,7 @@ class QuickCommandRouter:
         targets: VpsTargetRegistry | None = None,
         permission_policy: OperationPermissionPolicy | None = None,
         mem0_target_id: str = "",
+        new_api: ServiceHealthProvider | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
@@ -50,6 +58,7 @@ class QuickCommandRouter:
         self.targets = targets
         self.permission_policy = permission_policy
         self.mem0_target_id = mem0_target_id.strip().lower()
+        self.new_api = new_api
 
     async def handle(
         self,
@@ -256,10 +265,49 @@ class QuickCommandRouter:
                 return await self._mem0_search(argument)
             return "用法：`/vps service mem0 status|smoke|search 关键词`"
 
+        if spec.backend == "http":
+            if action not in {"status", "health"}:
+                return f"用法：`/vps service {spec.service_id} status`"
+            return await self._new_api_status()
+
+        if spec.backend == "probe":
+            if action not in {"status", "health"}:
+                return f"用法：`/vps service {spec.service_id} status`"
+            return await self._service_probe(spec.service_id, user_id)
+
         if action not in {"status", "health", "list"}:
             return f"用法：`/vps service {spec.service_id} status`"
         result = await self._sysops("services", user_id)
         return f"🧩 {spec.label} · 宿主机服务清单\n{result}"
+
+    async def _new_api_status(self) -> str:
+        if self.new_api is None:
+            return "🤖 new-api：⚠️ 未配置 LLM_BASE_URL"
+        try:
+            status = await self.new_api.health()
+            mark = "✅" if status.ok else "❌"
+            detail = f"\n• 说明：{status.detail}" if status.detail else ""
+            return f"🤖 new-api API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+        except Exception as exc:
+            log.error("quick_new_api_status_failed", error=str(exc))
+            return "🤖 new-api API：⚠️ 暂时无法读取状态"
+
+    async def _service_probe(self, service: str, user_id: str) -> str:
+        probe = getattr(self.sysops, "probe_service", None)
+        if not callable(probe):
+            result = await self._sysops("services", user_id)
+            return f"🧩 {service} · 宿主机服务清单\n{result}"
+        try:
+            try:
+                result = await probe(service, user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                result = await probe(service)
+            return _format_service_probe(service, result)
+        except Exception as exc:
+            log.error("quick_service_probe_failed", service=service, error=str(exc))
+            return f"🧩 {service}：⚠️ 服务探针失败"
 
     async def _mem0_status(self) -> str:
         if self.mem0 is None:
@@ -313,6 +361,26 @@ class QuickCommandRouter:
         except Exception as exc:
             log.error("quick_mem0_search_failed", error=str(exc))
             return "🧠 Mem0 搜索：⚠️ 查询失败"
+
+
+def _format_service_probe(service: str, result: Any) -> str:
+    mark = "✅" if getattr(result, "ok", False) else "⚠️"
+    target = getattr(result, "target", None)
+    target_line = f"\n• 目标：`{target.display}`" if target is not None else ""
+    output = str(getattr(result, "output", "") or "").strip()
+    error = str(getattr(result, "error", "") or "").strip()
+    if service == "a2a" and output:
+        try:
+            card = json.loads(output)
+            name = str(card.get("name") or "unknown")
+            version = str(card.get("version") or "unknown")
+            return f"🛰️ A2A API：{mark}{target_line}\n• Agent：`{name}`\n• 版本：`{version}`"
+        except (TypeError, ValueError):
+            pass
+    body = output or error or "无返回内容"
+    if not getattr(result, "ok", False) and error and output:
+        body = f"{error}\n{output}"
+    return f"🧩 {service} API：{mark}{target_line}\n{body}"
 
 
 def _memory_text(item: dict[str, Any]) -> str:

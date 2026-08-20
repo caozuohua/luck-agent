@@ -13,8 +13,8 @@ class ServiceSpec:
 
 SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
     ServiceSpec("mem0", "Mem0", "mem0", "记忆 API 状态、smoke 和搜索"),
-    ServiceSpec("a2a", "A2A", "sysops", "宿主机服务状态"),
-    ServiceSpec("new-api", "new-api", "sysops", "宿主机服务状态"),
+    ServiceSpec("a2a", "A2A", "probe", "目标机 A2A Agent Card 健康检查"),
+    ServiceSpec("new-api", "new-api", "http", "OpenAI-compatible models 健康检查"),
     ServiceSpec("luck-agent", "Luck Agent", "sysops", "宿主机服务状态"),
 )
 

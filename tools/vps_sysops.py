@@ -62,6 +62,9 @@ class VpsSysopsAdapter:
         "services": "scripts/08_services.sh",
         "logs": "scripts/09_logs.sh",
     }
+    SERVICE_PROBES: dict[str, str] = {
+        "a2a": "curl -fsS --max-time 5 http://127.0.0.1:8765/.well-known/agent-card.json",
+    }
 
     def __init__(
         self,
@@ -196,6 +199,84 @@ class VpsSysopsAdapter:
             partial=partial,
         )
 
+    async def probe_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
+        """Run a fixed, read-only service probe on the selected target."""
+        service = service.strip().lower()
+        target = self.target_registry.current(user_id) if self.target_registry else self.target
+        probe = self.SERVICE_PROBES.get(service)
+        if probe is None:
+            return VpsSysopsResult(
+                operation=f"service:{service}",
+                ok=False,
+                error=f"不支持的服务探针: {service or '(empty)'}",
+                target=target,
+            )
+        if target is not None and self.permission_policy is not None:
+            if not self.permission_policy.allows_target(target.label):
+                return VpsSysopsResult(
+                    operation=f"service:{service}",
+                    ok=False,
+                    error=f"目标未授权：{target.label}",
+                    target=target,
+                )
+        is_local = self._is_local_target(target)
+        if is_local is None:
+            return VpsSysopsResult(
+                operation=f"service:{service}",
+                ok=False,
+                error=(
+                    f"目标未配置 SSH 运维通道: {target.display if target else '(unknown)'}"
+                ),
+                target=target,
+            )
+        env = self._build_environment(target, is_local=is_local)
+        command, cwd = self._build_probe_command(
+            probe=probe,
+            target=target,
+            is_local=is_local,
+            env=env,
+        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=cwd,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return VpsSysopsResult(
+                operation=f"service:{service}",
+                ok=False,
+                error=f"服务探针超时（>{self.timeout_seconds:g}s）",
+                target=target,
+            )
+        except OSError as exc:
+            return VpsSysopsResult(
+                operation=f"service:{service}",
+                ok=False,
+                error=f"无法启动服务探针: {exc}",
+                target=target,
+            )
+        output = _clean_output(stdout.decode("utf-8", errors="replace"))
+        output, truncated = _truncate_output(output, self.max_output_chars)
+        returncode = process.returncode
+        return VpsSysopsResult(
+            operation=f"service:{service}",
+            ok=returncode == 0,
+            output=output,
+            error="" if returncode == 0 else f"服务探针退出码 {returncode}",
+            returncode=returncode,
+            target=target,
+            truncated=truncated,
+        )
+
     def _is_local_target(self, target: VpsTarget | None) -> bool | None:
         """Return local/remote execution mode, or None when unroutable."""
         if target is None:
@@ -267,6 +348,48 @@ class VpsSysopsAdapter:
         )
         remote_command = f"{remote_env} bash {shlex.quote(str(script))}".strip()
         return [*ssh_args, destination, remote_command], None
+
+    def _build_probe_command(
+        self,
+        *,
+        probe: str,
+        target: VpsTarget | None,
+        is_local: bool,
+        env: dict[str, str],
+    ) -> tuple[list[str], str | None]:
+        if is_local:
+            return ["bash", "-lc", probe], str(self.root)
+        if target is None or not target.ssh_host:
+            raise ValueError("remote service probe requires ssh_host")
+        destination = target.ssh_host
+        if target.ssh_user:
+            destination = f"{target.ssh_user}@{destination}"
+        ssh_args = [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={max(1, math.ceil(self.timeout_seconds))}",
+        ]
+        if self.ssh_config:
+            ssh_args.extend(["-F", self.ssh_config])
+        if self.ssh_identity_file:
+            ssh_args.extend(["-i", self.ssh_identity_file])
+        if target.ssh_port != 22:
+            ssh_args.extend(["-p", str(target.ssh_port)])
+        remote_env = " ".join(
+            f"{key}={shlex.quote(env[key])}"
+            for key in (
+                "VPS_PROFILE",
+                "VPS_PROVIDER",
+                "VPS_ACCOUNT",
+                "VPS_REGION",
+                "VPS_TARGET_ID",
+                "VPS_ROLE",
+            )
+            if key in env
+        )
+        return [*ssh_args, destination, f"{remote_env} {probe}".strip()], None
 
 
 def format_vps_sysops_result(result: VpsSysopsResult) -> str:

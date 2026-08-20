@@ -90,14 +90,10 @@ class LarkWebSocketRunner:
         log.info("lark_websocket_stopped")
 
     async def _shutdown_sdk(self) -> None:
-        loop = asyncio.get_running_loop()
-        # Let tasks queued by the blocking SDK thread reach their first await
-        # before we snapshot and cancel them.
-        await asyncio.sleep(0)
-        current = asyncio.current_task(loop=loop)
+        current = asyncio.current_task()
         background_tasks: list[asyncio.Task] = []
         select_tasks: list[asyncio.Task] = []
-        for task in asyncio.all_tasks(loop=loop):
+        for task in asyncio.all_tasks():
             if task is current:
                 continue
             coro = task.get_coro()
@@ -106,14 +102,6 @@ class LarkWebSocketRunner:
                 select_tasks.append(task)
             else:
                 background_tasks.append(task)
-        log.info(
-            "lark_websocket_shutdown_tasks",
-            sdk_loop_match=loop is self.sdk_loop,
-            sdk_loop_id=id(self.sdk_loop),
-            running_loop_id=id(loop),
-            task_names=[getattr(task.get_coro(), "__name__", "") for task in (*background_tasks, *select_tasks)],
-            task_count=len(background_tasks) + len(select_tasks),
-        )
 
         # Cancel every outstanding task (background + select) so cancellation
         # is actually delivered before the loop is torn down. On Windows the
@@ -126,6 +114,7 @@ class LarkWebSocketRunner:
             await asyncio.gather(*pending, return_exceptions=True)
 
         await self.client._disconnect()
+        loop = asyncio.get_running_loop()
         # Any select task that re-spawned is cancelled on the next tick.
         for task in select_tasks:
             loop.call_soon(task.cancel)

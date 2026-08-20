@@ -14,12 +14,13 @@ class FakeLarkClient:
         self.sdk_loop = sdk_loop
         self.started = threading.Event()
         self.background_started = threading.Event()
+        self.background_task: asyncio.Task[None] | None = None
         self.background_cancelled = False
         self.disconnect_after_background_cancelled = False
         self.disconnected = False
 
     def start(self) -> None:
-        self.sdk_loop.create_task(self._background_loop())
+        self.background_task = self.sdk_loop.create_task(self._background_loop())
         # Signal readiness only after the task is queued.  Signalling before
         # create_task() lets the test race shutdown against client startup.
         self.started.set()

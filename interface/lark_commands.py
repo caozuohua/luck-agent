@@ -134,6 +134,8 @@ class QuickCommandRouter:
 
     async def _vps(self, user_id: str) -> str:
         try:
+            if self._is_remote_target(user_id):
+                return await self._sysops("resources", user_id)
             try:
                 status = await self.vps.collect(user_id=user_id)
             except TypeError as exc:
@@ -144,6 +146,13 @@ class QuickCommandRouter:
         except Exception as exc:
             log.error("quick_vps_status_failed", error=str(exc))
             return "🖥️ VPS 状态：⚠️ 暂时无法读取主机资源"
+
+    def _is_remote_target(self, user_id: str) -> bool:
+        if self.targets is None:
+            return False
+        selected = self.targets.current(user_id)
+        local = getattr(self.vps, "target", None)
+        return local is not None and selected.label != local.label
 
     async def _sysops(self, operation: str, user_id: str) -> str:
         if self.sysops is None:

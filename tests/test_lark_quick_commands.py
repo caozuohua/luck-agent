@@ -135,3 +135,20 @@ async def test_target_commands_return_card_and_keep_user_selection() -> None:
     assert selected.text == "🎯 当前目标：GCP / gcp-01 / us-west1"
     assert targets.current("alice").label == "gcp-01"
     assert targets.current("bob").label == "aws-01"
+
+
+async def test_vps_command_uses_sysops_resources_for_remote_target() -> None:
+    default = VpsTarget(provider="aws", target_id="aws-01")
+    targets = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal|gcp-ts|caozuohua99|22",
+        default_target=default,
+    )
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        targets=targets,
+    )
+
+    result = await router.handle("/vps", user_id="alice")
+    assert "checked resources" in (result or "")

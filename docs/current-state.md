@@ -1,6 +1,6 @@
 # Luck Agent 当前实现与路线
 
-更新时间：2026-08-19
+更新时间：2026-08-20
 
 ## 产品定位
 
@@ -22,8 +22,10 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - LLM 使用 OpenAI-compatible `/chat/completions`，没有配置模型时使用离线 FakeLLM，仅用于本地开发和测试。
 - LLM 是增强层，不是控制面。无 LLM 时，规则化 VPS 运维和安全确认流程必须可用。
 - SQLite 保存 Goal、上下文、模式和运行时状态。
-- `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；真实 Lark WebSocket 尚未完成实测验收。
+- `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - `core/lark_ws_runner.py` 已有生命周期封装，但尚未在 `main.py` 中完成生产接线。
+- `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
+- `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 
 ## 目标对象模型
 
@@ -73,18 +75,18 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 真实 Lark WebSocket 尚未用测试 Bot 完成收发验收。
-2. `main.py` 当前仍使用占位的 `NoopLarkSender`。
-3. Dockerfile、systemd 用户和部署脚本存在不一致。
-4. Graph HITL 中断/恢复测试目前有两个失败。
-5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含 V1/Gemini/单 VPS 描述。
+1. 全套测试仍有一个 Graph 多步集成基线失败，需要修复并补充异步状态写入收尾。
+2. Lark 用户/群聊 allowlist 和危险操作确认尚未完整落地。
+3. AWS 适配器已可用，但 Provider → Account → Region → Target → Service 模型尚未统一。
+4. LLM Provider Router、配额熔断和多 Provider 降级尚未完成。
+5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。
 
 ## 实施顺序
 
-1. 完成真实 Lark Bot 接线和最小收发测试；
-2. 建立卡片组件与交互协议；
-3. 完成无 LLM VPS 运维控制面；
-4. 抽象 GCP/AWS/Azure 多目标管理；
-5. 实现 LLM Provider Router、熔断和降级；
-6. 再以只读能力验证 lark-cli；
-7. 逐步开放 Lark 平台写操作和高风险运维操作。
+详细基线见 [`docs/roadmap.md`](roadmap.md)。当前顺序为：
+
+1. 稳定性、Graph 基线和真实 AWS 验收；
+2. Lark 用户/群聊权限与危险操作确认；
+3. 无 LLM VPS 运维控制面和多云目标模型；
+4. Mem0 记忆策略与 LLM Provider Router；
+5. 再逐步开放 Lark 平台能力和高风险写操作。

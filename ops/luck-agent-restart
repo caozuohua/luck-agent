@@ -2,5 +2,5 @@
 set -eu
 
 [ "$#" -eq 0 ] || exit 2
-/bin/systemctl --no-block restart luck-agent
+/bin/systemd-run --quiet --on-active=3s /bin/systemctl restart luck-agent
 echo "restart-scheduled"

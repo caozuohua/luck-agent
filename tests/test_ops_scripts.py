@@ -26,4 +26,5 @@ class OpsScriptTests(unittest.TestCase):
         self.assertIn("luck-agent-restart", source)
         self.assertIn("NOPASSWD", source)
         self.assertNotIn("luck-agent-upgrade", source)
-        self.assertIn("systemctl --no-block restart luck-agent", restart)
+        self.assertIn("systemd-run", restart)
+        self.assertIn("--on-active=3s", restart)

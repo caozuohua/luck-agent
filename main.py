@@ -8,6 +8,7 @@ from typing import Any
 from core.agent import MinimalAgent
 from core.log import get_logger
 from core.router import ToolRouter
+from core.operation_policy import OperationPermissionPolicy
 from interface.health import HealthService
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager
@@ -58,6 +59,10 @@ class Runtime:
                 base_url=settings.llm_base_url,
                 api_key=settings.llm_api_key,
                 model=settings.llm_model,
+                timeout_seconds=settings.llm_timeout_seconds,
+                max_retries=settings.llm_max_retries,
+                failure_threshold=settings.llm_failure_threshold,
+                cooldown_seconds=settings.llm_cooldown_seconds,
             )
         else:
             self.llm_client = FakeLLMClient(model=settings.llm_model)
@@ -77,6 +82,11 @@ class Runtime:
         self.lark_approval_manager = LarkApprovalManager(
             ttl_seconds=settings.lark_approval_ttl_seconds,
         )
+        self.operation_permission_policy = OperationPermissionPolicy.from_csv(
+            targets=settings.ops_allowed_targets,
+            services=settings.ops_allowed_services,
+            operations=settings.ops_allowed_operations,
+        )
         self.agent = MinimalAgent(
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
@@ -91,6 +101,9 @@ class Runtime:
             max_retry=settings.max_retry,
             graph_db_path=settings.graph_db_path,
             approval_checker=self.lark_approval_manager.consume_grant,
+            permission_checker=lambda user_id, tool_name, args: self.operation_permission_policy.allows(
+                tool_name, args
+            ),
             audit_writer=self.db.insert_operation_audit,
         )
         self.health = HealthService(

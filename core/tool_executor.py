@@ -10,12 +10,17 @@ from typing import Any
 
 from memory.pattern_store import pattern_outcome_from_data
 from core.output_parser import IntentType, OutputParser, ParseError
-from core.operation_policy import operation_description, operation_requires_approval
+from core.operation_policy import (
+    operation_description,
+    operation_permission_applies,
+    operation_requires_approval,
+)
 from tools.base import ToolResult
 from tools.registry import ToolNotFoundError, ToolRegistry
 
 PatternWriter = Callable[..., Awaitable[Any]]
 ApprovalChecker = Callable[[str, str, str, dict[str, Any]], bool]
+PermissionChecker = Callable[[str, str, dict[str, Any]], bool]
 AuditWriter = Callable[..., Awaitable[Any]]
 
 
@@ -28,12 +33,14 @@ class ToolExecutor:
         pattern_writer: PatternWriter | None = None,
         error_pattern_writer: PatternWriter | None = None,
         approval_checker: ApprovalChecker | None = None,
+        permission_checker: PermissionChecker | None = None,
         audit_writer: AuditWriter | None = None,
     ) -> None:
         self.registry = registry
         self.timeout_seconds = timeout_seconds
         self.pattern_writer = pattern_writer or error_pattern_writer
         self.approval_checker = approval_checker
+        self.permission_checker = permission_checker
         self.audit_writer = audit_writer
         self._pending_patterns: list[asyncio.Task[None]] = []
         self._pending_audits: list[asyncio.Task[None]] = []
@@ -53,6 +60,29 @@ class ToolExecutor:
         # unless the name is an actually-registered tool.
         tool_name, args = self._normalize_tool_call(tool_name, args, self.registry)
         audited_operation: str | None = None
+        if self.permission_checker is not None and operation_permission_applies(tool_name, args):
+            permitted = False
+            try:
+                permitted = self.permission_checker(user_id, tool_name, args)
+            except Exception:
+                permitted = False
+            if not permitted:
+                operation = operation_description(tool_name, args)
+                self._schedule_audit(
+                    user_id=user_id,
+                    tool_name=tool_name,
+                    operation=operation,
+                    decision="permission_denied",
+                    details="target/service/operation policy rejected",
+                )
+                result = ToolResult.fail(
+                    error="PERMISSION_DENIED",
+                    data={"operation": operation},
+                    tool_name=tool_name,
+                    metadata={"permission_denied": True},
+                ).with_timing(started_at)
+                self._schedule_pattern(tool_name, args, result, user_id=user_id)
+                return result
         if self.approval_checker is not None and operation_requires_approval(tool_name, args):
             operation = operation_description(tool_name, args)
             audited_operation = operation

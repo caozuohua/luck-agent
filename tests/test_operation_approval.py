@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.operation_policy import operation_description, operation_requires_approval
+from core.operation_policy import (
+    OperationPermissionPolicy,
+    operation_description,
+    operation_requires_approval,
+)
 from core.tool_executor import ToolExecutor
 from interface.lark_approval import LarkApprovalManager
 from tools.base import Tool, ToolResult
@@ -57,12 +61,73 @@ async def test_mutating_tool_requires_grant_and_writes_audit() -> None:
     assert audits[-1]["details"].startswith("status=ok")
 
 
+async def test_operation_permission_blocks_out_of_scope_target() -> None:
+    tool = RestartTool()
+    audits: list[dict[str, Any]] = []
+
+    async def audit_writer(**record: Any) -> None:
+        audits.append(record)
+
+    policy = OperationPermissionPolicy.from_csv(
+        targets="aws-prod",
+        services="luck-agent",
+        operations="restart",
+    )
+    executor = ToolExecutor(
+        ToolRegistry([tool]),
+        permission_checker=lambda user_id, tool_name, args: policy.allows(tool_name, args),
+        audit_writer=audit_writer,
+    )
+
+    result = await executor.execute(
+        "service_restart",
+        {"target": "gcp-test", "service": "luck-agent"},
+        user_id="ou_user",
+    )
+
+    assert result.error == "PERMISSION_DENIED"
+    assert tool.calls == 0
+    await executor.drain_pending_audits()
+    assert audits[0]["decision"] == "permission_denied"
+
+
 def test_operation_policy_does_not_log_shell_arguments() -> None:
     assert operation_requires_approval("shell", {"command": "systemctl restart luck-agent"})
     assert operation_description(
         "shell",
         {"command": "curl -H 'Authorization: Bearer secret' -X POST https://example"},
     ) == "shell:curl"
+
+
+def test_operation_permission_policy_matches_target_service_and_operation() -> None:
+    policy = OperationPermissionPolicy.from_csv(
+        targets="aws-prod",
+        services="luck-agent",
+        operations="restart",
+    )
+
+    assert policy.allows(
+        "shell",
+        {
+            "target": "aws-prod",
+            "command": "systemctl restart luck-agent",
+        },
+    )
+    assert not policy.allows(
+        "shell",
+        {
+            "target": "aws-test",
+            "command": "systemctl restart luck-agent",
+        },
+    )
+    assert policy.allows("web_search", {"query": "systemd"})
+    assert not policy.allows(
+        "shell",
+        {
+            "target": "aws-prod",
+            "command": "systemctl stop luck-agent",
+        },
+    )
 
 
 def test_lark_grant_is_consumed_once() -> None:

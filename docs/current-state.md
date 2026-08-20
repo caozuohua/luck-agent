@@ -32,6 +32,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   输出默认限制为 5000 字符，长输出保留首尾；结果提供 `ok/partial/error` 三态和
   `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
+- `core/services.py` 提供固定服务目录；`/vps service mem0 status|smoke|search` 调用 Mem0 API，
+  `a2a`、`new-api` 和 `luck-agent` 通过 vps_sysops 的服务清单查看宿主机状态，不接受任意服务名或 Shell。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；
@@ -94,8 +96,9 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前阻塞项
 
 1. 命令结果还未全部统一为适合手机查看的结构化卡片；确认码已按请求中明确的操作、目标和服务进行执行级匹配。
-2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标 allowlist 和 AWS/GCP/Azure
-   只读 SSH 执行路由已可用，但用户级、服务级权限和变更操作仍未统一。
+2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标和服务 allowlist、
+   AWS/GCP/Azure 只读 SSH 执行路由已可用，但用户级权限和变更操作仍未统一。
+3. A2A、new-api 当前只有宿主机服务清单入口，尚未接入各自 API 的独立健康检查和 smoke。
 3. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
 4. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
 5. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。

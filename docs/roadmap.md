@@ -48,6 +48,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 适配器结果已统一为 `ok/partial/error` 三态；AWS、GCP、Azure 的资源路由已完成线上验证，
   日志权限不足时仍返回可读内容并标注为 `partial`；
 - 已接入 Mem0：`/mem0 status`、`/mem0 smoke`、`/mem0 search 关键词`；
+- 已增加固定服务目录：`/vps service list`、`/vps service mem0 status|smoke|search`，以及
+  A2A、new-api、Luck Agent 的宿主机服务清单入口；服务名和服务 allowlist 均固定校验；
 - Mem0 API Key、API health 和写入/搜索/清理 smoke 已验证；
 - 本地新增适配器测试已通过；
 - Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 49 passed；
@@ -88,7 +90,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 
 仍需完成：
 
-1. 已为目标主机建立统一 allowlist 检查；仍需补充用户级、服务级和操作级细粒度授权；
+1. 已为目标主机和服务建立统一 allowlist 检查；仍需补充用户级和操作级细粒度授权；
 2. 将命令结果继续统一为适合手机查看的结构化卡片，并补充长日志分页；
 3. 为目标选择后的服务操作增加服务级权限和变更操作路由，避免仅切换展示上下文。
 
@@ -115,8 +117,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 Provider → Account → Region → Target → Service → Operation
 ```
 
-AWS、GCP、Azure 的只读目标路由已完成；下一步扩展服务级操作和变更审批。Agent 不直接实现
-各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
+AWS、GCP、Azure 的只读目标路由和固定服务目录已完成；下一步扩展服务级健康检查和变更审批。
+Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略
 

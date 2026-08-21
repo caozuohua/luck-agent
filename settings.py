@@ -28,6 +28,21 @@ DEFAULT_WORKSPACE_DIR = "/opt/luck-agent/workspace"
 
 
 @dataclass(frozen=True)
+class LLMProviderSettings:
+    """Configuration for one OpenAI-compatible model provider."""
+
+    name: str
+    base_url: str
+    api_key: str
+    model: str
+    timeout_seconds: float
+    max_retries: int
+    failure_threshold: int
+    cooldown_seconds: float
+    quota_cooldown_seconds: float
+
+
+@dataclass(frozen=True)
 class AgentSettings:
     # LLM — OpenAI-compatible /chat/completions endpoint.
     # Default target: the `new-api` container on the GCP VPS (same host as V2).
@@ -43,6 +58,8 @@ class AgentSettings:
     llm_max_retries: int = 2
     llm_failure_threshold: int = 3
     llm_cooldown_seconds: float = 30.0
+    llm_quota_cooldown_seconds: float = 3600.0
+    llm_providers: tuple[LLMProviderSettings, ...] = ()
 
     lark_app_id: str = ""
     lark_app_secret: str = ""
@@ -94,6 +111,7 @@ class AgentSettings:
 
 
 def load_settings() -> AgentSettings:
+    providers = _load_llm_providers()
     return AgentSettings(
         llm_base_url=os.environ.get("LLM_BASE_URL", ""),
         llm_api_key=os.environ.get("LLM_API_KEY", ""),
@@ -102,6 +120,10 @@ def load_settings() -> AgentSettings:
         llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "2")),
         llm_failure_threshold=int(os.environ.get("LLM_FAILURE_THRESHOLD", "3")),
         llm_cooldown_seconds=float(os.environ.get("LLM_COOLDOWN_SECONDS", "30")),
+        llm_quota_cooldown_seconds=float(
+            os.environ.get("LLM_QUOTA_COOLDOWN_SECONDS", "3600")
+        ),
+        llm_providers=providers,
         lark_app_id=os.environ.get("LARK_APP_ID", ""),
         lark_app_secret=os.environ.get("LARK_APP_SECRET", ""),
         lark_domain=os.environ.get(
@@ -161,3 +183,76 @@ def load_settings() -> AgentSettings:
         ),
         graph_max_active=int(os.environ.get("GRAPH_MAX_ACTIVE", "1")),
     )
+
+
+def _load_llm_providers() -> tuple[LLMProviderSettings, ...]:
+    """Load ordered providers while preserving the legacy primary env vars.
+
+    ``LLM_BASE_URL``/``LLM_API_KEY``/``LLM_MODEL`` remain the primary provider
+    contract. Additional providers use a normalized name, for example
+    ``LLM_PROVIDER_BACKUP_BASE_URL`` and ``LLM_PROVIDER_BACKUP_API_KEY``, and
+    are enabled by listing ``backup`` in ``LLM_PROVIDER_ORDER``.
+    """
+
+    order = _split_csv(os.environ.get("LLM_PROVIDER_ORDER", "primary"))
+    if not order:
+        order = ["primary"]
+
+    legacy = {
+        "base_url": os.environ.get("LLM_BASE_URL", ""),
+        "api_key": os.environ.get("LLM_API_KEY", ""),
+        "model": os.environ.get(
+            "LLM_MODEL", "nvidia/llama-3.1-nemotron-nano-8b-v1"
+        ),
+        "timeout_seconds": os.environ.get("LLM_TIMEOUT_SECONDS", "60"),
+        "max_retries": os.environ.get("LLM_MAX_RETRIES", "2"),
+        "failure_threshold": os.environ.get("LLM_FAILURE_THRESHOLD", "3"),
+        "cooldown_seconds": os.environ.get("LLM_COOLDOWN_SECONDS", "30"),
+        "quota_cooldown_seconds": os.environ.get(
+            "LLM_QUOTA_COOLDOWN_SECONDS", "3600"
+        ),
+    }
+    providers: list[LLMProviderSettings] = []
+    seen: set[str] = set()
+    for raw_name in order:
+        name = raw_name.strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        suffix = "".join(char if char.isalnum() else "_" for char in name).upper()
+        prefix = f"LLM_PROVIDER_{suffix}_"
+        is_primary = name in {"primary", "default"}
+
+        def value(field: str) -> str:
+            configured = os.environ.get(prefix + field.upper())
+            if configured:
+                return configured
+            if is_primary:
+                return legacy[field]
+            # Operational tuning and model name may inherit global defaults;
+            # credentials and endpoints must never silently cross providers.
+            if field in {"base_url", "api_key"}:
+                return ""
+            return legacy[field]
+
+        base_url = value("base_url").strip()
+        if not base_url:
+            continue
+        providers.append(
+            LLMProviderSettings(
+                name=name,
+                base_url=base_url,
+                api_key=value("api_key"),
+                model=value("model"),
+                timeout_seconds=float(value("timeout_seconds")),
+                max_retries=int(value("max_retries")),
+                failure_threshold=int(value("failure_threshold")),
+                cooldown_seconds=float(value("cooldown_seconds")),
+                quota_cooldown_seconds=float(value("quota_cooldown_seconds")),
+            )
+        )
+    return tuple(providers)
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]

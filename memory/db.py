@@ -30,6 +30,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS goals (
                 id          TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,
+                chat_id     TEXT NOT NULL DEFAULT '',
                 status      TEXT NOT NULL,
                 intent_type TEXT,
                 raw_input   TEXT,
@@ -78,6 +79,15 @@ class Database:
             );
             """
         )
+        # Existing V2 databases predate chat_id. Keep the migration local and
+        # idempotent so a rolling deployment does not require data recreation.
+        try:
+            await conn.execute(
+                "ALTER TABLE goals ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
         await conn.commit()
 
     async def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> None:

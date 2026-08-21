@@ -10,6 +10,7 @@ from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
 from interface.lark_cards import build_text_card
 from interface.lark_commands import QuickCommandResult
+from runtime.contracts import RuntimeHandleResult
 
 log = get_logger("interface.lark_ws")
 
@@ -36,6 +37,18 @@ class QuickCommandProtocol(Protocol):
         user_id: str = "default",
         approval_token: str | None = None,
     ) -> str | QuickCommandResult | None: ...
+
+
+class RuntimeProtocol(Protocol):
+    async def handle_message(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        text: str,
+        message_id: str = "",
+        approval_token: str | None = None,
+    ) -> RuntimeHandleResult: ...
 
 
 class LarkMessageDeduper:
@@ -74,6 +87,7 @@ class LarkWebSocketInterface:
         agent: AgentProtocol,
         sender: CardSenderProtocol,
         quick_commands: QuickCommandProtocol | None = None,
+        runtime: RuntimeProtocol | None = None,
         access_policy: LarkAccessPolicy | None = None,
         approval_manager: LarkApprovalManager | None = None,
         deduper: LarkMessageDeduper | None = None,
@@ -83,6 +97,7 @@ class LarkWebSocketInterface:
         self.agent = agent
         self.sender = sender
         self.quick_commands = quick_commands
+        self.runtime = runtime
         self.access_policy = access_policy
         self.approval_manager = approval_manager
         self.deduper = deduper or LarkMessageDeduper(ttl_seconds=60)
@@ -166,7 +181,19 @@ class LarkWebSocketInterface:
                     response = response.text
                 log.info("lark_quick_command_handled", command=text.strip().lower())
         if response is None:
-            if approval_token is None:
+            if self.runtime is not None:
+                runtime_result = await self.runtime.handle_message(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    text=text,
+                    message_id=message_id,
+                    approval_token=approval_token,
+                )
+                if runtime_result.handled:
+                    response = runtime_result.summary
+                else:
+                    response = await self.agent.run_turn(text, user_id=user_id)
+            elif approval_token is None:
                 response = await self.agent.run_turn(text, user_id=user_id)
             else:
                 response = await self.agent.run_turn(
@@ -183,6 +210,21 @@ class LarkWebSocketInterface:
             message_id=message_id,
         )
         return True
+
+    async def send_goal_result(self, goal: dict[str, Any]) -> None:
+        """Send a background Goal's terminal result to its owning chat."""
+        chat_id = str(goal.get("chat_id") or "")
+        if not chat_id:
+            return
+        status = str(goal.get("status") or "").upper()
+        goal_id = str(goal.get("goal_id") or "")[:8]
+        result = str(goal.get("result") or "").strip()
+        error = str(goal.get("error") or "").strip()
+        if status == "DONE":
+            text = f"✅ 后台任务完成\n• Goal：`{goal_id}`\n{result or '任务已完成。'}"
+        else:
+            text = f"⚠️ 后台任务未完成\n• Goal：`{goal_id}`\n{error or result or '请检查任务状态。'}"
+        await self.sender.send_card(chat_id, self.build_card(text))
 
     def handle_card_action(self, event: dict[str, Any]) -> dict[str, Any]:
         """Handle a Card 2.0 action synchronously on the SDK callback thread."""

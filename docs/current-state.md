@@ -1,6 +1,6 @@
 # Luck Agent 当前实现与路线
 
-更新时间：2026-08-20
+更新时间：2026-08-21
 
 ## 产品定位
 
@@ -23,6 +23,11 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - LLM 是增强层，不是控制面。无 LLM 时，规则化 VPS 运维和安全确认流程必须可用。
 - OpenAI-compatible 客户端已支持可配置超时、有限重试、429/5xx/空响应处理和冷却熔断；401/403 等请求错误不重复重试。
 - SQLite 保存 Goal、上下文、模式和运行时状态。
+- Lark 普通自然语言已接入正式 Goal Runtime：消息先写入 SQLite Goal，再进入内存有界队列和
+  LangGraph 执行器；Goal 状态由 `GoalStore` 维护，进程启动会恢复所有用户的非终态 Goal，终态结果
+  按原 chat_id 回推 Lark。快捷命令仍走无 LLM 的同步控制面；本地 Web 暂保留直接 Agent 调试入口。
+- LangGraph 已抽成单 Goal 执行边界，使用 `user_id:goal_id` 作为 checkpoint thread；Runtime 负责
+  调度、并发上限、状态闭环、异常失败和通知，避免与旧同步 `core.goal.GoalManager` 链路混用。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；`/targets` 会返回
   VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他变更运维按钮仍未开放。

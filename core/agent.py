@@ -122,6 +122,11 @@ class MinimalAgent:
 
         return Supervisor(memory=self.pattern_store)
 
+    @property
+    def graph_executor(self) -> GraphGoalExecutor:
+        """Expose the shared graph executor to the Goal Runtime Worker."""
+        return self._graph_executor
+
     async def run_turn(
         self,
         user_input: str,

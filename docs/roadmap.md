@@ -1,6 +1,6 @@
 # Luck Agent 开发基线
 
-更新时间：2026-08-20
+更新时间：2026-08-21
 
 本文是 `luck-agent` 当前开发的任务基线。除非明确调整产品定位，后续
 开发按本文顺序推进；历史 V1、Vertex、单 VPS 和 Arkclaw 方案不属于当前
@@ -65,6 +65,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已开放受控的 `/vps service luck-agent restart`：一次性确认码、目标/服务/操作 allowlist、
   SQLite 审计和固定 sudo wrapper 均已接入；确认结果先发送，再由 systemd 延迟重启。
 - `/vps logs` 已支持短期、按用户隔离的 Card 2.0 分页；日志最多缓存 12 页，过期或越权令牌不会返回内容。
+- 正式 Lark 自然语言入口已接入 Goal Runtime + LangGraph：SQLite Goal、内存有界队列、启动恢复、
+  `EXECUTING → AWAITING_RESULT → EVALUATING → DONE/FAILED` 状态闭环和终态回推均已有自动化测试；
+  快捷命令继续保持独立的无 LLM 控制面。
 
 ## 4. 当前执行顺序
 
@@ -83,7 +86,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 核心快捷命令不调用 LLM；
 - LLM 不可用时，健康检查和只读运维仍可用。
 
-当前阶段状态：Graph 基线、LLM 客户端基础容错、AWS 重启恢复和三目标只读路由已完成；
+当前阶段状态：Graph 基线、Goal Runtime 首条生产执行链、LLM 客户端基础容错、AWS 重启恢复和三目标只读路由已完成；
 运行时配置一致性、多 Provider 路由和配额级熔断仍待完成。
 
 ### 阶段二：权限和无 LLM 运维控制面

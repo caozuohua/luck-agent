@@ -24,6 +24,7 @@ from memory.curator import Curator
 from memory.db import Database
 from memory.goal_store import GoalStore
 from memory.pattern_store import PatternStore
+from runtime.graph_runtime import GraphRuntime
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
 from tools.mem0_client import Mem0Client
@@ -173,6 +174,12 @@ class Runtime:
             approval_checker=self.lark_approval_manager.consume_grant,
             audit_writer=self.db.insert_operation_audit,
         )
+        self.graph_runtime = GraphRuntime(
+            goal_store=self.goal_store,
+            graph_executor=self.agent.graph_executor,
+            max_active=settings.graph_max_active,
+            terminal_callback=self._notify_graph_goal,
+        )
         # Interface: Lark WebSocket when credentials are present, otherwise
         # a local web page for manual testing (no Lark app needed).
         if settings.lark_app_id and settings.lark_app_secret:
@@ -191,6 +198,7 @@ class Runtime:
                 agent=self.agent,
                 sender=LarkApiSender(self.lark_api_client),
                 quick_commands=self.quick_commands,
+                runtime=self.graph_runtime,
                 access_policy=self.lark_access_policy,
                 approval_manager=self.lark_approval_manager,
             )
@@ -206,8 +214,8 @@ class Runtime:
 
     async def start(self) -> None:
         await self.db.initialize()
-        recovered = await self.goal_store.get_in_progress("default")
-        log.info("goals_recovered", message="in-progress goals recovered", recovered=len(recovered))
+        recovered = await self.graph_runtime.start()
+        log.info("goals_recovered", message="in-progress goals recovered", recovered=recovered)
         self.router.start_watchdog()
         self.lark.start()
         if self.lark_runner is None and self.settings.lark_app_id and self.settings.lark_app_secret:
@@ -246,6 +254,7 @@ class Runtime:
             )
         except TimeoutError:
             log.warning("shutdown_timeout", message="forced shutdown after timeout")
+        await self.graph_runtime.stop()
         await self.router.stop_watchdog()
         if self.lark_runner is not None:
             await self.lark_runner.stop()
@@ -254,6 +263,11 @@ class Runtime:
         await self.health.stop()
         await self.db.close()
         log.info("runtime_stopped", message="runtime stopped")
+
+    async def _notify_graph_goal(self, goal: dict[str, Any]) -> None:
+        sender = getattr(self.lark, "send_goal_result", None)
+        if callable(sender):
+            await sender(goal)
 
     def _register_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()

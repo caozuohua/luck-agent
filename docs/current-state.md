@@ -33,6 +33,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - 正式部署契约已统一为 `/opt/luck-agent`、`luck-agent` 系统用户、`/opt/luck-agent/data` 和
   `/opt/luck-agent/workspace`；systemd、Docker、部署脚本和备份/升级 wrapper 均按 V2 `main.py`
   入口和该路径执行，避免旧 V1 `agent.py`、`/home/agent` 和 `memory.db` 路径混用。
+- LLM 已由 `LLMProviderRouter` 统一调度；`LLM_*` 继续作为 primary，备用 Provider 使用
+  `LLM_PROVIDER_<NAME>_*`。Provider 自己维护普通故障熔断，429/余额/配额耗尽进入独立长冷却，
+  Router 只在模型生成或 JSON 修复阶段切换 Provider。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；`/targets` 会返回
   VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他变更运维按钮仍未开放。

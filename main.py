@@ -18,7 +18,7 @@ from interface.lark_api import LarkApiSender
 from interface.lark_sdk import LarkSdkRunner
 from interface.web import WebInterface
 from llm.fake import FakeLLMClient
-from llm.openai_compat import OpenAICompatClient
+from llm.router import LLMProviderRouter
 from memory.context_store import ContextStore
 from memory.curator import Curator
 from memory.db import Database
@@ -56,16 +56,10 @@ class Runtime:
         self.goal_store = GoalStore(self.db)
         self.pattern_store = PatternStore(self.db)
         self.context_store = ContextStore(self.db)
-        # No base url configured -> offline fake client (local dev / CI).
-        if settings.llm_base_url:
-            self.llm_client: Any = OpenAICompatClient(
-                base_url=settings.llm_base_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_model,
-                timeout_seconds=settings.llm_timeout_seconds,
-                max_retries=settings.llm_max_retries,
-                failure_threshold=settings.llm_failure_threshold,
-                cooldown_seconds=settings.llm_cooldown_seconds,
+        # No provider endpoint configured -> offline fake client (local dev / CI).
+        if settings.llm_providers:
+            self.llm_client: Any = LLMProviderRouter.from_settings(
+                settings.llm_providers
             )
         else:
             self.llm_client = FakeLLMClient(model=settings.llm_model)

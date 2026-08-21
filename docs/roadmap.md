@@ -72,6 +72,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   服务重启后不再把连续对话当作新会话。
 - 已统一 V2 运行时配置契约：systemd、Docker、部署脚本、数据库维护 wrapper 和 `.env.example`
   使用同一服务用户、入口、数据目录和工作目录，并增加脚本契约回归测试。
+- 已接入多 Provider LLM Router：兼容原有 `LLM_*` primary 配置，支持按顺序配置备用
+  `LLM_PROVIDER_<NAME>_*`；每个 Provider 独立维护重试、普通故障熔断和配额长冷却，
+  fallback 只发生在 LLM 生成/修复阶段，不重复执行工具副作用。
 
 ## 4. 当前执行顺序
 
@@ -90,8 +93,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 核心快捷命令不调用 LLM；
 - LLM 不可用时，健康检查和只读运维仍可用。
 
-当前阶段状态：Graph 基线、Goal Runtime 首条生产执行链、LLM 客户端基础容错、AWS 重启恢复、三目标只读路由和运行时配置一致性已完成；
-多 Provider 路由和配额级熔断仍待完成。
+当前阶段状态：Graph 基线、Goal Runtime 首条生产执行链、LLM 客户端基础容错、多 Provider 路由与配额级熔断、
+AWS 重启恢复、三目标只读路由和运行时配置一致性已完成。
 
 ### 阶段二：权限和无 LLM 运维控制面
 

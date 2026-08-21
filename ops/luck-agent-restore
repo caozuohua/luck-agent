@@ -6,7 +6,7 @@ name="$1"
 case "$name" in
     *[!A-Za-z0-9._-]*|.*|'') exit 2 ;;
 esac
-[ -f "/opt/luck-agent/backups/$name" ] || {
+[ -f "/opt/luck-agent/data/backups/$name" ] || {
     echo "backup not found" >&2
     exit 3
 }

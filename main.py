@@ -177,6 +177,7 @@ class Runtime:
         self.graph_runtime = GraphRuntime(
             goal_store=self.goal_store,
             graph_executor=self.agent.graph_executor,
+            context_store=self.context_store,
             max_active=settings.graph_max_active,
             terminal_callback=self._notify_graph_goal,
         )

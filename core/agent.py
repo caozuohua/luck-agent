@@ -5,6 +5,7 @@ import json
 from enum import Enum
 from typing import Any
 
+from core.graph.executor import GraphExecutionRequest, GraphGoalExecutor
 from core.intent_classifier import IntentClassifier
 from core.output_parser import IntentType, OutputParser, ParseError, ParsedOutput
 from core.prompt_builder import PromptBuilder
@@ -59,6 +60,7 @@ class MinimalAgent:
         max_steps: int = 12,
         max_retry: int = 2,
         graph_db_path: str = "graph_state.db",
+        graph_max_active: int = 1,
     ) -> None:
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -95,10 +97,30 @@ class MinimalAgent:
         self.max_steps = max_steps
         self.max_retry = max_retry
         self.graph_db_path = graph_db_path
+        self.graph_max_active = max(1, int(graph_max_active))
         self.state = AgentState.IDLE
         self.conversation_history: list[dict[str, str]] = []
         self.completed_goal_count = 0
         self._background_tasks: list[asyncio.Task[Any]] = []
+        self._graph_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._graph_executor = GraphGoalExecutor(
+            llm_client=llm_client,
+            tool_registry=tool_registry,
+            tool_executor=self.tool_executor,
+            supervisor=self._build_supervisor(),
+            prompt_builder=self.prompt_builder,
+            output_parser=self.output_parser,
+            intent_classifier=self.intent_classifier,
+            router=self.router,
+            graph_db_path=self.graph_db_path,
+            max_steps=self.max_steps,
+            max_retry=self.max_retry,
+        )
+
+    def _build_supervisor(self):
+        from core.supervisor import Supervisor
+
+        return Supervisor(memory=self.pattern_store)
 
     async def run_turn(
         self,
@@ -131,10 +153,24 @@ class MinimalAgent:
         Non-breaking: same signature as legacy. Reuses PromptBuilder,
         OutputParser, ToolExecutor and core.Supervisor inside the graph.
         """
-        from core.graph.engine import build_graph, run_graph
-        from core.graph.state import AgentState as GraphState
-        from core.supervisor import Supervisor
+        semaphore = self._graph_semaphores.setdefault(
+            user_id,
+            asyncio.Semaphore(self.graph_max_active),
+        )
+        async with semaphore:
+            return await self._run_turn_graph_limited(
+                user_input,
+                user_id=user_id,
+                approval_token=approval_token,
+            )
 
+    async def _run_turn_graph_limited(
+        self,
+        user_input: str,
+        *,
+        user_id: str,
+        approval_token: str | None,
+    ) -> str:
         self.state = AgentState.IDLE
         goal = await self._create_goal(user_id, user_input)
         if goal is not None:
@@ -145,40 +181,15 @@ class MinimalAgent:
             user_id, user_input, self.prompt_builder.build_system_prompt()
         )
 
-        seed: GraphState = {
-            "goal": user_input,
-            "user_id": user_id,
-            "approval_token": approval_token,
-            "messages": [],
-            "scratchpad": [],
-            "step_count": 0,
-            "last_tool_result": None,
-            "last_parsed": None,
-            "decision": None,
-            "final_answer": "",
-            "is_goal_complete": False,
-        }
-        thread_key = goal.id if goal is not None else user_input
-        config = {"configurable": {"thread_id": f"{user_id}:{thread_key}"}}
+        request = GraphExecutionRequest(
+            goal_id=goal.id if goal is not None else user_input,
+            user_id=user_id,
+            text=user_input,
+            approval_token=approval_token,
+            history=history,
+        )
         try:
-            out = await run_graph(
-                seed,
-                graph=None,
-                config=config,
-                max_steps=self.max_steps,
-                db_path=self.graph_db_path,
-                llm=self.llm_client,
-                tools=self.tool_registry,
-                executor=self.tool_executor,
-                supervisor=Supervisor(memory=self.pattern_store),
-                history=history,
-                prompt_builder=self.prompt_builder,
-                parser=self.output_parser,
-                intent_classifier=self.intent_classifier,
-                router=self.router,
-                max_retry=self.max_retry,
-                hitl=False,
-            )
+            out = await self._graph_executor.execute(request, hitl=False)
             answer = out.get("final_answer") or "（任务未能完成，请换一种说法或提供更多上下文。）"
             decision = out.get("decision")
             if goal is not None:

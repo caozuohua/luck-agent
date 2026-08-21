@@ -103,6 +103,7 @@ class Runtime:
             max_steps=settings.max_steps,
             max_retry=settings.max_retry,
             graph_db_path=settings.graph_db_path,
+            graph_max_active=settings.graph_max_active,
             approval_checker=self.lark_approval_manager.consume_grant,
             permission_checker=lambda user_id, tool_name, args: self.operation_permission_policy.allows(
                 tool_name, args, user_id=user_id

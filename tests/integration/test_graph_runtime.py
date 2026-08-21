@@ -105,3 +105,32 @@ async def test_graph_runtime_marks_non_done_graph_result_failed(memory_db) -> No
         assert goal.error == "达到步骤上限"
     finally:
         await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_graph_runtime_reuses_persistent_chat_history(memory_db) -> None:
+    store = GoalStore(memory_db)
+    executor = FakeGraphExecutor()
+    runtime = GraphRuntime(goal_store=store, graph_executor=executor)
+
+    await runtime.start()
+    try:
+        first = await runtime.handle_message(
+            user_id="u4",
+            chat_id="c4",
+            text="我的项目叫 Luck Agent",
+        )
+        await _wait_for_status(store, first.goal_id, GoalStatus.DONE)
+
+        second = await runtime.handle_message(
+            user_id="u4",
+            chat_id="c4",
+            text="刚才我的项目叫什么？",
+        )
+        await _wait_for_status(store, second.goal_id, GoalStatus.DONE)
+
+        assert len(executor.requests) == 2
+        assert "我的项目叫 Luck Agent" in executor.requests[1][0].history
+        assert "执行完成" in executor.requests[1][0].history
+    finally:
+        await runtime.stop()

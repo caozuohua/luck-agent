@@ -196,6 +196,7 @@ class GoalStore:
             """,
             (user_id, *terminal),
         )
+        rows = sorted(rows, key=lambda row: int(row["updated_at"] or 0))
         return [self._row_to_goal(row) for row in rows]
 
     async def get(self, goal_id: str) -> Goal | None:
@@ -251,6 +252,44 @@ class GoalStore:
             "SELECT * FROM goals WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
             (user_id, limit),
         )
+        return [self._row_to_goal(row) for row in rows]
+
+    async def get_recent_for_chat(
+        self,
+        user_id: str,
+        chat_id: str,
+        limit: int = 8,
+    ) -> list[Goal]:
+        """Return completed conversation Goals for one Lark chat.
+
+        Older databases have no chat identity for historical Goals. When a
+        chat has no migrated records yet, fall back to those legacy records
+        for continuity; all newly-created records remain chat-scoped.
+        """
+        terminal = (GoalStatus.DONE.value, GoalStatus.FAILED.value)
+        rows = await self.db.fetchall(
+            """
+            SELECT * FROM goals
+            WHERE user_id = ? AND chat_id = ? AND status IN (?, ?)
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, chat_id, *terminal, limit),
+        )
+        if chat_id and len(rows) < limit:
+            legacy_rows = await self.db.fetchall(
+                """
+                SELECT * FROM goals
+                WHERE user_id = ? AND chat_id = '' AND status IN (?, ?)
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (user_id, *terminal, limit - len(rows)),
+            )
+            rows = sorted(
+                [*rows, *legacy_rows],
+                key=lambda row: int(row["updated_at"] or 0),
+            )
         return [self._row_to_goal(row) for row in rows]
 
     async def drain_pending(self) -> None:

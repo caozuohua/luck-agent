@@ -14,6 +14,7 @@ from typing import Any
 from core.graph.contract import DECISION_DONE
 from core.graph.executor import GraphExecutionRequest, GraphGoalExecutor
 from core.log import get_logger
+from memory.context_store import ContextStore
 from memory.goal_store import Goal, GoalStatus, GoalStore
 from runtime.contracts import RuntimeHandleResult
 from runtime.events import NoopRuntimeEventRecorder
@@ -32,12 +33,14 @@ class GraphRuntime:
         *,
         goal_store: GoalStore,
         graph_executor: GraphGoalExecutor,
+        context_store: ContextStore | None = None,
         max_active: int = 1,
         terminal_callback: TerminalCallback | None = None,
         event_recorder=None,
     ) -> None:
         self.goal_store = goal_store
         self.graph_executor = graph_executor
+        self.context_store = context_store
         self.queue = RuntimeTaskQueue(max_active=max_active)
         self.terminal_callback = terminal_callback
         self.event_recorder = event_recorder or NoopRuntimeEventRecorder()
@@ -191,12 +194,14 @@ class GraphRuntime:
                     return
                 await self.goal_store.update_status(goal.id, GoalStatus.EXECUTING)
                 token = str(item.meta.get("approval_token") or "") or None
+                history = await self._build_history(goal)
                 state = await self.graph_executor.execute(
                     GraphExecutionRequest(
                         goal_id=goal.id,
                         user_id=goal.user_id,
                         text=goal.raw_input,
                         approval_token=token,
+                        history=history,
                     ),
                     hitl=False,
                 )
@@ -247,6 +252,25 @@ class GraphRuntime:
                 if final_goal is not None:
                     await self._notify(final_goal, GoalStatus.FAILED.value)
                 log.error("graph_runtime_goal_failed", goal_id=item.goal_id, error=message)
+
+    async def _build_history(self, goal: Goal) -> str:
+        parts: list[str] = []
+        if self.context_store is not None:
+            summary = await self.context_store.get_latest_summary(goal.user_id)
+            if summary and summary.get("summary"):
+                parts.append(f"[earlier summary]\n{summary['summary']}")
+
+        previous_goals = await self.goal_store.get_recent_for_chat(
+            goal.user_id,
+            goal.chat_id,
+        )
+        for previous in previous_goals:
+            answer = previous.result or previous.error or "（无结果）"
+            parts.append(
+                f"user: {previous.raw_input}\n"
+                f"assistant: {answer}"
+            )
+        return "\n\n".join(parts)[-12_000:]
 
     async def _fail_goal(self, goal_id: str, error: str) -> None:
         goal = await self.goal_store.get(goal_id)

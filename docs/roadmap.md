@@ -68,6 +68,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 正式 Lark 自然语言入口已接入 Goal Runtime + LangGraph：SQLite Goal、内存有界队列、启动恢复、
   `EXECUTING → AWAITING_RESULT → EVALUATING → DONE/FAILED` 状态闭环和终态回推均已有自动化测试；
   快捷命令继续保持独立的无 LLM 控制面。
+- Goal Runtime 已补齐跨进程会话上下文恢复：按 Lark chat 读取历史 Goal/摘要并注入 LangGraph，
+  服务重启后不再把连续对话当作新会话。
 
 ## 4. 当前执行顺序
 

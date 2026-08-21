@@ -28,6 +28,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   按原 chat_id 回推 Lark。快捷命令仍走无 LLM 的同步控制面；本地 Web 暂保留直接 Agent 调试入口。
 - LangGraph 已抽成单 Goal 执行边界，使用 `user_id:goal_id` 作为 checkpoint thread；Runtime 负责
   调度、并发上限、状态闭环、异常失败和通知，避免与旧同步 `core.goal.GoalManager` 链路混用。
+- Runtime 执行前会按 `user_id + chat_id` 从已完成 Goal 恢复最近对话，并合并已有上下文摘要；
+  旧数据库中尚未记录 chat_id 的历史会在首次迁移后兼容回退，避免服务重启造成会话断裂。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；`/targets` 会返回
   VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他变更运维按钮仍未开放。

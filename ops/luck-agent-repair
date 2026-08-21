@@ -5,7 +5,7 @@ set -eu
 exec /usr/sbin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python - <<'PY'
 import sqlite3
 
-with sqlite3.connect("/opt/luck-agent/memory.db", timeout=30) as conn:
+with sqlite3.connect("/opt/luck-agent/data/agent.db", timeout=30) as conn:
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.execute("VACUUM")
 print("ok")

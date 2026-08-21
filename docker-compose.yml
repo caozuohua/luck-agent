@@ -4,9 +4,8 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./data:/home/agent/data
-      - ./soul:/home/agent/app/soul
-      - ./workspace:/home/agent/workspace
-      - ./sa-key.json:/home/agent/app/sa-key.json:ro
+      - ./data:/opt/luck-agent/data
+      - ./soul:/opt/luck-agent/soul
+      - ./workspace:/opt/luck-agent/workspace
     ports:
       - "8080:8080"

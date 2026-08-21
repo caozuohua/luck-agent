@@ -11,9 +11,11 @@ esac
 
 /usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --quiet
 /usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" diff --cached --quiet
-/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" fetch origin main
-/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" merge --ff-only origin/main
-/usr/sbin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python -m py_compile \
-    "$repo/agent.py" "$repo/config.py" "$repo/handlers/command.py"
+/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" fetch origin
+branch=$(/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" symbolic-ref --short HEAD)
+/usr/sbin/runuser -u luck-agent -- /usr/bin/git -C "$repo" merge --ff-only "origin/$branch"
+/usr/sbin/runuser -u luck-agent -- /opt/luck-agent/venv/bin/python -m compileall -q \
+    "$repo/core" "$repo/interface" "$repo/memory" "$repo/runtime" "$repo/main.py"
+/bin/systemctl daemon-reload
 /bin/systemctl restart luck-agent
 /usr/bin/git -C "$repo" rev-parse --short HEAD

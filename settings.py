@@ -23,6 +23,9 @@ def _load_dotenv(path: str = ".env") -> None:
 
 _load_dotenv()
 
+DEFAULT_DATA_DIR = "/opt/luck-agent/data"
+DEFAULT_WORKSPACE_DIR = "/opt/luck-agent/workspace"
+
 
 @dataclass(frozen=True)
 class AgentSettings:
@@ -55,8 +58,8 @@ class AgentSettings:
     web_host: str = "127.0.0.1"
     web_port: int = 8000
     serper_api_key: str = ""
-    db_path: str = "/home/agent/data/agent.db"
-    agent_workdir: str = "/home/agent/workspace"
+    db_path: str = f"{DEFAULT_DATA_DIR}/agent.db"
+    agent_workdir: str = DEFAULT_WORKSPACE_DIR
     shell_timeout_seconds: int = 15
     shell_max_output_chars: int = 4000
     health_host: str = "0.0.0.0"
@@ -86,7 +89,7 @@ class AgentSettings:
     execution_mode: str = "graph"  # "graph" (LangGraph ReAct) | "legacy"
     max_steps: int = 12  # hard cap on ReAct loop iterations per goal
     max_retry: int = 2  # per-step retry budget (Supervisor)
-    graph_db_path: str = "/home/agent/data/graph_state.db"  # checkpointer
+    graph_db_path: str = f"{DEFAULT_DATA_DIR}/graph_state.db"  # checkpointer
     graph_max_active: int = 1  # concurrent graphs per user (task queue)
 
 
@@ -117,8 +120,8 @@ def load_settings() -> AgentSettings:
         web_host=os.environ.get("WEB_HOST", "127.0.0.1"),
         web_port=int(os.environ.get("WEB_PORT", "8000")),
         serper_api_key=os.environ.get("SERPER_API_KEY", ""),
-        db_path=os.environ.get("DB_PATH", "/home/agent/data/agent.db"),
-        agent_workdir=os.environ.get("AGENT_WORKDIR", "/home/agent/workspace"),
+        db_path=os.environ.get("DB_PATH", f"{DEFAULT_DATA_DIR}/agent.db"),
+        agent_workdir=os.environ.get("AGENT_WORKDIR", DEFAULT_WORKSPACE_DIR),
         shell_timeout_seconds=int(os.environ.get("SHELL_TIMEOUT_SECONDS", "15")),
         shell_max_output_chars=int(os.environ.get("SHELL_MAX_OUTPUT_CHARS", "4000")),
         health_host=os.environ.get("HEALTH_HOST", "0.0.0.0"),
@@ -153,6 +156,8 @@ def load_settings() -> AgentSettings:
         execution_mode=os.environ.get("EXECUTION_MODE", "graph"),
         max_steps=int(os.environ.get("MAX_STEPS", "12")),
         max_retry=int(os.environ.get("MAX_RETRY", "2")),
-        graph_db_path=os.environ.get("GRAPH_DB_PATH", "/home/agent/data/graph_state.db"),
+        graph_db_path=os.environ.get(
+            "GRAPH_DB_PATH", f"{DEFAULT_DATA_DIR}/graph_state.db"
+        ),
         graph_max_active=int(os.environ.get("GRAPH_MAX_ACTIVE", "1")),
     )

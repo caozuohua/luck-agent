@@ -86,7 +86,7 @@ class ShellTool(Tool):
         error = self.validate_command(command)
         if error:
             return ToolResult.fail(error=error, tool_name=self.name)
-        workdir = Path(os.environ.get("AGENT_WORKDIR", "/home/agent/workspace"))
+        workdir = Path(os.environ.get("AGENT_WORKDIR", "/opt/luck-agent/workspace"))
         workdir.mkdir(parents=True, exist_ok=True)
         timeout = max(0.1, min(timeout, 15))
         try:

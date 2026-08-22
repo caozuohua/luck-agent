@@ -26,6 +26,7 @@ class ServiceOperationSpec:
     idempotency: str = ""
     provider_entrypoints: tuple[tuple[str, str], ...] = ()
     target_providers: tuple[str, ...] = ()
+    target_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         required = {
@@ -50,6 +51,8 @@ class ServiceOperationSpec:
             raise ValueError("invalid provider entrypoint in service operation contract")
         if any(not provider.strip() for provider in self.target_providers):
             raise ValueError("invalid target provider in service operation contract")
+        if any(not target.strip() for target in self.target_ids):
+            raise ValueError("invalid target id in service operation contract")
 
     def entrypoint_for(self, provider: str = "") -> str:
         normalized = str(provider or "").strip().lower()
@@ -62,6 +65,13 @@ class ServiceOperationSpec:
         if not self.target_providers:
             return True
         return str(provider or "").strip().lower() in self.target_providers
+
+    def supports_target(self, target_id: str = "", provider: str = "") -> bool:
+        """Check both provider and, when declared, the exact target identity."""
+        return self.supports_provider(provider) and (
+            not self.target_ids
+            or str(target_id or "").strip().lower() in self.target_ids
+        )
 
 
 SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
@@ -117,6 +127,27 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
         verification="systemctl is-active new-api.service + /v1/models",
         preconditions=("selected target is the configured new-api target", "operator allowlist and one-time approval passed"),
         idempotency="safe to retry; restart does not modify new-api configuration or data",
+    ),
+    ServiceOperationSpec(
+        service_id="new-api",
+        operation="backup",
+        entrypoint="sudo -n bash /opt/vps_sysops/scripts/new_api_backup.sh",
+        rollback_strategy=(
+            "备份只新增权限为 0600 的时间戳归档，不修改 new-api 配置、数据库或服务状态；"
+            "失败的临时归档会由脚本清理，恢复必须走独立、显式批准的 restore 操作"
+        ),
+        verification=(
+            "脚本内 SHA-256 校验 + tar 可读性 + SQLite integrity_check；"
+            "仅允许 GCP 的 gcp-free-vps-oregon 目标"
+        ),
+        preconditions=(
+            "selected target is exactly gcp-free-vps-oregon",
+            "scoped new-api backup script is installed on the selected target",
+            "operator allowlist and one-time approval passed",
+        ),
+        idempotency="safe to retry; creates a timestamped archive and does not restart new-api",
+        target_providers=("gcp",),
+        target_ids=("gcp-free-vps-oregon",),
     ),
     ServiceOperationSpec(
         service_id="a2a",

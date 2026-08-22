@@ -333,30 +333,54 @@ class VpsSysopsAdapter:
     async def restart_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
         """Restart one explicitly allowlisted systemd unit; never accepts a unit name."""
         service = service.strip().lower()
-        unit = self.SERVICE_UNITS.get(service)
-        operation_spec = get_service_operation(service, "restart")
-        target = self.target_registry.current(user_id) if self.target_registry else self.target
-        if unit is None or operation_spec is None:
+        if service not in self.SERVICE_UNITS:
+            target = self.target_registry.current(user_id) if self.target_registry else self.target
             return VpsSysopsResult(
                 operation="restart",
                 ok=False,
                 error=f"不支持重启服务：{service or '(empty)'}",
                 target=target,
             )
-        provider = target.provider if target is not None else ""
-        if not operation_spec.supports_provider(provider):
+        return await self._run_service_operation(service, "restart", user_id=user_id)
+
+    async def backup_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
+        """Run one explicitly contracted, service-scoped backup operation."""
+        return await self._run_service_operation(service.strip().lower(), "backup", user_id=user_id)
+
+    async def _run_service_operation(
+        self,
+        service: str,
+        operation: str,
+        *,
+        user_id: str,
+    ) -> VpsSysopsResult:
+        operation_spec = get_service_operation(service, operation)
+        target = self.target_registry.current(user_id) if self.target_registry else self.target
+        if operation_spec is None:
             return VpsSysopsResult(
-                operation="restart",
+                operation=operation,
+                ok=False,
+                error=f"不支持服务操作：{service or '(empty)'} {operation}",
+                target=target,
+            )
+        provider = target.provider if target is not None else ""
+        target_id = target.label if target is not None else ""
+        if not operation_spec.supports_target(target_id, provider):
+            target_detail = ", ".join(operation_spec.target_ids) or "未限制"
+            provider_detail = ", ".join(operation_spec.target_providers) or "未限制"
+            return VpsSysopsResult(
+                operation=operation,
                 ok=False,
                 error=(
-                    f"服务 `{service}` 不支持目标 provider：`{provider or '(unknown)'}`；"
-                    f"仅支持：{', '.join(operation_spec.target_providers)}"
+                    f"服务 `{service}` 不支持目标 `{target_id or '(unknown)'}` / provider "
+                    f"`{provider or '(unknown)'}`；允许目标：{target_detail}，"
+                    f"允许 provider：{provider_detail}"
                 ),
                 target=target,
             )
         if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
             return VpsSysopsResult(
-                operation="restart",
+                operation=operation,
                 ok=False,
                 error="用户未授权 VPS 运维操作",
                 target=target,
@@ -364,7 +388,7 @@ class VpsSysopsAdapter:
         if target is not None and self.permission_policy is not None:
             if not self.permission_policy.allows_target(target.label):
                 return VpsSysopsResult(
-                    operation="restart",
+                    operation=operation,
                     ok=False,
                     error=f"目标未授权：{target.label}",
                     target=target,
@@ -372,14 +396,15 @@ class VpsSysopsAdapter:
         is_local = self._is_local_target(target)
         if is_local is None:
             return VpsSysopsResult(
-                operation="restart",
+                operation=operation,
                 ok=False,
                 error=f"目标未配置 SSH 运维通道: {target.display if target else '(unknown)'}",
                 target=target,
             )
         env = self._build_environment(target, is_local=is_local)
+        entrypoint = operation_spec.entrypoint_for(provider)
         command, cwd = self._build_probe_command(
-            probe=operation_spec.entrypoint_for(provider),
+            probe=entrypoint,
             target=target,
             is_local=is_local,
             env=env,
@@ -400,16 +425,16 @@ class VpsSysopsAdapter:
             process.kill()
             await process.wait()
             return VpsSysopsResult(
-                operation="restart",
+                operation=operation,
                 ok=False,
-                error=f"服务重启超时（>{self.timeout_seconds:g}s）",
+                error=f"服务操作超时（>{self.timeout_seconds:g}s）",
                 target=target,
             )
         except OSError as exc:
             return VpsSysopsResult(
-                operation="restart",
+                operation=operation,
                 ok=False,
-                error=f"无法启动服务重启: {exc}",
+                error=f"无法启动服务操作: {exc}",
                 target=target,
             )
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
@@ -421,10 +446,10 @@ class VpsSysopsAdapter:
         truncated = len(output_pages) > 1 or not pages_complete
         returncode = process.returncode
         return VpsSysopsResult(
-            operation="restart",
+            operation=operation,
             ok=returncode == 0,
             output=output,
-            error="" if returncode == 0 else f"服务重启退出码 {returncode}",
+            error="" if returncode == 0 else f"服务操作退出码 {returncode}",
             returncode=returncode,
             target=target,
             truncated=truncated,

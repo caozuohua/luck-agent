@@ -88,6 +88,25 @@ class FakeRestartSysops(FakeSysops):
         return VpsSysopsResult(operation="restart", ok=True, output="active")
 
 
+class FakeBackupSysops(FakeRestartSysops):
+    def __init__(self) -> None:
+        super().__init__()
+        self.backup_calls: list[tuple[str, str]] = []
+
+    async def backup_service(
+        self,
+        service: str,
+        *,
+        user_id: str = "default",
+    ) -> VpsSysopsResult:
+        self.backup_calls.append((service, user_id))
+        return VpsSysopsResult(
+            operation="backup",
+            ok=True,
+            output="new-api backup ok: /var/backups/vps-sysops/new-api/new-api_test.tar.gz",
+        )
+
+
 class FakeProbeSysops(FakeSysops):
     async def probe_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
         return VpsSysopsResult(
@@ -537,6 +556,47 @@ async def test_new_api_restart_rejects_wrong_target_before_consuming_approval() 
 
     assert "绑定目标为 `gcp-01`" in _text(result)
     assert sysops.restart_calls == []
+
+
+async def test_new_api_backup_requires_approval_and_exact_target() -> None:
+    sysops = FakeBackupSysops()
+    targets = VpsTargetRegistry.from_csv(
+        "gcp-free-vps-oregon|gcp|||personal|gcp-ts|caozuohua99|22;gcp-other|gcp|||personal",
+        default_target=VpsTarget(provider="aws", target_id="aws-01"),
+    )
+    targets.select("alice", "gcp-free-vps-oregon")
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=sysops,
+        targets=targets,
+        permission_policy=OperationPermissionPolicy.from_csv(
+            targets="gcp-free-vps-oregon,gcp-other",
+            services="new-api",
+            operations="backup",
+        ),
+        approval_checker=lambda user, token, tool, args: token == "approved" and tool == "service_backup",
+    )
+
+    blocked = await router.handle("/vps service new-api backup", user_id="alice")
+    assert "一次性确认" in _text(blocked)
+    assert sysops.backup_calls == []
+
+    executed = await router.handle(
+        "/vps service new-api backup",
+        user_id="alice",
+        approval_token="approved",
+    )
+    assert "new-api backup ok" in _text(executed)
+    assert sysops.backup_calls == [("new-api", "alice")]
+
+    targets.select("alice", "gcp-other")
+    rejected = await router.handle(
+        "/vps service new-api backup",
+        user_id="alice",
+        approval_token="approved",
+    )
+    assert "gcp-free-vps-oregon" in _text(rejected)
 
 
 async def test_target_selection_persists_per_user_and_chat() -> None:

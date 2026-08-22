@@ -220,6 +220,43 @@ async def test_new_api_restart_uses_registered_fixed_operation_entrypoint(monkey
     assert result.operation == "restart"
 
 
+async def test_new_api_backup_uses_registered_entrypoint_and_exact_target(monkeypatch) -> None:
+    target = VpsTarget(
+        provider="gcp",
+        target_id="gcp-free-vps-oregon",
+        ssh_host="gcp-ts",
+        ssh_user="caozuohua99",
+    )
+    adapter = VpsSysopsAdapter(target=target)
+    captured: dict[str, str] = {}
+
+    def fake_build_probe_command(*, probe, target, is_local, env):
+        captured["probe"] = probe
+        return (["true"], None)
+
+    monkeypatch.setattr(adapter, "_build_probe_command", fake_build_probe_command)
+    monkeypatch.setattr(
+        "tools.vps_sysops.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+
+    result = await adapter.backup_service("new-api")
+
+    assert result.operation == "backup"
+    assert result.ok is False
+    assert captured["probe"] == get_service_operation("new-api", "backup").entrypoint
+
+
+async def test_new_api_backup_rejects_another_gcp_target_before_transport(tmp_path: Path) -> None:
+    target = VpsTarget(provider="gcp", target_id="gcp-other")
+    adapter = VpsSysopsAdapter(target=target, root=str(tmp_path))
+
+    result = await adapter.backup_service("new-api")
+
+    assert result.ok is False
+    assert "gcp-free-vps-oregon" in result.error
+
+
 async def test_a2a_restart_uses_azure_user_service_entrypoint(monkeypatch) -> None:
     target = VpsTarget(
         provider="azure",

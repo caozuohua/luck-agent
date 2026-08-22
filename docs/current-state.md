@@ -69,7 +69,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   `/vps service hermes-gateway restart` 是当前开放的变更操作，必须通过一次性确认、目标/服务/操作
   allowlist 和固定入口；不接受任意服务名或 Shell。
 - `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api`、`a2a` restart 登记固定入口、前置条件、
-  幂等性、回滚策略和验收定义；仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
+  幂等性、回滚策略和验收定义；`new-api backup` 另有独立契约，仅绑定
+  `gcp-free-vps-oregon`，通过 `/opt/vps_sysops/scripts/new_api_backup.sh` 生成 0600 归档，脚本内完成
+  SHA-256、tar 可读性和 SQLite `integrity_check`，不开放升级或恢复。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；重启确认卡已支持一键确认，真实
   Lark 已验证按钮回调、GCP `new-api` 重启和结果回卡；备用验证码已改为独立代码块展示，
   支持只粘贴验证码完成确认，并已通过真实 Lark 验收。
@@ -98,6 +100,10 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   目标在执行前拒绝。
 - 重启确认卡会显示实际目标；生产 `new-api` 已绑定 `gcp-free-vps-oregon`，目标不匹配时在
   执行前拒绝；目标选择持久化、确认卡目标展示和真实 Lark 一键重启均已验收。
+- GCP `new-api` scoped backup 已在独立 `vps_sysops` 项目提交并部署，真实归档生成、SHA-256 校验、
+  tar 解包和 SQLite 完整性检查均通过；Luck Agent 路由已加入同一套一次性确认、目标/服务/操作
+  allowlist 与审计链路。此前整机 profile backup 因 Hermes 动态文件变更而失败，未作为 new-api
+  备份入口使用。
 
 ## 目标对象模型
 
@@ -148,7 +154,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前待办与阻塞项
 
 1. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前已开放 `luck-agent`、
-   `new-api`、`a2a` 和 Azure-only `hermes-gateway`。
+   `new-api` restart/backup、`a2a` 和 Azure-only `hermes-gateway`；new-api restore/upgrade 仍未开放。
 2. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
    后立即落库，消除“选择后尚未发送下一条消息时进程重启”的极小窗口。
 3. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。

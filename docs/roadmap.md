@@ -73,6 +73,10 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已开放 Azure-only `/vps service hermes-gateway restart`：使用固定用户级
   `hermes-gateway.service` 入口，真实重启后 `systemctl --user is-active` 返回 `active`；
   GCP/AWS 目标在执行前拒绝。
+- 已开放受控的 `/vps service new-api backup` 契约：仅允许 `gcp-free-vps-oregon`，执行独立
+  `vps_sysops` scoped backup 脚本；脚本生成 0600 的 `.env` 与 SQLite 在线快照归档，并在返回成功前
+  完成 SHA-256、tar 可读性和 SQLite `integrity_check`。GCP 真实链路已验证成功；整机 profile backup
+  因动态 Hermes 文件变化未采用。new-api restore/upgrade 仍保持关闭。
 - 变更契约现在强制包含固定入口、目标约束、前置条件、幂等性、回滚策略和验收标准；缺少任一
   核心字段的 backup/upgrade/rollback 操作不能登记。
 - `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，
@@ -158,7 +162,7 @@ Provider → Account → Region → Target → Service → Operation
 ```
 
 AWS、GCP、Azure 的只读目标路由、固定服务目录和独立健康检查已完成；Luck Agent、GCP
-new-api、A2A 与 Azure Hermes Gateway 的受控重启路径已完成。下一步继续扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
+new-api 的 restart/backup、A2A 与 Azure Hermes Gateway 的受控变更路径已完成。下一步继续扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
 Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略

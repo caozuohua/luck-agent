@@ -510,17 +510,23 @@ class QuickCommandRouter:
 
         action = parts[1].lower() if len(parts) > 1 else "status"
         argument = parts[2].strip() if len(parts) > 2 else ""
-        if action == "restart":
-            if not spec.restartable:
+        operation_spec = get_service_operation(spec.service_id, action)
+        if operation_spec is not None:
+            if action == "restart" and not spec.restartable:
                 return f"⚠️ 服务 `{spec.service_id}` 当前不开放重启操作"
-            operation_spec = get_service_operation(spec.service_id, "restart")
-            if operation_spec is not None and self.targets is not None:
+            if self.targets is not None:
                 target = self.targets.current(user_id)
-                if not operation_spec.supports_provider(target.provider):
+                if not operation_spec.supports_target(target.label, target.provider):
+                    allowed_targets = ", ".join(operation_spec.target_ids)
+                    allowed_providers = ", ".join(operation_spec.target_providers)
+                    if allowed_targets:
+                        return (
+                            f"⚠️ 服务 `{spec.service_id}` 的 `{action}` 仅允许目标："
+                            f"`{allowed_targets}`；当前为 `{target.label}`"
+                        )
                     return (
                         f"⚠️ 服务 `{spec.service_id}` 不支持当前目标 provider："
-                        f"`{target.provider}`；仅支持："
-                        f"{', '.join(operation_spec.target_providers)}"
+                        f"`{target.provider}`；仅支持：{allowed_providers}"
                     )
             if (
                 spec.service_id == "new-api"
@@ -533,11 +539,12 @@ class QuickCommandRouter:
                     f"当前选择为 `{self.targets.current(user_id).label}`，请先切换目标"
                 )
             if self.permission_policy is not None and not self.permission_policy.allows_operation(
-                "restart"
+                action
             ):
-                return "⛔ 当前用户无权执行操作：`restart`"
-            return await self._restart_service(
+                return f"⛔ 当前用户无权执行操作：`{action}`"
+            return await self._service_operation(
                 spec.service_id,
+                action,
                 user_id,
                 approval_token=approval_token,
             )
@@ -628,23 +635,39 @@ class QuickCommandRouter:
         *,
         approval_token: str | None,
     ) -> str:
-        restart = getattr(self.sysops, "restart_service", None)
-        if not callable(restart):
-            return "⚠️ 当前 vps_sysops 未提供固定重启入口"
+        return await self._service_operation(
+            service,
+            "restart",
+            user_id,
+            approval_token=approval_token,
+        )
+
+    async def _service_operation(
+        self,
+        service: str,
+        operation: str,
+        user_id: str,
+        *,
+        approval_token: str | None,
+    ) -> str:
+        execute = getattr(self.sysops, f"{operation}_service", None)
+        if not callable(execute):
+            return f"⚠️ 当前 vps_sysops 未提供固定 {operation} 入口"
+        operation_label = "重启" if operation == "restart" else "备份" if operation == "backup" else operation
         if not approval_token or self.approval_checker is None:
-            return "⚠️ 重启操作必须先完成一次性确认"
+            return f"⚠️ {operation_label}操作必须先完成一次性确认"
         target_id = self.targets.current(user_id).label if self.targets is not None else ""
         if service == "luck-agent" and self.agent_target_id and target_id.lower() != self.agent_target_id:
             return (
                 f"🧩 Luck Agent 当前绑定目标为 `{self.agent_target_id}`；"
                 f"当前选择为 `{target_id}`，请先切换目标"
             )
-        args = {"target": target_id, "service": service, "operation": "restart"}
+        args = {"target": target_id, "service": service, "operation": operation}
         try:
             approved = self.approval_checker(
                 user_id,
                 approval_token,
-                "service_restart",
+                f"service_{operation}",
                 args,
             )
         except Exception:
@@ -653,31 +676,34 @@ class QuickCommandRouter:
             user_id=user_id,
             service=service,
             target=target_id,
+            operation=operation,
             decision="approved" if approved else "denied",
             details="approval_token_present=true",
         )
         if not approved:
-            return "⛔ 重启确认码无效、过期或与目标/服务不匹配"
+            return f"⛔ {operation_label}确认码无效、过期或与目标/服务不匹配"
         try:
             try:
-                result = await restart(service, user_id=user_id)
+                result = await execute(service, user_id=user_id)
             except TypeError as exc:
                 if "user_id" not in str(exc):
                     raise
-                result = await restart(service)
+                result = await execute(service)
         except Exception as exc:
             await self._audit_service_operation(
                 user_id=user_id,
                 service=service,
                 target=target_id,
+                operation=operation,
                 decision="executed",
                 details=f"status=error error={str(exc)[:240]}",
             )
-            return "⚠️ 服务重启执行失败"
+            return f"⚠️ 服务{operation_label}执行失败"
         await self._audit_service_operation(
             user_id=user_id,
             service=service,
             target=target_id,
+            operation=operation,
             decision="executed",
             details=f"status={'ok' if getattr(result, 'ok', False) else 'error'}",
         )
@@ -691,14 +717,15 @@ class QuickCommandRouter:
         target: str,
         decision: str,
         details: str,
+        operation: str = "restart",
     ) -> None:
         if self.audit_writer is None:
             return
         try:
             await self.audit_writer(
                 user_id=user_id,
-                tool_name="service_restart",
-                operation=f"restart service={service} target={target}",
+                tool_name=f"service_{operation}",
+                operation=f"{operation} service={service} target={target}",
                 decision=decision,
                 details=details,
             )

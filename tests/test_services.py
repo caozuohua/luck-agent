@@ -32,6 +32,17 @@ def test_new_api_restart_has_a_fixed_contract() -> None:
     assert "/v1/models" in operation.verification
 
 
+def test_new_api_backup_is_bound_to_the_gcp_production_target() -> None:
+    operation = get_service_operation("new-api", "backup")
+
+    assert operation is not None
+    assert operation.supports_target("gcp-free-vps-oregon", "gcp")
+    assert not operation.supports_target("another-gcp-target", "gcp")
+    assert not operation.supports_target("gcp-free-vps-oregon", "aws")
+    assert "new_api_backup.sh" in operation.entrypoint
+    assert "integrity_check" in operation.verification
+
+
 def test_a2a_restart_has_provider_specific_fixed_contract() -> None:
     operation = get_service_operation("a2a", "restart")
 

@@ -26,7 +26,13 @@ class ServiceOperationSpec:
 SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
     ServiceSpec("mem0", "Mem0", "mem0", "记忆 API 状态、浏览、搜索和 smoke"),
     ServiceSpec("a2a", "A2A", "probe", "目标机 A2A Agent Card 健康检查"),
-    ServiceSpec("new-api", "new-api", "http", "OpenAI-compatible models 健康检查"),
+    ServiceSpec(
+        "new-api",
+        "new-api",
+        "http",
+        "OpenAI-compatible models 健康检查",
+        restartable=True,
+    ),
     ServiceSpec("luck-agent", "Luck Agent", "sysops", "宿主机服务状态", restartable=True),
 )
 
@@ -41,6 +47,16 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
             "版本回滚必须走独立、显式批准的 Git rollback 操作"
         ),
         verification="systemctl is-active luck-agent.service + /health",
+    ),
+    ServiceOperationSpec(
+        service_id="new-api",
+        operation="restart",
+        entrypoint="sudo -n systemctl restart new-api.service && systemctl is-active new-api.service",
+        rollback_strategy=(
+            "restart 不修改 new-api 配置或数据；失败时可再次执行同一固定 restart，"
+            "版本回滚必须走独立、显式批准的镜像或配置回滚操作"
+        ),
+        verification="systemctl is-active new-api.service + /v1/models",
     ),
 )
 

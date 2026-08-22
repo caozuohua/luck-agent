@@ -464,6 +464,37 @@ async def test_restart_requires_one_time_approval_and_audits_execution() -> None
     assert [item["decision"] for item in audits] == ["denied", "approved", "executed"]
 
 
+async def test_new_api_restart_can_target_gcp_without_using_agent_target_binding() -> None:
+    sysops = FakeRestartSysops()
+    targets = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal|gcp-ts|caozuohua99|22",
+        default_target=VpsTarget(provider="aws", target_id="aws-01"),
+    )
+    targets.select("alice", "gcp-01")
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=sysops,
+        targets=targets,
+        permission_policy=OperationPermissionPolicy.from_csv(
+            targets="gcp-01",
+            services="new-api",
+            operations="restart",
+        ),
+        agent_target_id="aws-01",
+        approval_checker=lambda user, token, tool, args: token == "approved",
+    )
+
+    result = await router.handle(
+        "/vps service new-api restart",
+        user_id="alice",
+        approval_token="approved",
+    )
+
+    assert "active" in _text(result)
+    assert sysops.restart_calls == [("new-api", "alice")]
+
+
 async def test_lark_confirmation_passes_token_to_quick_restart() -> None:
     sysops = FakeRestartSysops()
     manager = LarkApprovalManager()

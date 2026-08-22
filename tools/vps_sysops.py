@@ -74,6 +74,7 @@ class VpsSysopsAdapter:
     }
     SERVICE_UNITS: dict[str, str] = {
         "luck-agent": "luck-agent.service",
+        "new-api": "new-api.service",
     }
     def __init__(
         self,

@@ -554,7 +554,7 @@ class QuickCommandRouter:
         if not approval_token or self.approval_checker is None:
             return "⚠️ 重启操作必须先完成一次性确认"
         target_id = self.targets.current(user_id).label if self.targets is not None else ""
-        if self.agent_target_id and target_id.lower() != self.agent_target_id:
+        if service == "luck-agent" and self.agent_target_id and target_id.lower() != self.agent_target_id:
             return (
                 f"🧩 Luck Agent 当前绑定目标为 `{self.agent_target_id}`；"
                 f"当前选择为 `{target_id}`，请先切换目标"

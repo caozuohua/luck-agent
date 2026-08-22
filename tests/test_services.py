@@ -16,3 +16,13 @@ def test_registered_mutations_have_fixed_entrypoint_rollback_and_verification() 
 def test_unregistered_service_mutation_is_not_available() -> None:
     assert get_service_operation("mem0", "restart") is None
     assert get_service_operation("luck-agent", "upgrade") is None
+
+
+def test_new_api_restart_has_a_fixed_contract() -> None:
+    operation = get_service_operation("new-api", "restart")
+
+    assert operation is not None
+    assert operation.entrypoint == (
+        "sudo -n systemctl restart new-api.service && systemctl is-active new-api.service"
+    )
+    assert "/v1/models" in operation.verification

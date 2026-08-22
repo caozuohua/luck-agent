@@ -200,6 +200,26 @@ async def test_restart_uses_registered_fixed_operation_entrypoint(monkeypatch) -
     assert result.operation == "restart"
 
 
+async def test_new_api_restart_uses_registered_fixed_operation_entrypoint(monkeypatch) -> None:
+    adapter = VpsSysopsAdapter()
+    captured: dict[str, str] = {}
+
+    def fake_build_probe_command(*, probe, target, is_local, env):
+        captured["probe"] = probe
+        return (["true"], None)
+
+    monkeypatch.setattr(adapter, "_build_probe_command", fake_build_probe_command)
+    monkeypatch.setattr(
+        "tools.vps_sysops.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+
+    result = await adapter.restart_service("new-api")
+
+    assert captured["probe"] == get_service_operation("new-api", "restart").entrypoint
+    assert result.operation == "restart"
+
+
 def test_result_exposes_stable_status_and_secret_free_dict() -> None:
     result = VpsSysopsResult(
         operation="logs",

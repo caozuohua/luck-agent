@@ -1,6 +1,6 @@
 # Luck Agent 当前实现与路线
 
-更新时间：2026-08-21
+更新时间：2026-08-22
 
 ## 产品定位
 
@@ -51,12 +51,14 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   和尾部内容，不走首尾截断。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
+- 生产 `EXECUTION_MODE` 使用默认 `graph`；本地 Web 直连 Agent、`legacy_inline` skill 和旧
+  `GoalManager` 仍保留在仓库中，属于待隔离的兼容路径，不是生产主链。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
   非日志输出按 `VPS_SYSOPS_MAX_OUTPUT_CHARS` 限制并保留首尾；日志按单页长度切分，最多缓存 12 页；结果提供
   `ok/partial/error` 三态和 `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - 已增加显式 Mem0 记忆边界：`/mem0 save|remember` 和 `/mem0 delete MEMORY_ID` 需要一次性确认；普通消息、搜索和 `/mem0 list` 不触发 Mem0 写入。`/mem0 list` 展示当前 scope；`MEM0_SCOPE_MODE=configured` 保持兼容的固定 user，`lark_user` 按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 的 list/search/save 结果中出现。Mem0 不可用时仅返回降级提示。
-- Mem0 项目 scope 现在通过 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换；允许的项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化，所有保存/搜索/删除/smoke 均显式带入项目 scope。
+- Mem0 项目 scope 现在通过 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换；允许的项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化，所有保存/搜索/删除/smoke 均显式带入项目 scope。生产当前尚未配置 `MEM0_PROJECTS`，默认只有 `luck-agent` 项目；双项目测试和真实 Lark 验收列为下一步。
 - 自然语言中的明确“请记住/个人偏好”现在只生成记忆提议卡，不调用 LLM 或 Mem0；用户点击“发起保存确认”后只需确认一次，仍复用 `/mem0 save` 的执行层校验。
 - 临时上下文现在按 `user_id + chat_id` 隔离：Goal 历史和压缩摘要不会跨群聊/会话串用；临时上下文仍保存在 SQLite/运行时，只有显式确认的业务记忆才进入 Mem0。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|list|smoke|search` 调用 Mem0 API，
@@ -128,26 +130,20 @@ Lark 卡片 → 选择云厂商/账号/实例 → 权限与参数校验 → 直�
 
 Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历、私信和个人任务时，应单独设计 User OAuth 与权限范围。lark-cli 作为候选平台工具层，暂不进入核心运维控制面。
 
-## 当前阻塞项
+## 当前待办与阻塞项
 
-1. 命令结果还未全部统一为适合手机查看的结构化卡片；服务目录、Mem0、new-api/A2A 探针、Goal
-   终态和普通自然语言长回复已完成，后续只需继续优化更细的结果模板。
-2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标和服务 allowlist、
-   AWS/GCP/Azure 只读 SSH 执行路由已可用；目前只有 luck-agent 重启具备受限变更路径，
-   其他服务的变更操作仍未开放。
-3. A2A、new-api 独立只读健康检查已完成；A2A 通过 GCP/Azure 目标 SSH 执行固定 probe，
-   new-api 使用 OpenAI-compatible token 访问 `/models`，尚未开放写操作或任务 smoke。
-4. LLM Provider Router、跨 Provider 配额熔断、多 Provider 降级和无密钥运行态观测已完成；GCP new-api 的
-   `step-3.7-flash → gemini-2.5-flash` fallback 已真实验证，Hermes OpenRouter 当前仅能读
-   `/models`，completion 返回 402，因此未纳入生产 fallback。
-5. Dockerfile、systemd 用户和部署脚本的 V2 配置一致性已核对完成。
-6. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。
+1. 双项目 Mem0 测试环境、真实 Lark scope 切换和服务重启后的 scope 恢复尚未验收。
+2. AWS 生产 `OPS_ALLOWED_USER_IDS` 尚未启用，需先从真实消息或审计证据核验可靠操作者 `open_id`。
+3. 当前只有 `luck-agent` 具备受控变更路径；下一项服务变更必须先定义固定入口、回滚策略和验收测试。
+4. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述；仓库还保留
+   `legacy_inline`、本地 Web 直连和旧 GoalManager 兼容代码。
 
 ## 实施顺序
 
 详细基线见 [`docs/roadmap.md`](roadmap.md)。当前顺序为：
 
-1. 阶段二控制面收尾：移动端友好的结构化结果卡片、长结果展示和更多受控服务变更；
-2. 阶段四 Mem0 记忆策略：自动记忆、确认记忆、临时上下文和失败降级边界；
-3. Lark 平台能力与高风险写操作继续按固定入口、审批和回滚逐项开放；
-4. 清理旧版文档中的 V1/Gemini/单 VPS 描述，并持续保持两套开发环境的配置与进度同步。
+1. 修订路线和状态文档；
+2. 完成双项目 Mem0 scope 的测试环境及真实 Lark 验收；
+3. 核验并评估生产用户级运维白名单；
+4. 增加一个固定入口、可回滚的低风险服务变更；
+5. 清理或隔离 legacy runtime 与历史文档。

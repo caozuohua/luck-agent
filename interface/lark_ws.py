@@ -168,6 +168,7 @@ class LarkWebSocketInterface:
                     text,
                     token=pending.token,
                     ttl_seconds=self.approval_manager.ttl_seconds,
+                    target=self._current_target_label(user_id),
                 )
                 await self.sender.send_card(chat_id, response_card)
                 log.info("lark_approval_requested", user_id=user_id, chat_id=chat_id)
@@ -353,7 +354,12 @@ class LarkWebSocketInterface:
         selector = getattr(self.quick_commands, "select_target", None)
         if not target_id or selector is None:
             return {"toast": {"type": "error", "content": "目标选择无效"}}
-        result = selector(target_id, user_id)
+        try:
+            result = selector(target_id, user_id, chat_id=chat_id)
+        except TypeError as exc:
+            if "chat_id" not in str(exc):
+                raise
+            result = selector(target_id, user_id)
         if isinstance(result, QuickCommandResult):
             text = result.text
         else:
@@ -385,6 +391,15 @@ class LarkWebSocketInterface:
 
     def build_card(self, text: str) -> dict[str, Any]:
         return build_assistant_result_card(text)
+
+    def _current_target_label(self, user_id: str) -> str:
+        getter = getattr(self.quick_commands, "current_target_label", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter(user_id) or "")
+        except Exception:
+            return ""
 
     def _schedule_approved_card_action(
         self,

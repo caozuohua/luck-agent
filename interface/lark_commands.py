@@ -23,6 +23,7 @@ from interface.lark_cards import (
     build_target_selection_card,
 )
 from memory.scope_store import MemoryScopeStore
+from memory.target_store import TargetSelectionStore
 
 log = get_logger("interface.lark_commands")
 
@@ -68,10 +69,12 @@ class QuickCommandRouter:
         mem0: Mem0Client | None = None,
         scope_store: MemoryScopeStore | None = None,
         targets: VpsTargetRegistry | None = None,
+        target_store: TargetSelectionStore | None = None,
         permission_policy: OperationPermissionPolicy | None = None,
         mem0_target_id: str = "",
         new_api: ServiceHealthProvider | None = None,
         agent_target_id: str = "",
+        new_api_target_id: str = "",
         approval_checker: ApprovalChecker | None = None,
         audit_writer: AuditWriter | None = None,
     ) -> None:
@@ -81,13 +84,16 @@ class QuickCommandRouter:
         self.mem0 = mem0
         self.scope_store = scope_store
         self.targets = targets
+        self.target_store = target_store
         self.permission_policy = permission_policy
         self.mem0_target_id = mem0_target_id.strip().lower()
         self.new_api = new_api
         self.agent_target_id = agent_target_id.strip().lower()
+        self.new_api_target_id = new_api_target_id.strip().lower()
         self.approval_checker = approval_checker
         self.audit_writer = audit_writer
         self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
+        self._pending_target_selections: dict[tuple[str, str], str] = {}
         self._log_page_ttl_seconds = 10 * 60
         self._log_page_max_sessions = 128
 
@@ -101,6 +107,7 @@ class QuickCommandRouter:
     ) -> str | QuickCommandResult | None:
         raw_command = " ".join(text.strip().split())
         command = raw_command.lower()
+        await self._restore_target_selection(user_id, chat_id)
         if command in {"/ping", "ping"}:
             return "🏓 pong"
         if command in {"/help", "help", "帮助", "/帮助"}:
@@ -127,7 +134,11 @@ class QuickCommandRouter:
             return self._targets(user_id)
         for prefix in ("/target ", "target ", "/目标 ", "目标 "):
             if command.startswith(prefix):
-                return self._select_target(raw_command[len(prefix) :].strip(), user_id)
+                return self._select_target(
+                    raw_command[len(prefix) :].strip(),
+                    user_id,
+                    chat_id=chat_id,
+                )
         if command in {"/health", "health", "健康", "/健康"}:
             return await self._health()
         if command in {"/vps", "vps", "/status", "status"}:
@@ -256,7 +267,13 @@ class QuickCommandRouter:
             build_target_selection_card(allowed_targets, current=current_for_card),
         )
 
-    def _select_target(self, target_id: str, user_id: str) -> QuickCommandResult:
+    def _select_target(
+        self,
+        target_id: str,
+        user_id: str,
+        *,
+        chat_id: str = "",
+    ) -> QuickCommandResult:
         if self.targets is None:
             return QuickCommandResult("🎯 尚未配置 VPS 目标")
         target = next(
@@ -268,10 +285,33 @@ class QuickCommandRouter:
         if not self._target_allowed(target.label, user_id):
             return QuickCommandResult(f"⛔ 当前用户无权访问目标：`{target.label}`")
         self.targets.select(user_id, target.label)
+        self._pending_target_selections[(str(user_id or "default"), str(chat_id or ""))] = target.label
         return self._targets(user_id)
 
-    def select_target(self, target_id: str, user_id: str = "default") -> QuickCommandResult:
-        return self._select_target(target_id, user_id)
+    def select_target(
+        self,
+        target_id: str,
+        user_id: str = "default",
+        *,
+        chat_id: str = "",
+    ) -> QuickCommandResult:
+        return self._select_target(target_id, user_id, chat_id=chat_id)
+
+    def current_target_label(self, user_id: str = "default") -> str:
+        if self.targets is None:
+            return ""
+        return self.targets.current(user_id).label
+
+    async def _restore_target_selection(self, user_id: str, chat_id: str) -> None:
+        if self.targets is None or self.target_store is None:
+            return
+        key = (str(user_id or "default"), str(chat_id or ""))
+        pending = self._pending_target_selections.pop(key, None)
+        if pending:
+            await self.target_store.set(key[0], key[1], pending)
+        selected = await self.target_store.get(key[0], key[1])
+        if selected and self.targets.select(key[0], selected) is None:
+            log.warning("target_selection_restore_skipped", user_id=key[0], target_id=selected)
 
     async def _vps(self, user_id: str) -> str:
         try:
@@ -452,6 +492,16 @@ class QuickCommandRouter:
         if action == "restart":
             if not spec.restartable:
                 return f"⚠️ 服务 `{spec.service_id}` 当前不开放重启操作"
+            if (
+                spec.service_id == "new-api"
+                and self.new_api_target_id
+                and self.targets is not None
+                and self.targets.current(user_id).label.lower() != self.new_api_target_id
+            ):
+                return (
+                    f"🧩 new-api 当前绑定目标为 `{self.new_api_target_id}`；"
+                    f"当前选择为 `{self.targets.current(user_id).label}`，请先切换目标"
+                )
             if self.permission_policy is not None and not self.permission_policy.allows_operation(
                 "restart"
             ):

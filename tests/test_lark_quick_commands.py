@@ -10,6 +10,7 @@ from interface.lark_ws import LarkWebSocketInterface
 from memory.db import Database
 from memory.proposal import MemoryProposalDetector
 from memory.scope_store import MemoryScopeStore
+from memory.target_store import TargetSelectionStore
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
 from tools.service_health import ServiceHealthResult
 from tools.vps_status import HostStatus
@@ -495,6 +496,67 @@ async def test_new_api_restart_can_target_gcp_without_using_agent_target_binding
 
     assert "active" in _text(result)
     assert sysops.restart_calls == [("new-api", "alice")]
+
+
+async def test_new_api_restart_rejects_wrong_target_before_consuming_approval() -> None:
+    sysops = FakeRestartSysops()
+    targets = VpsTargetRegistry.from_csv(
+        "gcp-01|gcp|||personal|gcp-ts|caozuohua99|22",
+        default_target=VpsTarget(provider="aws", target_id="aws-01"),
+    )
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=sysops,
+        targets=targets,
+        new_api_target_id="gcp-01",
+        approval_checker=lambda user, token, tool, args: True,
+    )
+
+    result = await router.handle(
+        "/vps service new-api restart",
+        user_id="alice",
+        approval_token="approved",
+    )
+
+    assert "绑定目标为 `gcp-01`" in _text(result)
+    assert sysops.restart_calls == []
+
+
+async def test_target_selection_persists_per_user_and_chat() -> None:
+    db = Database(":memory:")
+    await db.initialize()
+    try:
+        store = TargetSelectionStore(db)
+        default = VpsTarget(provider="aws", target_id="aws-01")
+        targets = VpsTargetRegistry.from_csv(
+            "gcp-01|gcp|||personal",
+            default_target=default,
+        )
+        first = QuickCommandRouter(
+            health=FakeHealth(),
+            vps=FakeVps(),
+            targets=targets,
+            target_store=store,
+        )
+
+        await first.handle("/target gcp-01", user_id="alice", chat_id="chat-1")
+        await first.handle("/targets", user_id="alice", chat_id="chat-1")
+
+        restarted_targets = VpsTargetRegistry.from_csv("gcp-01|gcp|||personal", default_target=default)
+        second = QuickCommandRouter(
+            health=FakeHealth(),
+            vps=FakeVps(),
+            targets=restarted_targets,
+            target_store=store,
+        )
+        result = await second.handle("/targets", user_id="alice", chat_id="chat-1")
+
+        assert result.text == "🎯 当前目标：GCP / gcp-01"
+        assert restarted_targets.current("alice").label == "gcp-01"
+        assert restarted_targets.current("alice-other-chat").label == "aws-01"
+    finally:
+        await db.close()
 
 
 async def test_lark_confirmation_passes_token_to_quick_restart() -> None:

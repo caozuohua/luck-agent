@@ -88,6 +88,7 @@ class AgentSettings:
     vps_target_id: str = ""
     vps_role: str = "personal"
     vps_targets: str = ""
+    new_api_target_id: str = ""
     vps_sysops_root: str = "/opt/vps_sysops"
     vps_sysops_profile: str = "aws"
     vps_sysops_ssh_config: str = ""
@@ -157,6 +158,7 @@ def load_settings() -> AgentSettings:
         vps_target_id=os.environ.get("VPS_TARGET_ID", ""),
         vps_role=os.environ.get("VPS_ROLE", "personal"),
         vps_targets=os.environ.get("VPS_TARGETS", ""),
+        new_api_target_id=os.environ.get("NEW_API_TARGET_ID", ""),
         vps_sysops_root=os.environ.get("VPS_SYSOPS_ROOT", "/opt/vps_sysops"),
         vps_sysops_profile=os.environ.get("VPS_SYSOPS_PROFILE", "aws"),
         vps_sysops_ssh_config=os.environ.get("VPS_SYSOPS_SSH_CONFIG", ""),

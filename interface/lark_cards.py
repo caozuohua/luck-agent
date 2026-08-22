@@ -104,6 +104,7 @@ def build_approval_card(
     *,
     token: str,
     ttl_seconds: float,
+    target: str = "",
 ) -> dict[str, Any]:
     """Build a one-click confirmation card with a text fallback."""
     minutes = max(1, int(ttl_seconds // 60))
@@ -111,6 +112,7 @@ def build_approval_card(
         [
             "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
             f"• 文字确认：`/confirm {token}`",
+            f"• 目标：`{target}`" if target else "",
             f"• 请求：{str(request or '').strip()}",
             "点击「确认执行」即可继续；也可使用下方验证码文字确认。",
             f"• 有效期：{minutes} 分钟",

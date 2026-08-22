@@ -88,6 +88,16 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_memory_scopes_updated
                 ON memory_scopes(updated_at);
+
+            CREATE TABLE IF NOT EXISTS target_selections (
+                user_id    TEXT NOT NULL,
+                chat_id    TEXT NOT NULL DEFAULT '',
+                target_id  TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, chat_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_target_selections_updated
+                ON target_selections(updated_at);
             """
         )
         # Existing V2 databases predate chat_id. Keep the migration local and

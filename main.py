@@ -26,6 +26,7 @@ from memory.goal_store import GoalStore
 from memory.pattern_store import PatternStore
 from memory.proposal import MemoryProposalDetector
 from memory.scope_store import MemoryScopeStore
+from memory.target_store import TargetSelectionStore
 from runtime.graph_runtime import GraphRuntime
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
@@ -167,10 +168,12 @@ class Runtime:
             mem0=self.mem0,
             scope_store=MemoryScopeStore(self.db),
             targets=self.target_registry,
+            target_store=TargetSelectionStore(self.db),
             permission_policy=self.operation_permission_policy,
             mem0_target_id=self.vps_target.label,
             new_api=self.new_api_health,
             agent_target_id=self.vps_target.label,
+            new_api_target_id=settings.new_api_target_id,
             approval_checker=self.lark_approval_manager.consume_grant,
             audit_writer=self.db.insert_operation_audit,
         )

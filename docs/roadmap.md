@@ -75,6 +75,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已接入多 Provider LLM Router：兼容原有 `LLM_*` primary 配置，支持按顺序配置备用
   `LLM_PROVIDER_<NAME>_*`；每个 Provider 独立维护重试、普通故障熔断和配额长冷却，
   fallback 只发生在 LLM 生成/修复阶段，不重复执行工具副作用。
+- 已在 AWS 生产机真实验证 GCP new-api 的 `step-3.7-flash → gemini-2.5-flash` fallback；
+  Hermes 的 OpenRouter key 读取 `/models` 成功但 completion 返回 402，已按配额故障排除。
 
 ## 4. 当前执行顺序
 

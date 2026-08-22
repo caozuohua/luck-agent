@@ -97,6 +97,10 @@ class FakeNewApi:
 
 
 class FakeMem0:
+    def __init__(self) -> None:
+        self.add_calls: list[tuple[str, dict]] = []
+        self.delete_calls: list[str] = []
+
     async def health(self) -> Mem0Health:
         return Mem0Health(ok=True, latency_ms=4, detail="test")
 
@@ -112,6 +116,21 @@ class FakeMem0:
 
     async def search(self, query: str) -> list[dict]:
         return [{"id": "memory-1", "memory": f"remember {query}", "score": 0.9}]
+
+    async def add(self, text: str, **kwargs) -> dict:
+        self.add_calls.append((text, kwargs))
+        return {"memories": [{"id": "memory-new", "memory": text}]}
+
+    async def delete(self, memory_id: str) -> None:
+        self.delete_calls.append(memory_id)
+
+
+class FailingMem0(FakeMem0):
+    async def add(self, text: str, **kwargs) -> dict:
+        raise RuntimeError("Mem0 unavailable")
+
+    async def delete(self, memory_id: str) -> None:
+        raise RuntimeError("Mem0 unavailable")
 
 
 class FakeAgent:
@@ -147,6 +166,77 @@ async def test_quick_commands_return_without_llm() -> None:
     assert "临时标识" in _text(await router.handle("/mem0 smoke"))
     assert "remember database" in _text(await router.handle("/mem0 search database"))
     assert await router.handle("check the server") is None
+
+
+async def test_mem0_write_commands_require_approval_and_do_not_auto_write() -> None:
+    mem0 = FakeMem0()
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        mem0=mem0,
+        approval_checker=lambda user, token, tool, args: token == "approved",
+    )
+
+    blocked = await router.handle("/mem0 save user prefers concise answers", user_id="alice")
+    assert "必须先完成" in (blocked or "")
+    assert mem0.add_calls == []
+
+    saved = await router.handle(
+        "/mem0 save user prefers concise answers",
+        user_id="alice",
+        approval_token="approved",
+    )
+    assert "已保存" in _text(saved)
+    assert mem0.add_calls[0][0] == "user prefers concise answers"
+    assert mem0.add_calls[0][1]["metadata"]["user_confirmed"] is True
+
+    await router.handle("/mem0 search concise", user_id="alice")
+    assert len(mem0.add_calls) == 1
+
+
+async def test_mem0_delete_is_scoped_and_validated() -> None:
+    mem0 = FakeMem0()
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        mem0=mem0,
+        approval_checker=lambda user, token, tool, args: token == "approved",
+    )
+
+    invalid = await router.handle("/mem0 delete ../../secrets", user_id="alice")
+    assert "只接受单个记忆 ID" in (invalid or "")
+    assert mem0.delete_calls == []
+
+    deleted = await router.handle(
+        "/mem0 delete memory-1",
+        user_id="alice",
+        approval_token="approved",
+    )
+    assert "已删除" in _text(deleted)
+    assert mem0.delete_calls == ["memory-1"]
+
+
+async def test_mem0_write_failure_degrades_without_raising() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        mem0=FailingMem0(),
+        approval_checker=lambda user, token, tool, args: token == "approved",
+    )
+
+    saved = await router.handle(
+        "/mem0 save temporary note",
+        user_id="alice",
+        approval_token="approved",
+    )
+    deleted = await router.handle(
+        "/mem0 delete memory-1",
+        user_id="alice",
+        approval_token="approved",
+    )
+
+    assert "服务不可用" in _text(saved)
+    assert "服务不可用" in _text(deleted)
 
 
 async def test_vps_logs_returns_paged_card_and_binds_session_to_user() -> None:

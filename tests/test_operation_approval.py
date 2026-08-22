@@ -221,3 +221,22 @@ def test_confirmation_scope_parses_vps_service_command() -> None:
 
     assert scope.operation == "restart"
     assert scope.service == "luck-agent"
+
+
+def test_confirmation_scope_parses_explicit_mem0_write() -> None:
+    manager = LarkApprovalManager()
+    request = "/mem0 save 用户偏好"
+
+    assert manager.requires_confirmation(request)
+    pending = manager.issue(user_id="ou_user", request=request)
+    assert pending.scope == scope_from_request(request)
+    assert pending.scope.operation == "write"
+    assert pending.scope.service == "mem0"
+    manager.confirm(user_id="ou_user", token=pending.token)
+
+    assert manager.consume_grant(
+        "ou_user",
+        pending.token,
+        "memory_write",
+        {"service": "mem0", "operation": "write"},
+    )

@@ -23,6 +23,8 @@ _MUTATING_TOOL_NAMES = frozenset(
         "vps_sysops_write",
         "service_restart",
         "service_update",
+        "memory_write",
+        "memory_delete",
         "deploy",
         "delete",
         "restore",
@@ -46,6 +48,7 @@ _REQUEST_OPERATION_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"卸载|\buninstall\b", "uninstall"),
     (r"推送|\bpush\b", "push"),
     (r"写入|修改|\bwrite\b|\bupdate\b", "write"),
+    (r"保存|记住|\bsave\b|\bremember\b", "write"),
     (r"备份|\bbackup\b", "backup"),
     (r"恢复|\brestore\b", "restore"),
 )
@@ -172,13 +175,21 @@ def scope_from_request(text: str) -> OperationScope:
     if command_service_match:
         service = command_service_match.group(1).lower()
     else:
-        service_match = re.search(
-            r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+        mem0_command_match = re.search(
+            r"(?:^|/)mem0\s+(?:save|remember|delete)\b",
             normalized,
             re.IGNORECASE,
         )
-        if service_match:
-            service = (service_match.group(1) or service_match.group(2)).lower()
+        if mem0_command_match:
+            service = "mem0"
+        else:
+            service_match = re.search(
+                r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+                normalized,
+                re.IGNORECASE,
+            )
+            if service_match:
+                service = (service_match.group(1) or service_match.group(2)).lower()
     return OperationScope(operation=operation, target=target, service=service)
 
 

@@ -55,6 +55,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   非日志输出按 `VPS_SYSOPS_MAX_OUTPUT_CHARS` 限制并保留首尾；日志按单页长度切分，最多缓存 12 页；结果提供
   `ok/partial/error` 三态和 `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
+- 已增加显式 Mem0 记忆边界：`/mem0 save|remember` 和 `/mem0 delete MEMORY_ID` 需要一次性确认；普通消息与搜索不触发 Mem0 写入，Mem0 不可用时仅返回降级提示。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|smoke|search` 调用 Mem0 API，
   `a2a` 通过目标 SSH 上的固定 Agent Card probe 检查，`new-api` 只读访问 `/v1/models`，
   `luck-agent` 可查看宿主机服务状态；`/vps service luck-agent restart` 是当前唯一开放的

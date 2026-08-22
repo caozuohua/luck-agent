@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -112,7 +113,9 @@ class QuickCommandRouter:
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 smoke` Mem0 写入/搜索/清理测试\n"
-                "• `/mem0 search 关键词` 搜索记忆"
+                "• `/mem0 search 关键词` 搜索记忆\n"
+                "• `/mem0 save 内容` 保存记忆（需确认）\n"
+                "• `/mem0 delete MEMORY_ID` 删除记忆（需确认）"
             )
         if command in {"/targets", "targets", "目标", "/目标", "/target", "target"}:
             return self._targets(user_id)
@@ -146,6 +149,27 @@ class QuickCommandRouter:
             if command.startswith(prefix):
                 query = raw_command[len(prefix) :].strip()
                 return await self._mem0_search(query)
+        for prefix in (
+            "/mem0 save ",
+            "mem0 save ",
+            "/mem0 remember ",
+            "mem0 remember ",
+        ):
+            if command.startswith(prefix):
+                content = raw_command[len(prefix) :].strip()
+                return await self._mem0_save(
+                    content,
+                    user_id=user_id,
+                    approval_token=approval_token,
+                )
+        for prefix in ("/mem0 delete ", "mem0 delete "):
+            if command.startswith(prefix):
+                memory_id = raw_command[len(prefix) :].strip().strip("`")
+                return await self._mem0_delete(
+                    memory_id,
+                    user_id=user_id,
+                    approval_token=approval_token,
+                )
         return None
 
     async def _health(self) -> str:
@@ -653,6 +677,110 @@ class QuickCommandRouter:
                 build_sections_card([text], title="Luck Agent · Mem0 搜索"),
             )
 
+    async def _mem0_save(
+        self,
+        content: str,
+        *,
+        user_id: str,
+        approval_token: str | None,
+    ) -> str | QuickCommandResult:
+        if not content:
+            return "用法：`/mem0 save 要保存的内容`"
+        if len(content) > 4000:
+            return "⚠️ 记忆内容过长，请控制在 4000 字符以内"
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        denied = self._memory_write_denial(
+            user_id=user_id,
+            approval_token=approval_token,
+            operation="write",
+            tool_name="memory_write",
+        )
+        if denied:
+            return denied
+        try:
+            payload = await self.mem0.add(
+                content,
+                metadata={"source": "lark-explicit", "user_confirmed": True},
+            )
+            added = _memory_result_count(payload)
+            text = f"🧠 Mem0 记忆已保存：✅\n• 内容长度：{len(content)}\n• 写入条目：{added}"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 保存"),
+            )
+        except Exception as exc:
+            log.error("quick_mem0_save_failed", error=type(exc).__name__)
+            text = "🧠 Mem0 记忆保存：⚠️ 服务不可用，未阻塞其他任务"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 保存"),
+            )
+
+    async def _mem0_delete(
+        self,
+        memory_id: str,
+        *,
+        user_id: str,
+        approval_token: str | None,
+    ) -> str | QuickCommandResult:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", memory_id):
+            return "用法：`/mem0 delete MEMORY_ID`（只接受单个记忆 ID）"
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        denied = self._memory_write_denial(
+            user_id=user_id,
+            approval_token=approval_token,
+            operation="delete",
+            tool_name="memory_delete",
+        )
+        if denied:
+            return denied
+        try:
+            await self.mem0.delete(memory_id)
+            text = f"🧠 Mem0 记忆已删除：✅\n• ID：`{memory_id}`"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 删除"),
+            )
+        except Exception as exc:
+            log.error("quick_mem0_delete_failed", error=type(exc).__name__)
+            text = "🧠 Mem0 记忆删除：⚠️ 服务不可用，未阻塞其他任务"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 删除"),
+            )
+
+    def _memory_write_denial(
+        self,
+        *,
+        user_id: str,
+        approval_token: str | None,
+        operation: str,
+        tool_name: str,
+    ) -> str | None:
+        if self.permission_policy is not None:
+            if not self.permission_policy.allows_user(user_id):
+                return "⛔ 当前用户无权修改 Mem0 记忆"
+            if not self.permission_policy.allows_service("mem0"):
+                return "⛔ 当前用户无权访问 Mem0 服务"
+            if not self.permission_policy.allows_operation(operation):
+                return f"⛔ 当前用户无权执行操作：`{operation}`"
+        if not approval_token or self.approval_checker is None:
+            return "⚠️ Mem0 记忆变更必须先完成一次性确认"
+        try:
+            approved = self.approval_checker(
+                user_id,
+                approval_token,
+                tool_name,
+                {"service": "mem0", "operation": operation},
+            )
+        except Exception:
+            approved = False
+        if not approved:
+            return "⛔ Mem0 记忆变更确认码无效、过期或范围不匹配"
+        return None
+
 
 def _format_service_probe(service: str, result: Any) -> str:
     mark = "✅" if getattr(result, "ok", False) else "⚠️"
@@ -686,3 +814,15 @@ def _memory_text(item: dict[str, Any]) -> str:
         if isinstance(value, str):
             return " ".join(value.split())
     return ""
+
+
+def _memory_result_count(payload: Any) -> int:
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        for key in ("memories", "results", "items", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+        return 1 if payload else 0
+    return 0

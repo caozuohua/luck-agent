@@ -78,8 +78,6 @@ class Database:
                 turn_range  TEXT,
                 created_at  INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_context_summaries_scope
-                ON context_summaries(user_id, chat_id, created_at);
             """
         )
         # Existing V2 databases predate chat_id. Keep the migration local and
@@ -98,6 +96,15 @@ class Database:
         except Exception as error:
             if "duplicate column name" not in str(error).lower():
                 raise
+        # Create this only after the legacy-table migration above. SQLite
+        # validates indexed columns immediately, so creating it in the first
+        # script would break startup on databases from before chat scoping.
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_context_summaries_scope
+                ON context_summaries(user_id, chat_id, created_at)
+            """
+        )
         await conn.commit()
 
     async def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> None:

@@ -209,6 +209,38 @@ def get_service_operation(service_id: str, operation: str) -> ServiceOperationSp
     )
 
 
+def get_service_operations(service_id: str) -> tuple[ServiceOperationSpec, ...]:
+    normalized = str(service_id or "").strip().lower()
+    return tuple(item for item in SERVICE_OPERATIONS if item.service_id == normalized)
+
+
+def service_action_names(spec: ServiceSpec) -> tuple[str, ...]:
+    """Return the read-only and contracted mutating actions visible to operators."""
+    if spec.backend == "mem0":
+        actions = ["status", "list", "smoke", "search"]
+    elif spec.backend == "sysops":
+        actions = ["status", "health", "list"]
+    else:
+        actions = ["status", "health"]
+    actions.extend(item.operation for item in get_service_operations(spec.service_id))
+    return tuple(dict.fromkeys(actions))
+
+
+def service_operation_constraints(spec: ServiceSpec) -> tuple[str, ...]:
+    """Describe target constraints without exposing shell entrypoints."""
+    constraints: list[str] = []
+    for operation in get_service_operations(spec.service_id):
+        if operation.target_ids:
+            constraints.append(
+                f"{operation.operation}: target=" + ",".join(operation.target_ids)
+            )
+        elif operation.target_providers:
+            constraints.append(
+                f"{operation.operation}: provider=" + ",".join(operation.target_providers)
+            )
+    return tuple(constraints)
+
+
 def format_service_catalog(*, allowed: set[str] | frozenset[str] | None = None) -> str:
     specs = [
         item
@@ -220,5 +252,8 @@ def format_service_catalog(*, allowed: set[str] | frozenset[str] | None = None) 
     lines = ["🧩 可用服务："]
     for item in specs:
         lines.append(f"• `{item.service_id}`：{item.description}")
-    lines.append("用法：`/vps service SERVICE status|list|smoke|search 关键词`")
+        lines.append(f"  操作：`{'|'.join(service_action_names(item))}`")
+        for constraint in service_operation_constraints(item):
+            lines.append(f"  限制：`{constraint}`")
+    lines.append("用法：`/vps service SERVICE ACTION [关键词]`")
     return "\n".join(lines)

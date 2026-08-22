@@ -100,6 +100,9 @@ def test_service_catalog_card_contains_one_section_per_service() -> None:
 
     assert card["header"]["title"]["content"].startswith("Luck Agent · 服务目录")
     assert len(card["body"]["elements"]) == len(SERVICE_CATALOG) + 2
+    contents = "\n".join(element.get("content", "") for element in card["body"]["elements"])
+    assert "`status|health|restart|backup`" in contents
+    assert "backup: target=gcp-free-vps-oregon" in contents
 
 
 def test_goal_result_card_distinguishes_done_and_failed_states() -> None:

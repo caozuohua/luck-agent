@@ -393,6 +393,8 @@ async def test_service_catalog_routes_mem0_and_host_services() -> None:
     catalog = await router.handle("/vps service list")
     assert "`mem0`" in _text(catalog)
     assert "`a2a`" in _text(catalog)
+    assert "backup" in _text(catalog)
+    assert "gcp-free-vps-oregon" in _text(catalog)
     assert "延迟：4 ms" in _text(await router.handle("/vps service mem0 status"))
     assert "checked services" in _text(await router.handle("/vps service a2a status"))
 

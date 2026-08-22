@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.services import ServiceSpec
+from core.services import ServiceSpec, service_action_names, service_operation_constraints
 from core.targets import VpsTarget
 
 
@@ -179,11 +179,18 @@ def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
             title="Luck Agent · 服务目录",
         )
     sections = ["🧩 **可用服务**"]
-    sections.extend(
-        f"**`{spec.service_id}` · {spec.label}**\n{spec.description}"
-        for spec in specs
-    )
-    sections.append("用法：`/vps service SERVICE status|smoke|search 关键词`")
+    for spec in specs:
+        detail = [
+            f"**`{spec.service_id}` · {spec.label}**",
+            spec.description,
+            f"操作：`{'|'.join(service_action_names(spec))}`",
+        ]
+        detail.extend(
+            f"限制：`{constraint}`"
+            for constraint in service_operation_constraints(spec)
+        )
+        sections.append("\n".join(detail))
+    sections.append("用法：`/vps service SERVICE ACTION [关键词]`")
     return build_sections_card(sections, title="Luck Agent · 服务目录")
 
 

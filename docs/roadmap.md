@@ -77,6 +77,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   `vps_sysops` scoped backup 脚本；脚本生成 0600 的 `.env` 与 SQLite 在线快照归档，并在返回成功前
   完成 SHA-256、tar 可读性和 SQLite `integrity_check`。GCP 真实链路已验证成功；整机 profile backup
   因动态 Hermes 文件变化未采用。new-api restore/upgrade 仍保持关闭。
+- 服务目录现在从固定操作契约动态展示可用动作和目标限制；新增受控操作不会再出现“已实现但目录不可发现”的状态。
 - 变更契约现在强制包含固定入口、目标约束、前置条件、幂等性、回滚策略和验收标准；缺少任一
   核心字段的 backup/upgrade/rollback 操作不能登记。
 - `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，

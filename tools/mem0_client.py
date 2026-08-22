@@ -40,17 +40,37 @@ class Mem0Client:
         api_key: str = "",
         user_id: str = "personal",
         agent_id: str = "luck-agent",
+        scope_mode: str = "configured",
         timeout_seconds: float = 10.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key.strip()
         self.user_id = user_id.strip() or "personal"
         self.agent_id = agent_id.strip() or "luck-agent"
+        normalized_scope_mode = scope_mode.strip().lower()
+        self.scope_mode = (
+            normalized_scope_mode
+            if normalized_scope_mode in {"configured", "lark_user"}
+            else "configured"
+        )
         self.timeout_seconds = timeout_seconds
+        self._visible_memory_ids: dict[str, set[str]] = {}
 
     @property
     def configured(self) -> bool:
         return bool(self.base_url)
+
+    def effective_user_id(self, actor_id: str = "") -> str:
+        actor = str(actor_id or "").strip()
+        if self.scope_mode == "lark_user" and actor and actor.lower() != "default":
+            return actor
+        return self.user_id
+
+    def scope_label(self, actor_id: str = "") -> str:
+        return (
+            f"mode={self.scope_mode} · user={self.effective_user_id(actor_id)}"
+            f" · agent={self.agent_id}"
+        )
 
     async def health(self) -> Mem0Health:
         started = time.perf_counter()
@@ -76,10 +96,11 @@ class Mem0Client:
         run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         infer: bool = True,
+        actor_id: str = "",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "messages": [{"role": "user", "content": text}],
-            "user_id": self.user_id,
+            "user_id": self.effective_user_id(actor_id),
             "agent_id": self.agent_id,
             "infer": infer,
         }
@@ -87,36 +108,63 @@ class Mem0Client:
             payload["run_id"] = run_id
         if metadata:
             payload["metadata"] = metadata
-        return await self._json_request("POST", "/memories", payload)
+        data = await self._json_request("POST", "/memories", payload)
+        self._remember_visible_ids(data, actor_id)
+        return data
 
-    async def search(self, query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        actor_id: str = "",
+    ) -> list[dict[str, Any]]:
         payload = {
             "query": query,
-            "filters": {"user_id": self.user_id, "agent_id": self.agent_id},
+            "filters": {
+                "user_id": self.effective_user_id(actor_id),
+                "agent_id": self.agent_id,
+            },
             "top_k": max(1, min(top_k, 20)),
         }
         data = await self._json_request("POST", "/search", payload)
-        return _results(data)
+        results = _results(data)
+        self._remember_visible_ids(results, actor_id)
+        return results
 
-    async def list_memories(self, *, limit: int = 10) -> list[dict[str, Any]]:
+    async def list_memories(
+        self,
+        *,
+        limit: int = 10,
+        actor_id: str = "",
+    ) -> list[dict[str, Any]]:
         response = await self._request(
             "GET",
             "/memories",
             params={
-                "user_id": self.user_id,
+                "user_id": self.effective_user_id(actor_id),
                 "agent_id": self.agent_id,
                 "page": 1,
                 "page_size": max(1, min(limit, 20)),
             },
         )
         response.raise_for_status()
-        return _results(response.json())
+        results = _results(response.json())
+        self._remember_visible_ids(results, actor_id)
+        return results
 
-    async def delete(self, memory_id: str) -> None:
+    async def delete(self, memory_id: str, *, actor_id: str = "") -> None:
+        if self.scope_mode == "lark_user":
+            visible = self._visible_memory_ids.get(self.effective_user_id(actor_id), set())
+            if memory_id not in visible:
+                raise Mem0ClientError(
+                    "记忆不在当前用户 scope；请先执行 /mem0 list 或 /mem0 search"
+                )
         response = await self._request("DELETE", f"/memories/{memory_id}")
         response.raise_for_status()
+        self._visible_memory_ids.get(self.effective_user_id(actor_id), set()).discard(memory_id)
 
-    async def smoke(self) -> Mem0SmokeResult:
+    async def smoke(self, *, actor_id: str = "") -> Mem0SmokeResult:
         marker = f"luck-agent-smoke-{uuid.uuid4().hex[:12]}"
         if not self.api_key:
             return Mem0SmokeResult(
@@ -131,13 +179,14 @@ class Mem0Client:
                 run_id=marker,
                 metadata={"source": "luck-agent-smoke", "ephemeral": True},
                 infer=False,
+                actor_id=actor_id,
             )
             added_items = _results(added_payload)
             added_ids = [str(item["id"]) for item in added_items if item.get("id")]
-            found = await self.search(marker, top_k=5)
+            found = await self.search(marker, top_k=5, actor_id=actor_id)
             deleted = 0
             for memory_id in added_ids:
-                await self.delete(memory_id)
+                await self.delete(memory_id, actor_id=actor_id)
                 deleted += 1
             cleanup_confirmed = bool(added_ids) and deleted == len(added_ids)
             return Mem0SmokeResult(
@@ -151,6 +200,16 @@ class Mem0Client:
             )
         except (httpx.HTTPError, Mem0ClientError, KeyError, TypeError, ValueError) as exc:
             return Mem0SmokeResult(ok=False, marker=marker, detail=str(exc))
+
+    def _remember_visible_ids(self, payload: Any, actor_id: str) -> None:
+        if self.scope_mode != "lark_user":
+            return
+        scope_user = self.effective_user_id(actor_id)
+        visible = self._visible_memory_ids.setdefault(scope_user, set())
+        for item in _results(payload):
+            memory_id = item.get("id")
+            if memory_id:
+                visible.add(str(memory_id))
 
     async def _json_request(
         self,

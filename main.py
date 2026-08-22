@@ -146,6 +146,7 @@ class Runtime:
                 api_key=settings.mem0_api_key,
                 user_id=settings.mem0_user_id,
                 agent_id=settings.mem0_agent_id,
+                scope_mode=settings.mem0_scope_mode,
                 timeout_seconds=settings.mem0_timeout_seconds,
             )
             if settings.mem0_base_url

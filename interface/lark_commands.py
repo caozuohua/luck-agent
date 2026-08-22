@@ -145,13 +145,13 @@ class QuickCommandRouter:
         if command in {"/mem0 status", "mem0 status"}:
             return await self._mem0_status()
         if command in {"/mem0 list", "mem0 list", "/mem0 memories", "mem0 memories"}:
-            return await self._mem0_list()
+            return await self._mem0_list(user_id=user_id)
         if command in {"/mem0 smoke", "mem0 smoke"}:
-            return await self._mem0_smoke()
+            return await self._mem0_smoke(user_id=user_id)
         for prefix in ("/mem0 search ", "mem0 search "):
             if command.startswith(prefix):
                 query = raw_command[len(prefix) :].strip()
-                return await self._mem0_search(query)
+                return await self._mem0_search(query, user_id=user_id)
         for prefix in (
             "/mem0 save ",
             "mem0 save ",
@@ -453,11 +453,11 @@ class QuickCommandRouter:
             if action in {"status", "health"}:
                 return await self._mem0_status()
             if action == "smoke":
-                return await self._mem0_smoke()
+                return await self._mem0_smoke(user_id=user_id)
             if action == "list":
-                return await self._mem0_list()
+                return await self._mem0_list(user_id=user_id)
             if action == "search":
-                return await self._mem0_search(argument)
+                return await self._mem0_search(argument, user_id=user_id)
             return "用法：`/vps service mem0 status|list|smoke|search 关键词`"
 
         if spec.backend == "http":
@@ -620,12 +620,12 @@ class QuickCommandRouter:
             text = "🧠 Mem0 API：⚠️ 暂时无法读取状态"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
 
-    async def _mem0_smoke(self) -> str | QuickCommandResult:
+    async def _mem0_smoke(self, *, user_id: str = "default") -> str | QuickCommandResult:
         if self.mem0 is None:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
         try:
-            result: Mem0SmokeResult = await self.mem0.smoke()
+            result: Mem0SmokeResult = await self.mem0.smoke(actor_id=user_id)
             mark = "✅" if result.ok and result.cleanup_confirmed else "⚠️"
             detail = f"\n• 说明：{result.detail}" if result.detail else ""
             text = (
@@ -644,14 +644,19 @@ class QuickCommandRouter:
             text = "🧠 Mem0 smoke：⚠️ 测试失败"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
 
-    async def _mem0_search(self, query: str) -> str | QuickCommandResult:
+    async def _mem0_search(
+        self,
+        query: str,
+        *,
+        user_id: str = "default",
+    ) -> str | QuickCommandResult:
         if not query:
             return "用法：`/mem0 search 关键词`"
         if self.mem0 is None:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
-            results = await self.mem0.search(query)
+            results = await self.mem0.search(query, actor_id=user_id)
             if not results:
                 text = f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆"
                 return QuickCommandResult(
@@ -682,13 +687,13 @@ class QuickCommandRouter:
                 build_sections_card([text], title="Luck Agent · Mem0 搜索"),
             )
 
-    async def _mem0_list(self) -> str | QuickCommandResult:
+    async def _mem0_list(self, *, user_id: str = "default") -> str | QuickCommandResult:
         if self.mem0 is None:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
-            results = await self.mem0.list_memories(limit=10)
-            scope = _mem0_scope(self.mem0)
+            results = await self.mem0.list_memories(limit=10, actor_id=user_id)
+            scope = self.mem0.scope_label(user_id)
             if not results:
                 text = f"🧠 Mem0 记忆清单：当前没有记忆\n• Scope：{scope}"
                 return QuickCommandResult(
@@ -743,6 +748,7 @@ class QuickCommandRouter:
             payload = await self.mem0.add(
                 content,
                 metadata={"source": "lark-explicit", "user_confirmed": True},
+                actor_id=user_id,
             )
             added = _memory_result_count(payload)
             text = f"🧠 Mem0 记忆已保存：✅\n• 内容长度：{len(content)}\n• 写入条目：{added}"
@@ -778,7 +784,7 @@ class QuickCommandRouter:
         if denied:
             return denied
         try:
-            await self.mem0.delete(memory_id)
+            await self.mem0.delete(memory_id, actor_id=user_id)
             text = f"🧠 Mem0 记忆已删除：✅\n• ID：`{memory_id}`"
             return QuickCommandResult(
                 text,
@@ -867,9 +873,3 @@ def _memory_result_count(payload: Any) -> int:
                 return len(value)
         return 1 if payload else 0
     return 0
-
-
-def _mem0_scope(mem0: Mem0Client) -> str:
-    user_id = str(getattr(mem0, "user_id", "") or "unknown")
-    agent_id = str(getattr(mem0, "agent_id", "") or "unknown")
-    return f"user={user_id} · agent={agent_id}"

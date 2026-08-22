@@ -47,8 +47,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   `/vps status|resources|services|logs`；
 - 适配器结果已统一为 `ok/partial/error` 三态；AWS、GCP、Azure 的资源路由已完成线上验证，
   日志权限不足时仍返回可读内容并标注为 `partial`；
-- 已接入 Mem0：`/mem0 status`、`/mem0 smoke`、`/mem0 search 关键词`；
-- 已增加固定服务目录：`/vps service list`、`/vps service mem0 status|smoke|search`，以及
+- 已接入 Mem0：`/mem0 status`、`/mem0 list`、`/mem0 smoke`、`/mem0 search 关键词`；
+- 已增加固定服务目录：`/vps service list`、`/vps service mem0 status|list|smoke|search`，以及
   A2A、new-api、Luck Agent 的宿主机服务清单入口；服务名和服务 allowlist 均固定校验；
 - 已增加 A2A Agent Card 和 new-api `/models` 独立只读健康检查；A2A 探针通过目标 SSH 执行固定
   命令，不开放任意远程 Shell；GCP/Azure A2A 与 AWS new-api 已完成线上验证；
@@ -156,7 +156,7 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 3. 避免每条消息都触发 LLM 或 Mem0 写入；
 4. 记忆服务不可用时，不阻塞普通运维任务。
 
-当前进展：已完成显式命令边界和第一版浏览体验：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读，并展示当前 Mem0 user/agent scope。保存、删除和浏览失败会降级为提示，不阻塞其他任务。自动记忆、临时上下文以及按 Lark 用户/项目隔离 scope 仍待继续设计。
+当前进展：已完成显式命令边界、第一版浏览体验和可配置 scope：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读。`MEM0_SCOPE_MODE=configured` 保持现有固定 user，`lark_user` 可按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 被观察到。保存、删除和浏览失败会降级为提示，不阻塞其他任务。自动记忆提议、临时上下文以及项目级 scope 仍待继续设计。
 
 ### 阶段五：Lark 平台能力
 

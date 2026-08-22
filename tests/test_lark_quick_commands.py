@@ -100,11 +100,16 @@ class FakeMem0:
     def __init__(self) -> None:
         self.add_calls: list[tuple[str, dict]] = []
         self.delete_calls: list[str] = []
+        self.search_calls: list[str] = []
+        self.list_calls: list[str] = []
+
+    def scope_label(self, actor_id: str = "") -> str:
+        return f"mode=configured · user=personal · agent=luck-agent"
 
     async def health(self) -> Mem0Health:
         return Mem0Health(ok=True, latency_ms=4, detail="test")
 
-    async def smoke(self) -> Mem0SmokeResult:
+    async def smoke(self, *, actor_id: str = "") -> Mem0SmokeResult:
         return Mem0SmokeResult(
             ok=True,
             marker="test-marker",
@@ -114,17 +119,19 @@ class FakeMem0:
             cleanup_confirmed=True,
         )
 
-    async def search(self, query: str) -> list[dict]:
+    async def search(self, query: str, *, actor_id: str = "") -> list[dict]:
+        self.search_calls.append(actor_id)
         return [{"id": "memory-1", "memory": f"remember {query}", "score": 0.9}]
 
-    async def list_memories(self, *, limit: int = 10) -> list[dict]:
+    async def list_memories(self, *, limit: int = 10, actor_id: str = "") -> list[dict]:
+        self.list_calls.append(actor_id)
         return [{"id": "memory-1", "memory": "user prefers concise answers"}][:limit]
 
     async def add(self, text: str, **kwargs) -> dict:
         self.add_calls.append((text, kwargs))
         return {"memories": [{"id": "memory-new", "memory": text}]}
 
-    async def delete(self, memory_id: str) -> None:
+    async def delete(self, memory_id: str, *, actor_id: str = "") -> None:
         self.delete_calls.append(memory_id)
 
 
@@ -132,10 +139,10 @@ class FailingMem0(FakeMem0):
     async def add(self, text: str, **kwargs) -> dict:
         raise RuntimeError("Mem0 unavailable")
 
-    async def delete(self, memory_id: str) -> None:
+    async def delete(self, memory_id: str, *, actor_id: str = "") -> None:
         raise RuntimeError("Mem0 unavailable")
 
-    async def list_memories(self, *, limit: int = 10) -> list[dict]:
+    async def list_memories(self, *, limit: int = 10, actor_id: str = "") -> list[dict]:
         raise RuntimeError("Mem0 unavailable")
 
 
@@ -157,11 +164,12 @@ class FakeSender:
 
 
 async def test_quick_commands_return_without_llm() -> None:
+    mem0 = FakeMem0()
     router = QuickCommandRouter(
         health=FakeHealth(),
         vps=FakeVps(),
         sysops=FakeSysops(),
-        mem0=FakeMem0(),
+        mem0=mem0,
     )
 
     assert await router.handle("/ping") == "🏓 pong"
@@ -171,7 +179,9 @@ async def test_quick_commands_return_without_llm() -> None:
     assert "延迟：4 ms" in _text(await router.handle("/mem0 status"))
     assert "临时标识" in _text(await router.handle("/mem0 smoke"))
     assert "remember database" in _text(await router.handle("/mem0 search database"))
-    assert "user prefers concise answers" in _text(await router.handle("/mem0 list"))
+    assert "user prefers concise answers" in _text(await router.handle("/mem0 list", user_id="alice"))
+    assert mem0.search_calls == ["default"]
+    assert mem0.list_calls == ["alice"]
     assert await router.handle("check the server") is None
 
 
@@ -196,6 +206,7 @@ async def test_mem0_write_commands_require_approval_and_do_not_auto_write() -> N
     assert "已保存" in _text(saved)
     assert mem0.add_calls[0][0] == "user prefers concise answers"
     assert mem0.add_calls[0][1]["metadata"]["user_confirmed"] is True
+    assert mem0.add_calls[0][1]["actor_id"] == "alice"
 
     await router.handle("/mem0 search concise", user_id="alice")
     assert len(mem0.add_calls) == 1

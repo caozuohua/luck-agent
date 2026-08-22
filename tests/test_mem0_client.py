@@ -94,6 +94,56 @@ async def test_mem0_list_uses_configured_scope_and_limit(monkeypatch: Any) -> No
     assert request["headers"] == {"X-API-Key": "secret"}
 
 
+async def test_mem0_lark_user_scope_overrides_configured_user(monkeypatch: Any) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        FakeResponse({"results": [{"id": "m1", "memory": "private"}]}),
+    ]
+    monkeypatch.setattr("tools.mem0_client.httpx.AsyncClient", FakeAsyncClient)
+    client = Mem0Client(
+        base_url="http://mem0:8888",
+        api_key="secret",
+        user_id="personal",
+        agent_id="a1",
+        scope_mode="lark_user",
+    )
+
+    results = await client.search("private", actor_id="ou_alice")
+
+    assert results[0]["id"] == "m1"
+    assert FakeAsyncClient.requests[0]["json"]["filters"]["user_id"] == "ou_alice"
+    assert client.scope_label("ou_alice") == "mode=lark_user · user=ou_alice · agent=a1"
+    assert client.effective_user_id("default") == "personal"
+
+
+async def test_mem0_lark_user_delete_requires_visible_memory(monkeypatch: Any) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        FakeResponse({"results": [{"id": "m1", "memory": "private"}]}),
+        FakeResponse({}),
+    ]
+    monkeypatch.setattr("tools.mem0_client.httpx.AsyncClient", FakeAsyncClient)
+    client = Mem0Client(
+        base_url="http://mem0:8888",
+        api_key="secret",
+        user_id="personal",
+        agent_id="a1",
+        scope_mode="lark_user",
+    )
+
+    await client.search("private", actor_id="ou_alice")
+    await client.delete("m1", actor_id="ou_alice")
+
+    assert FakeAsyncClient.requests[-1]["url"].endswith("/memories/m1")
+
+    try:
+        await client.delete("m2", actor_id="ou_alice")
+    except Exception as exc:
+        assert "当前用户 scope" in str(exc)
+    else:
+        raise AssertionError("cross-scope delete should be rejected")
+
+
 async def test_mem0_smoke_deletes_only_added_ids(monkeypatch: Any) -> None:
     FakeAsyncClient.requests = []
     FakeAsyncClient.responses = [

@@ -14,7 +14,11 @@ from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
 from core.targets import VpsTargetRegistry
-from interface.lark_cards import build_log_page_card, build_target_selection_card
+from interface.lark_cards import (
+    build_log_page_card,
+    build_output_page_card,
+    build_target_selection_card,
+)
 
 log = get_logger("interface.lark_commands")
 
@@ -262,9 +266,7 @@ class QuickCommandRouter:
                 if "user_id" not in str(exc):
                     raise
                 result = await self.sysops.run(operation)
-            if operation == "logs":
-                return self._start_log_pagination(result, user_id)
-            return format_vps_sysops_result(result)
+            return self._start_output_pagination(result, user_id)
         except Exception as exc:
             log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
             return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"
@@ -277,6 +279,16 @@ class QuickCommandRouter:
         user_id: str = "default",
     ) -> QuickCommandResult:
         """Render one cached log page for the owning Lark user."""
+        return self.render_output_page(token, page, user_id=user_id)
+
+    def render_output_page(
+        self,
+        token: str,
+        page: int,
+        *,
+        user_id: str = "default",
+    ) -> QuickCommandResult:
+        """Render one cached command-output page for its owning Lark user."""
         self._purge_log_page_sessions()
         key = (user_id, token.strip())
         session = self._log_page_sessions.get(key)
@@ -286,23 +298,34 @@ class QuickCommandRouter:
         if not pages:
             return QuickCommandResult(format_vps_sysops_result(session.result))
         if page < 1 or page > len(pages):
-            return QuickCommandResult("⚠️ 日志页码无效，请重新发送 `/vps logs`")
+            return QuickCommandResult("⚠️ 输出页码无效，请重新发送原命令")
         result = replace(session.result, output=pages[page - 1])
+        label = "日志" if result.operation == "logs" else "输出"
         text = format_vps_sysops_result(result).replace(
-            f"📄 日志第 1/{len(pages)} 页",
-            f"📄 日志第 {page}/{len(pages)} 页",
+            f"📄 {label}第 1/{len(pages)} 页",
+            f"📄 {label}第 {page}/{len(pages)} 页",
         )
-        return QuickCommandResult(
-            text,
-            build_log_page_card(
+        if result.operation == "logs":
+            card = build_log_page_card(
                 text,
                 page=page,
                 total_pages=len(pages),
                 token=token,
-            ),
+            )
+        else:
+            card = build_output_page_card(
+                text,
+                page=page,
+                total_pages=len(pages),
+                token=token,
+                heading="服务输出",
+            )
+        return QuickCommandResult(
+            text,
+            card,
         )
 
-    def _start_log_pagination(self, result: Any, user_id: str) -> str | QuickCommandResult:
+    def _start_output_pagination(self, result: Any, user_id: str) -> str | QuickCommandResult:
         pages = tuple(getattr(result, "output_pages", ()) or ())
         if len(pages) <= 1:
             return format_vps_sysops_result(result)
@@ -352,7 +375,7 @@ class QuickCommandRouter:
         user_id: str,
         *,
         approval_token: str | None = None,
-    ) -> str:
+    ) -> str | QuickCommandResult:
         parts = request.split(maxsplit=2)
         service_id = parts[0].lower() if parts else ""
         if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
@@ -411,7 +434,7 @@ class QuickCommandRouter:
         if action not in {"status", "health", "list"}:
             return f"用法：`/vps service {spec.service_id} status`"
         result = await self._sysops("services", user_id)
-        return f"🧩 {spec.label} · 宿主机服务清单\n{result}"
+        return _prefix_result(f"🧩 {spec.label} · 宿主机服务清单", result)
 
     async def _new_api_status(self) -> str:
         if self.new_api is None:
@@ -425,11 +448,11 @@ class QuickCommandRouter:
             log.error("quick_new_api_status_failed", error=str(exc))
             return "🤖 new-api API：⚠️ 暂时无法读取状态"
 
-    async def _service_probe(self, service: str, user_id: str) -> str:
+    async def _service_probe(self, service: str, user_id: str) -> str | QuickCommandResult:
         probe = getattr(self.sysops, "probe_service", None)
         if not callable(probe):
             result = await self._sysops("services", user_id)
-            return f"🧩 {service} · 宿主机服务清单\n{result}"
+            return _prefix_result(f"🧩 {service} · 宿主机服务清单", result)
         try:
             try:
                 result = await probe(service, user_id=user_id)
@@ -502,7 +525,7 @@ class QuickCommandRouter:
             decision="executed",
             details=f"status={'ok' if getattr(result, 'ok', False) else 'error'}",
         )
-        return format_vps_sysops_result(result)
+        return self._start_output_pagination(result, user_id)
 
     async def _audit_service_operation(
         self,
@@ -598,6 +621,12 @@ def _format_service_probe(service: str, result: Any) -> str:
     if not getattr(result, "ok", False) and error and output:
         body = f"{error}\n{output}"
     return f"🧩 {service} API：{mark}{target_line}\n{body}"
+
+
+def _prefix_result(prefix: str, result: str | QuickCommandResult) -> str | QuickCommandResult:
+    if isinstance(result, QuickCommandResult):
+        return QuickCommandResult(f"{prefix}\n{result.text}", result.card)
+    return f"{prefix}\n{result}"
 
 
 def _memory_text(item: dict[str, Any]) -> str:

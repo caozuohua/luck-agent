@@ -41,8 +41,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；`/targets` 会返回
   VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他变更运维按钮仍未开放。
-  `/vps logs` 超过单页长度时返回带上一页/下一页 callback 的分页卡片，分页令牌按用户隔离并在
-  10 分钟后过期。
+  `/vps logs` 及其他 vps_sysops 长输出超过单页长度时返回带上一页/下一页 callback 的分页卡片，
+  分页令牌按用户隔离并在 10 分钟后过期。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
@@ -118,7 +118,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 命令结果还未全部统一为适合手机查看的结构化卡片；日志分页已完成，其他长结果仍采用首尾保留。
+1. 命令结果还未全部统一为适合手机查看的结构化卡片；vps_sysops 长结果已完成分页，其他命令的卡片化仍需继续收敛。
 2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标和服务 allowlist、
    AWS/GCP/Azure 只读 SSH 执行路由已可用；目前只有 luck-agent 重启具备受限变更路径，
    其他服务的变更操作仍未开放。

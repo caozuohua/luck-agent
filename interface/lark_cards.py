@@ -73,15 +73,50 @@ def build_log_page_card(
     token: str,
 ) -> dict[str, Any]:
     """Build a Card 2.0 log page with short-lived callback navigation."""
+    return build_output_page_card(
+        text,
+        page=page,
+        total_pages=total_pages,
+        token=token,
+        action="vps_logs_page",
+        heading="服务日志",
+    )
+
+
+def build_output_page_card(
+    text: str,
+    *,
+    page: int,
+    total_pages: int,
+    token: str,
+    action: str = "vps_output_page",
+    heading: str = "服务输出",
+) -> dict[str, Any]:
+    """Build a Card 2.0 page for any bounded command output."""
     card = build_text_card(
         text,
-        title=f"Luck Agent · 服务日志 {page}/{total_pages}",
+        title=f"Luck Agent · {heading} {page}/{total_pages}",
     )
     buttons: list[dict[str, Any]] = []
     if page > 1:
-        buttons.append(_log_page_button("上一页", page=page - 1, token=token))
+        buttons.append(
+            _output_page_button(
+                "上一页",
+                page=page - 1,
+                token=token,
+                action=action,
+            )
+        )
     if page < total_pages:
-        buttons.append(_log_page_button("下一页", page=page + 1, token=token, primary=True))
+        buttons.append(
+            _output_page_button(
+                "下一页",
+                page=page + 1,
+                token=token,
+                action=action,
+                primary=True,
+            )
+        )
     if buttons:
         card["body"]["elements"].append(
             {
@@ -101,11 +136,12 @@ def build_log_page_card(
     return card
 
 
-def _log_page_button(
+def _output_page_button(
     label: str,
     *,
     page: int,
     token: str,
+    action: str,
     primary: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -116,7 +152,7 @@ def _log_page_button(
             {
                 "type": "callback",
                 "value": {
-                    "action": "vps_logs_page",
+                    "action": action,
                     "page": str(page),
                     "token": token,
                 },

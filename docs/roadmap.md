@@ -64,7 +64,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
 - 已开放受控的 `/vps service luck-agent restart`：一次性确认码、目标/服务/操作 allowlist、
   SQLite 审计和固定 sudo wrapper 均已接入；确认结果先发送，再由 systemd 延迟重启。
-- `/vps logs` 已支持短期、按用户隔离的 Card 2.0 分页；日志最多缓存 12 页，过期或越权令牌不会返回内容。
+- `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，
+  过期或越权令牌不会返回内容，原有日志回调保持兼容。
 - 正式 Lark 自然语言入口已接入 Goal Runtime + LangGraph：SQLite Goal、内存有界队列、启动恢复、
   `EXECUTING → AWAITING_RESULT → EVALUATING → DONE/FAILED` 状态闭环和终态回推均已有自动化测试；
   快捷命令继续保持独立的无 LLM 控制面。
@@ -111,7 +112,8 @@ AWS 重启恢复、三目标只读路由和运行时配置一致性已完成。
 仍需完成：
 
 1. 目标主机、服务、操作和用户级 allowlist 已建立；AWS 生产待取得可靠操作者 `open_id` 后再启用用户白名单；
-2. 将其余命令结果继续统一为适合手机查看的结构化卡片；日志分页已完成，仍需评估其他长结果的展示策略；
+2. 将其余命令结果继续统一为适合手机查看的结构化卡片；vps_sysops 长结果分页已完成，仍需继续收敛
+   Mem0、服务目录和任务终态等结果的卡片结构；
 3. 已完成 Luck Agent 自身的受控重启路由；继续扩展其他服务前，必须为每个操作单独定义固定入口、
    回滚策略和验收测试，不能复用任意 Shell。
 

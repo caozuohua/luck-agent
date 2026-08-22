@@ -240,8 +240,15 @@ class LarkWebSocketInterface:
         action_tag = str(action.get("tag") or "")
         if action_tag == "button":
             raw_value = action.get("value")
-            if isinstance(raw_value, dict) and raw_value.get("action") == "vps_logs_page":
-                renderer = getattr(self.quick_commands, "render_log_page", None)
+            page_actions = {"vps_logs_page", "vps_output_page"}
+            if isinstance(raw_value, dict) and raw_value.get("action") in page_actions:
+                action_name = str(raw_value.get("action"))
+                renderer_name = (
+                    "render_log_page" if action_name == "vps_logs_page" else "render_output_page"
+                )
+                renderer = getattr(self.quick_commands, renderer_name, None)
+                if not callable(renderer) and action_name == "vps_output_page":
+                    renderer = getattr(self.quick_commands, "render_log_page", None)
                 if callable(renderer):
                     try:
                         page = int(str(raw_value.get("page") or ""))

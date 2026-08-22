@@ -53,6 +53,17 @@ class FakePagedSysops(FakeSysops):
         )
 
 
+class FakePagedResourcesSysops(FakeSysops):
+    async def run(self, operation: str) -> VpsSysopsResult:
+        return VpsSysopsResult(
+            operation=operation,
+            ok=True,
+            output="resource page 1",
+            truncated=True,
+            output_pages=("resource page 1", "resource page 2"),
+        )
+
+
 class FakeRestartSysops(FakeSysops):
     def __init__(self) -> None:
         self.restart_calls: list[tuple[str, str]] = []
@@ -156,6 +167,27 @@ async def test_vps_logs_returns_paged_card_and_binds_session_to_user() -> None:
 
     denied = router.render_log_page(callback["token"], 2, user_id="bob")
     assert "已过期" in denied.text
+
+
+async def test_non_log_sysops_output_uses_generic_pagination() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakePagedResourcesSysops(),
+    )
+
+    first = await router.handle("/vps resources", user_id="alice")
+
+    assert isinstance(first, QuickCommandResult)
+    assert "输出第 1/2 页" in first.text
+    assert first.card is not None
+    button = first.card["body"]["elements"][-1]["columns"][0]["elements"][0]
+    callback = button["behaviors"][0]["value"]
+    assert callback["action"] == "vps_output_page"
+
+    second = router.render_output_page(callback["token"], 2, user_id="alice")
+    assert "resource page 2" in second.text
+    assert "输出第 2/2 页" in second.text
 
 
 async def test_service_catalog_routes_mem0_and_host_services() -> None:

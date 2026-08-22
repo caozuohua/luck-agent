@@ -73,6 +73,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已开放 Azure-only `/vps service hermes-gateway restart`：使用固定用户级
   `hermes-gateway.service` 入口，真实重启后 `systemctl --user is-active` 返回 `active`；
   GCP/AWS 目标在执行前拒绝。
+- 变更契约现在强制包含固定入口、目标约束、前置条件、幂等性、回滚策略和验收标准；缺少任一
+  核心字段的 backup/upgrade/rollback 操作不能登记。
 - `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，
   过期或越权令牌不会返回内容，原有日志回调保持兼容。
 - `/vps service list`、Mem0 状态/smoke/search、new-api 和 A2A 探针已统一返回分段 Markdown

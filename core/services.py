@@ -22,8 +22,34 @@ class ServiceOperationSpec:
     entrypoint: str
     rollback_strategy: str
     verification: str
+    preconditions: tuple[str, ...] = ()
+    idempotency: str = ""
     provider_entrypoints: tuple[tuple[str, str], ...] = ()
     target_providers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        required = {
+            "service_id": self.service_id,
+            "operation": self.operation,
+            "entrypoint": self.entrypoint,
+            "rollback_strategy": self.rollback_strategy,
+            "verification": self.verification,
+            "idempotency": self.idempotency,
+        }
+        missing = [name for name, value in required.items() if not str(value).strip()]
+        if not self.preconditions:
+            missing.append("preconditions")
+        if missing:
+            raise ValueError(
+                f"incomplete service operation contract: {', '.join(missing)}"
+            )
+        provider_ids = [provider.strip().lower() for provider, _ in self.provider_entrypoints]
+        if len(provider_ids) != len(set(provider_ids)):
+            raise ValueError("duplicate provider entrypoint in service operation contract")
+        if any(not provider or not entrypoint.strip() for provider, entrypoint in self.provider_entrypoints):
+            raise ValueError("invalid provider entrypoint in service operation contract")
+        if any(not provider.strip() for provider in self.target_providers):
+            raise ValueError("invalid target provider in service operation contract")
 
     def entrypoint_for(self, provider: str = "") -> str:
         normalized = str(provider or "").strip().lower()
@@ -77,6 +103,8 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
             "版本回滚必须走独立、显式批准的 Git rollback 操作"
         ),
         verification="systemctl is-active luck-agent.service + /health",
+        preconditions=("operator allowlist and one-time approval passed", "fixed restart wrapper is installed"),
+        idempotency="safe to retry; restart does not modify persistent configuration",
     ),
     ServiceOperationSpec(
         service_id="new-api",
@@ -87,6 +115,8 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
             "版本回滚必须走独立、显式批准的镜像或配置回滚操作"
         ),
         verification="systemctl is-active new-api.service + /v1/models",
+        preconditions=("selected target is the configured new-api target", "operator allowlist and one-time approval passed"),
+        idempotency="safe to retry; restart does not modify new-api configuration or data",
     ),
     ServiceOperationSpec(
         service_id="a2a",
@@ -108,6 +138,8 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
             ),
         ),
         target_providers=("gcp", "azure"),
+        preconditions=("selected target provider is GCP or Azure", "operator allowlist and one-time approval passed"),
+        idempotency="safe to retry; restart does not modify A2A configuration or data",
     ),
     ServiceOperationSpec(
         service_id="hermes-gateway",
@@ -122,6 +154,8 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
         ),
         verification="systemctl --user is-active hermes-gateway.service",
         target_providers=("azure",),
+        preconditions=("selected target is Azure", "operator allowlist and one-time approval passed"),
+        idempotency="safe to retry; restart does not modify Hermes configuration or data",
     ),
 )
 

@@ -68,8 +68,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   `/vps service new-api restart`、`/vps service a2a restart` 和 Azure-only
   `/vps service hermes-gateway restart` 是当前开放的变更操作，必须通过一次性确认、目标/服务/操作
   allowlist 和固定入口；不接受任意服务名或 Shell。
-- `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api`、`a2a` restart 登记固定入口、回滚策略和验收定义；
-  仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
+- `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api`、`a2a` restart 登记固定入口、前置条件、
+  幂等性、回滚策略和验收定义；仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；重启确认卡已支持一键确认，真实
   Lark 已验证按钮回调、GCP `new-api` 重启和结果回卡；备用验证码已改为独立代码块展示，
   支持只粘贴验证码完成确认，并已通过真实 Lark 验收。

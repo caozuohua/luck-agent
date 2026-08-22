@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from core.services import SERVICE_OPERATIONS, get_service_operation
 
 
@@ -11,6 +13,8 @@ def test_registered_mutations_have_fixed_entrypoint_rollback_and_verification() 
         assert spec.entrypoint.startswith(("sudo -n ", "systemctl --user "))
         assert spec.rollback_strategy
         assert spec.verification
+        assert spec.preconditions
+        assert spec.idempotency
 
 
 def test_unregistered_service_mutation_is_not_available() -> None:
@@ -48,3 +52,16 @@ def test_hermes_gateway_is_an_azure_only_user_service() -> None:
     assert not operation.supports_provider("gcp")
     assert operation.entrypoint.startswith("systemctl --user restart")
     assert "is-active" in operation.verification
+
+
+def test_incomplete_operation_contract_cannot_be_registered() -> None:
+    from core.services import ServiceOperationSpec
+
+    with pytest.raises(ValueError, match="preconditions"):
+        ServiceOperationSpec(
+            service_id="example",
+            operation="upgrade",
+            entrypoint="sudo -n /usr/local/sbin/example-upgrade",
+            rollback_strategy="restore the previous artifact",
+            verification="service is healthy",
+        )

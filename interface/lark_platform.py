@@ -5,7 +5,12 @@ import json
 from dataclasses import dataclass
 
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import GetChatMembersRequest, GetChatRequest, ListMessageRequest
+from lark_oapi.api.im.v1 import (
+    GetChatAnnouncementRequest,
+    GetChatMembersRequest,
+    GetChatRequest,
+    ListMessageRequest,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,15 @@ class LarkChatMemberInfo:
 
     name: str = ""
     member_id_type: str = ""
+
+
+@dataclass(frozen=True)
+class LarkChatAnnouncement:
+    """Privacy-safe current announcement content without owner IDs."""
+
+    content: str = ""
+    revision: str = ""
+    update_time: str = ""
 
 
 class LarkPlatformClient:
@@ -125,6 +139,25 @@ class LarkPlatformClient:
                 member_id_type=str(getattr(item, "member_id_type", "") or ""),
             )
             for item in (response.data.items or ())
+        )
+
+    async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None:
+        normalized = str(chat_id or "").strip()
+        if not normalized:
+            raise ValueError("chat_id is required")
+        request = GetChatAnnouncementRequest.builder().chat_id(normalized).build()
+        response = await asyncio.to_thread(self.client.im.v1.chat_announcement.get, request)
+        if response.code == 232003 and response.data is None:
+            return None
+        if response.code != 0 or response.data is None:
+            raise RuntimeError(
+                f"Lark chat announcement query failed: {response.code} {response.msg}"
+            )
+        data = response.data
+        return LarkChatAnnouncement(
+            content=str(getattr(data, "content", "") or "")[:2000],
+            revision=str(getattr(data, "revision", "") or ""),
+            update_time=str(getattr(data, "update_time", "") or ""),
         )
 
 

@@ -6,7 +6,12 @@ from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
-from interface.lark_platform import LarkChatInfo, LarkChatMemberInfo, LarkMessageInfo
+from interface.lark_platform import (
+    LarkChatAnnouncement,
+    LarkChatInfo,
+    LarkChatMemberInfo,
+    LarkMessageInfo,
+)
 from interface.lark_ws import LarkWebSocketInterface
 from memory.db import Database
 from memory.proposal import MemoryProposalDetector
@@ -154,6 +159,9 @@ class FakeLarkPlatform:
         limit: int = 10,
     ) -> tuple[LarkChatMemberInfo, ...]:
         return (LarkChatMemberInfo(name="曹佐华", member_id_type="open_id"),)[:limit]
+
+    async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None:
+        return LarkChatAnnouncement(content="测试公告", revision="1")
 
 
 class FakeMem0:
@@ -484,6 +492,22 @@ async def test_lark_chat_members_hides_member_ids() -> None:
 
     assert "曹佐华" in _text(result)
     assert "open_id" not in _text(result)
+
+
+async def test_lark_chat_announcement_is_read_only() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+    )
+
+    result = await router.handle(
+        "/lark chat announcement",
+        user_id="alice",
+        chat_id="oc_test",
+    )
+
+    assert "测试公告" in _text(result)
 
 
 async def test_a2a_restart_rejects_aws_before_approval() -> None:

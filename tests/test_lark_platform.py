@@ -25,7 +25,12 @@ def _client(response):
     endpoint = FakeChatEndpoint(response)
     client = SimpleNamespace(
         im=SimpleNamespace(
-            v1=SimpleNamespace(chat=endpoint, message=endpoint, chat_members=endpoint),
+            v1=SimpleNamespace(
+                chat=endpoint,
+                message=endpoint,
+                chat_members=endpoint,
+                chat_announcement=endpoint,
+            ),
         ),
     )
     return client, endpoint
@@ -95,3 +100,20 @@ async def test_list_chat_members_maps_names_without_returning_ids() -> None:
 
     assert result[0].name == "曹佐华"
     assert not hasattr(result[0], "member_id")
+
+
+async def test_get_chat_announcement_maps_content_without_owner_id() -> None:
+    data = SimpleNamespace(content="测试公告", revision="3", update_time="2026-08-22")
+    client, _ = _client(SimpleNamespace(code=0, msg="success", data=data))
+
+    result = await LarkPlatformClient(client).get_chat_announcement("oc_test")
+
+    assert result is not None
+    assert result.content == "测试公告"
+    assert not hasattr(result, "owner_id")
+
+
+async def test_get_chat_announcement_returns_none_when_unset() -> None:
+    client, _ = _client(SimpleNamespace(code=232003, msg="not found", data=None))
+
+    assert await LarkPlatformClient(client).get_chat_announcement("oc_test") is None

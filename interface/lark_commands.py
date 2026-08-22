@@ -27,7 +27,12 @@ from interface.lark_cards import (
     build_service_catalog_card,
     build_target_selection_card,
 )
-from interface.lark_platform import LarkChatInfo, LarkChatMemberInfo, LarkMessageInfo
+from interface.lark_platform import (
+    LarkChatAnnouncement,
+    LarkChatInfo,
+    LarkChatMemberInfo,
+    LarkMessageInfo,
+)
 from memory.scope_store import MemoryScopeStore
 from memory.target_store import TargetSelectionStore
 
@@ -62,6 +67,8 @@ class LarkPlatformProvider(Protocol):
         *,
         limit: int = 10,
     ) -> tuple[LarkChatMemberInfo, ...]: ...
+
+    async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None: ...
 
 
 @dataclass(frozen=True)
@@ -146,6 +153,7 @@ class QuickCommandRouter:
                 "• `/lark chat` 查询当前会话基础信息（只读）\n"
                 "• `/lark messages [数量]` 查看当前会话最近消息（只读，最多 10 条）\n"
                 "• `/lark chat members [数量]` 查看当前会话成员摘要（只读，最多 10 名）\n"
+                "• `/lark chat announcement` 查看当前会话公告（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -193,6 +201,13 @@ class QuickCommandRouter:
                 if not 1 <= limit <= 10:
                     return "用法：`/lark chat members [数量 1-10]`"
                 return await self._lark_chat_members(chat_id, limit=limit)
+        if command in {
+            "/lark chat announcement",
+            "lark chat announcement",
+            "/chat announcement",
+            "chat announcement",
+        }:
+            return await self._lark_chat_announcement(chat_id)
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
@@ -699,6 +714,27 @@ class QuickCommandRouter:
         for index, member in enumerate(members, start=1):
             lines.append(f"• {index}. {member.name or '未命名成员'}")
         text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    async def _lark_chat_announcement(self, chat_id: str) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "📌 Lark 会话公告：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "📌 Lark 会话公告：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        try:
+            announcement = await self.lark_platform.get_chat_announcement(chat_id)
+        except Exception as exc:
+            log.error("quick_lark_chat_announcement_failed", error=str(exc))
+            text = "📌 Lark 会话公告：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if announcement is None or not announcement.content:
+            text = "📌 Lark 会话公告：当前未设置"
+        else:
+            text = "📌 Lark 会话公告：✅\n" + announcement.content
+            if announcement.update_time:
+                text += f"\n• 更新时间：`{announcement.update_time}`"
         return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
 
     async def _new_api_status(self) -> str | QuickCommandResult:

@@ -52,9 +52,10 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
 - 阶段五只读平台能力已接入：`/lark chat` 查询当前消息所在会话的基础元数据，`/lark messages [数量]`
-  查询当前会话最近消息摘要，`/lark chat members [数量]` 查询当前会话成员名称摘要；chat_id 均来自事件上下文，
-  不接受用户任意指定，消息/成员最多返回 10 条且不暴露原始 ID。Bot 测试会话的 Lark REST 只读调用已验证成功，
-  失败时降级为提示。Wiki 搜索探测确认需要 `user_access_token`，当前未扩大 Bot 权限，暂不接入。
+  查询当前会话最近消息摘要，`/lark chat members [数量]` 查询当前会话成员名称摘要，`/lark chat announcement`
+  查询当前会话公告；chat_id 均来自事件上下文，不接受用户任意指定，消息/成员最多返回 10 条且不暴露原始 ID。
+  Bot 测试会话的 Lark REST 只读调用已验证成功，公告未设置时明确返回空状态，失败时降级为提示。Wiki 搜索探测
+  确认需要 `user_access_token`，当前未扩大 Bot 权限，暂不接入。
 - 生产 `EXECUTION_MODE` 使用 `graph`；本地 Web 直连 Agent、`legacy_inline` skill、旧
   `GoalManager` 和早期 `ExecutionEngine` 已明确登记为兼容路径，不是生产主链，边界见
   [`docs/legacy-runtime.md`](legacy-runtime.md)。

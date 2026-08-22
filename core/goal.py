@@ -1,12 +1,12 @@
 """
-core/goal.py — Luck-Agent 2.0 GoalManager.
+core/goal.py — compatibility GoalManager from the pre-Graph Runtime implementation.
 
 This module turns user requests into persistent long-running goals and provides
 safe lifecycle primitives: create, start, pause, resume, cancel, block, fail,
 complete, and recover interrupted goals.
 
-It intentionally does not execute tools. ExecutionEngine and domain controllers
-will consume the GoalManager API in later PRs.
+It is retained for migration and regression tests. Production uses
+``memory.GoalStore`` and ``runtime.GraphRuntime`` instead.
 """
 from __future__ import annotations
 

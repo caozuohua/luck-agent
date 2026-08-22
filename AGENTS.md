@@ -31,7 +31,7 @@ A pytest suite exists (`asyncio_mode=auto` in `pytest.ini`):
 - `tests/unit` + `tests/integration` — offline, no cloud.
 - `tests/` root — full V2 Goal Runtime suite (also offline via FakeLLMClient).
 - Name new tests `test_*.py` under `tests/unit` or `tests/integration`.
-- Real Lark WebSocket acceptance tests and multi-cloud VPS integration tests are still pending.
+- Real Lark WebSocket and multi-cloud VPS acceptance are maintained as deployment checks; the local suite remains offline.
 
 ## Commit & Pull Request Guidelines
 Recent commits use short, imperative summaries with a narrow scope, often naming the changed file or feature. Keep commit messages equally specific, e.g. `handlers: fix /git push error handling`. Pull requests should explain what changed, why it changed, and how it was verified. Include screenshots or log excerpts when the change affects Lark cards, command output, or deployment behavior.

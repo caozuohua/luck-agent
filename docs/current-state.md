@@ -51,28 +51,30 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   和尾部内容，不走首尾截断。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
-- 生产 `EXECUTION_MODE` 使用默认 `graph`；本地 Web 直连 Agent、`legacy_inline` skill 和旧
-  `GoalManager` 仍保留在仓库中，属于待隔离的兼容路径，不是生产主链。
+- 生产 `EXECUTION_MODE` 使用 `graph`；本地 Web 直连 Agent、`legacy_inline` skill、旧
+  `GoalManager` 和早期 `ExecutionEngine` 已明确登记为兼容路径，不是生产主链，边界见
+  [`docs/legacy-runtime.md`](legacy-runtime.md)。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
   非日志输出按 `VPS_SYSOPS_MAX_OUTPUT_CHARS` 限制并保留首尾；日志按单页长度切分，最多缓存 12 页；结果提供
   `ok/partial/error` 三态和 `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - 已增加显式 Mem0 记忆边界：`/mem0 save|remember` 和 `/mem0 delete MEMORY_ID` 需要一次性确认；普通消息、搜索和 `/mem0 list` 不触发 Mem0 写入。`/mem0 list` 展示当前 scope；`MEM0_SCOPE_MODE=configured` 保持兼容的固定 user，`lark_user` 按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 的 list/search/save 结果中出现。Mem0 不可用时仅返回降级提示。
-- Mem0 项目 scope 现在通过 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换；允许的项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化，所有保存/搜索/删除/smoke 均显式带入项目 scope。生产当前尚未配置 `MEM0_PROJECTS`，默认只有 `luck-agent` 项目；双项目测试和真实 Lark 验收列为下一步。
+- Mem0 项目 scope 现在通过 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换；允许的项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化，所有保存/搜索/删除/smoke 均显式带入项目 scope。生产当前配置 `luck-agent,hermes-test`，双项目 smoke、真实 Lark scope 切换和重启恢复均已验收。
 - 自然语言中的明确“请记住/个人偏好”现在只生成记忆提议卡，不调用 LLM 或 Mem0；用户点击“发起保存确认”后只需确认一次，仍复用 `/mem0 save` 的执行层校验。
 - 临时上下文现在按 `user_id + chat_id` 隔离：Goal 历史和压缩摘要不会跨群聊/会话串用；临时上下文仍保存在 SQLite/运行时，只有显式确认的业务记忆才进入 Mem0。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|list|smoke|search` 调用 Mem0 API，
   `a2a` 通过目标 SSH 上的固定 Agent Card probe 检查，`new-api` 只读访问 `/v1/models`，
-  `luck-agent` 可查看宿主机服务状态；`/vps service luck-agent restart` 是当前唯一开放的
-  变更操作，必须通过一次性确认、目标/服务/操作 allowlist 和固定 sudo wrapper；不接受任意服务名或 Shell。
-- `core.services.SERVICE_OPERATIONS` 已为当前 restart 操作登记固定入口、回滚策略和验收定义；
+  `luck-agent` 可查看宿主机服务状态；`/vps service luck-agent restart` 和
+  `/vps service new-api restart` 是当前开放的变更操作，必须通过一次性确认、目标/服务/操作
+  allowlist 和固定入口；不接受任意服务名或 Shell。
+- `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api` restart 登记固定入口、回滚策略和验收定义；
   仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；
   `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，空配置保持兼容。
-- 可选 `OPS_ALLOWED_USER_IDS` 已接入 VPS 运维权限层；配置后按 Lark `open_id` 限制 VPS、服务和
-  变更操作，普通 LLM 工具不受影响。AWS 当前未填写该项，避免在缺少可靠操作者 `open_id` 时误锁定。
+- 可选 `OPS_ALLOWED_USER_IDS` 已接入 VPS 运维权限层；生产已配置并按已核验的 Lark `open_id`
+  限制 VPS、服务和变更操作，普通 LLM 工具不受影响。
 - AWS 生产当前已显式允许 `aws-codex-vps`、`gcp-free-vps-oregon`、`az-free-vm` 三个目标；
   新增目标前必须同步更新 allowlist。
 - VPS 已使用 `VpsTarget(provider/account/region/target_id/role)` 统一描述目标，并将
@@ -83,6 +85,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   均可返回可读报告，权限不足部分以 `partial` 状态呈现。
 - AWS 上的 `luck-agent` 受控重启已在线验证：确认结果先返回，3 秒后由 systemd 调度重启；
   wrapper 只允许 `luck-agent` 调用固定服务重启入口，服务重启后保持 `active`。
+- GCP `new-api` 受控重启已在线验证：adapter 仅执行固定 `new-api.service` 入口，重启返回
+  `active`，随后认证 `/v1/models` 检查成功。
 
 ## 目标对象模型
 
@@ -132,18 +136,15 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前待办与阻塞项
 
-1. 双项目 Mem0 测试环境、真实 Lark scope 切换和服务重启后的 scope 恢复尚未验收。
-2. AWS 生产 `OPS_ALLOWED_USER_IDS` 尚未启用，需先从真实消息或审计证据核验可靠操作者 `open_id`。
-3. 当前只有 `luck-agent` 具备受控变更路径；下一项服务变更必须先定义固定入口、回滚策略和验收测试。
-4. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述；仓库还保留
-   `legacy_inline`、本地 Web 直连和旧 GoalManager 兼容代码。
+1. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前只开放 `luck-agent` 和 `new-api`。
+2. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
 
 ## 实施顺序
 
 详细基线见 [`docs/roadmap.md`](roadmap.md)。当前顺序为：
 
-1. 修订路线和状态文档；
-2. 完成双项目 Mem0 scope 的测试环境及真实 Lark 验收；
-3. 核验并评估生产用户级运维白名单；
-4. 增加一个固定入口、可回滚的低风险服务变更；
-5. 清理或隔离 legacy runtime 与历史文档。
+1. 修订路线和状态文档（已完成）；
+2. 完成双项目 Mem0 scope 的测试环境及真实 Lark 验收（已完成）；
+3. 核验并启用生产用户级运维白名单（已完成）；
+4. 增加并验收一个固定入口、可回滚的低风险服务变更（已完成）；
+5. 清理或隔离 legacy runtime 与历史文档（已完成隔离，进入观察期）。

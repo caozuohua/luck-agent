@@ -31,7 +31,11 @@ class AgentState(Enum):
 
 
 class MinimalAgent:
-    """Minimal reliable agent loop with Phase 2 state persistence."""
+    """Minimal agent loop; production execution is the LangGraph path.
+
+    The ``legacy`` mode and ``_run_turn_legacy`` are retained only for local
+    compatibility and migration tests. New features must use the graph path.
+    """
 
     def __init__(
         self,

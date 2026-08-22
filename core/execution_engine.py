@@ -1,11 +1,14 @@
 """
-core/execution_engine.py — Luck-Agent 2.0 standardized execution engine.
+core/execution_engine.py — compatibility execution engine from the pre-Graph Runtime implementation.
 
 The engine is generic:
 - GoalManager owns lifecycle and persistence.
 - ExecutionEngine owns loop control and dispatch.
 - Supervisor owns verification, retry/block decisions, and lesson capture.
 - Goal Skills own actual business steps.
+
+Production dispatch uses ``runtime.GraphRuntime`` and ``core.graph``; this
+module remains for migration and regression compatibility only.
 """
 from __future__ import annotations
 

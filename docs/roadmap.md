@@ -40,8 +40,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 ## 3. 已完成基线
 
 - V2（`main.py`）作为唯一正式架构；
-- Lark 国际版 Bot `cli_aaba382935b8de18` 已完成 WebSocket 收发和卡片发送；
-- AWS VPS 已部署当前 Agent，本次受控重启功能提交为 `1d047d5`；
+- Lark 国际版 Bot `cli_aaba382935b8de18` 已完成真实 WebSocket 收发、卡片发送和重启恢复验收；
+- AWS VPS 已部署当前 Agent；受控服务重启能力已通过固定入口、权限、审计和真实执行验收；
 - 已有免 LLM 命令：`/ping`、`/health`、`/vps`；
 - 已接入独立 vps_sysops 的只读适配器：
   `/vps status|resources|services|logs`；
@@ -54,16 +54,19 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   命令，不开放任意远程 Shell；GCP/Azure A2A 与 AWS new-api 已完成线上验证；
 - Mem0 API Key、API health 和写入/搜索/清理 smoke 已验证；
 - 本地新增适配器测试已通过；
-- Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 49 passed；
+- Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 56 passed；
 - Lark 已增加用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前限制到已验证测试群；
 - 危险工具已接入执行层二次审批：未带有效确认码不会执行，确认码一次性消费；
 - 审批拒绝、放行和实际执行结果写入 SQLite `operation_audit`，Shell 审计不记录完整命令；
 - 可选 `OPS_ALLOWED_TARGETS/SERVICES/OPERATIONS` 已接入工具执行层，越界操作在审批前拒绝；
 - `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，避免只读路径绕过目标授权；
-- 可选 `OPS_ALLOWED_USER_IDS` 已接入运维权限层，按 Lark `open_id` 限制 VPS/服务操作，普通 LLM 工具不受影响；
+- 可选 `OPS_ALLOWED_USER_IDS` 已接入运维权限层，生产已启用并按可靠 Lark `open_id` 限制 VPS/服务操作，普通 LLM 工具不受影响；
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
 - 已开放受控的 `/vps service luck-agent restart`：一次性确认码、目标/服务/操作 allowlist、
   SQLite 审计和固定 sudo wrapper 均已接入；确认结果先发送，再由 systemd 延迟重启。
+- 已开放受控的 `/vps service new-api restart`：固定 `new-api.service` 入口、目标/服务/操作
+  allowlist、一次性确认和回滚说明均已登记；GCP 目标真实重启后 `active`，认证 `/v1/models`
+  检查成功。
 - `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，
   过期或越权令牌不会返回内容，原有日志回调保持兼容。
 - `/vps service list`、Mem0 状态/smoke/search、new-api 和 A2A 探针已统一返回分段 Markdown
@@ -116,9 +119,9 @@ AWS 重启恢复、三目标只读路由、真实 Lark 基础链路和运行时�
 
 剩余收尾：
 
-1. 目标、服务和操作 allowlist 已完成；AWS 生产尚未取得并核验可靠操作者 `open_id`，因此用户白名单仍未启用；
-2. 核心命令结果已统一为结构化卡片，后续只做细分模板优化；
-3. Luck Agent 自身受控重启已完成；其他服务变更仍需逐项定义固定入口、回滚策略和验收测试，不能复用任意 Shell。
+1. 核心命令结果已统一为结构化卡片，后续只做细分模板优化；
+2. Luck Agent 和 new-api 已有受控变更入口；其他服务变更仍需逐项定义固定入口、回滚策略和验收测试，不能复用任意 Shell；
+3. 生产运维用户白名单已启用，后续只需在真实消息链路中持续观察审计记录。
 
 已完成：
 
@@ -143,8 +146,8 @@ AWS 重启恢复、三目标只读路由、真实 Lark 基础链路和运行时�
 Provider → Account → Region → Target → Service → Operation
 ```
 
-AWS、GCP、Azure 的只读目标路由、固定服务目录和独立健康检查已完成；Luck Agent 自身的重启
-变更路径已完成。下一步扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
+AWS、GCP、Azure 的只读目标路由、固定服务目录和独立健康检查已完成；Luck Agent 与 GCP
+new-api 的重启变更路径已完成。下一步扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
 Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略
@@ -156,7 +159,7 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 
 当前进展：阶段四核心能力已完成。已完成显式命令边界、第一版浏览体验、可配置 scope 和自动记忆提议：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读。明确的“请记住/个人偏好”只展示提议卡，不自动调用 LLM/Mem0；提议卡可一键发起确认，用户只需再确认一次。`MEM0_SCOPE_MODE=configured` 保持现有固定 user，`lark_user` 可按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 被观察到。保存、删除和浏览失败会降级为提示，不阻塞其他任务。
 
-临时上下文边界已补强：`context_summaries` 与 Goal 历史均按 `user_id + chat_id` 隔离，不跨群聊复用。Mem0 项目 scope 已支持 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换，允许项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化并显示在操作结果中；临时上下文仍不会写入 Mem0。双项目测试环境和真实 Lark scope 切换/重启恢复验收仍待完成。
+临时上下文边界已补强：`context_summaries` 与 Goal 历史均按 `user_id + chat_id` 隔离，不跨群聊复用。Mem0 项目 scope 已支持 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换，允许项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化并显示在操作结果中；临时上下文仍不会写入 Mem0。测试环境已配置 `luck-agent,hermes-test` 两个项目，真实 Lark scope 切换和重启恢复已验收。
 
 ### 阶段五：Lark 平台能力
 
@@ -168,12 +171,12 @@ Bot 身份权限。
 
 ### 阶段六：架构和文档收敛
 
-- 更新 `README.md`、`docs/current-state.md` 和用户手册；
-- 清理仍描述 V1/Gemini/单 VPS 的历史说明；
+- 更新 `README.md`、`docs/current-state.md` 和当前开发边界文档；
+- 将仍描述 V1/Gemini/单 VPS 的材料明确标记为历史说明；
 - 评估未接入的重复运行时、队列和健康检查实现；
 - 保持一套正式 Goal Runtime 和一套任务执行路径。
 
-当前状态：未完成。生产正式自然语言入口已使用 Goal Runtime + LangGraph，快捷命令作为独立无 LLM 控制面保留；本地 Web、legacy_inline skill 和旧 GoalManager 代码仍需隔离或清理，历史文档也需继续收敛。
+当前状态：主体完成，进入兼容观察期。生产正式自然语言入口使用 Goal Runtime + LangGraph，快捷命令作为独立无 LLM 控制面保留；本地 Web、legacy_inline skill 和旧 GoalManager 已登记为兼容边界，历史文档已明确不再作为当前事实来源。满足删除条件后再单独移除旧代码。
 
 ## 5. 明确不做
 

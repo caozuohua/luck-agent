@@ -107,11 +107,12 @@ class QuickCommandRouter:
                 "• `/vps` 当前 VPS 资源状态\n"
                 "• `/vps status|resources|services|logs` 运维检查（日志支持卡片翻页）\n"
                 "• `/vps service list` 服务目录\n"
-                "• `/vps service mem0 status|smoke|search 关键词` Mem0 服务操作\n"
+                "• `/vps service mem0 status|list|smoke|search 关键词` Mem0 服务操作\n"
                 "• `/vps service luck-agent restart` 重启 Agent（需确认）\n"
                 "• `/targets` 选择 VPS 目标\n"
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
+                "• `/mem0 list` 浏览当前 scope 的记忆\n"
                 "• `/mem0 smoke` Mem0 写入/搜索/清理测试\n"
                 "• `/mem0 search 关键词` 搜索记忆\n"
                 "• `/mem0 save 内容` 保存记忆（需确认）\n"
@@ -143,6 +144,8 @@ class QuickCommandRouter:
                 return None
         if command in {"/mem0 status", "mem0 status"}:
             return await self._mem0_status()
+        if command in {"/mem0 list", "mem0 list", "/mem0 memories", "mem0 memories"}:
+            return await self._mem0_list()
         if command in {"/mem0 smoke", "mem0 smoke"}:
             return await self._mem0_smoke()
         for prefix in ("/mem0 search ", "mem0 search "):
@@ -451,9 +454,11 @@ class QuickCommandRouter:
                 return await self._mem0_status()
             if action == "smoke":
                 return await self._mem0_smoke()
+            if action == "list":
+                return await self._mem0_list()
             if action == "search":
                 return await self._mem0_search(argument)
-            return "用法：`/vps service mem0 status|smoke|search 关键词`"
+            return "用法：`/vps service mem0 status|list|smoke|search 关键词`"
 
         if spec.backend == "http":
             if action not in {"status", "health"}:
@@ -677,6 +682,42 @@ class QuickCommandRouter:
                 build_sections_card([text], title="Luck Agent · Mem0 搜索"),
             )
 
+    async def _mem0_list(self) -> str | QuickCommandResult:
+        if self.mem0 is None:
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
+        try:
+            results = await self.mem0.list_memories(limit=10)
+            scope = _mem0_scope(self.mem0)
+            if not results:
+                text = f"🧠 Mem0 记忆清单：当前没有记忆\n• Scope：{scope}"
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 清单"),
+                )
+            lines = [f"🧠 Mem0 记忆清单：{len(results)} 条（最多显示 10 条）", f"• Scope：{scope}"]
+            sections = list(lines)
+            for index, item in enumerate(results[:10], start=1):
+                memory_id = str(item.get("id", ""))
+                memory = _memory_text(item) or "（无文本）"
+                line = f"{index}. {memory[:180]}"
+                if memory_id:
+                    line += f"\n   ID：`{memory_id[:160]}`"
+                lines.append(line)
+                sections.append(line)
+            text = "\n".join(lines)
+            return QuickCommandResult(
+                text,
+                build_sections_card(sections, title="Luck Agent · Mem0 清单"),
+            )
+        except Exception as exc:
+            log.error("quick_mem0_list_failed", error=type(exc).__name__)
+            text = "🧠 Mem0 记忆清单：⚠️ 查询失败"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 清单"),
+            )
+
     async def _mem0_save(
         self,
         content: str,
@@ -826,3 +867,9 @@ def _memory_result_count(payload: Any) -> int:
                 return len(value)
         return 1 if payload else 0
     return 0
+
+
+def _mem0_scope(mem0: Mem0Client) -> str:
+    user_id = str(getattr(mem0, "user_id", "") or "unknown")
+    agent_id = str(getattr(mem0, "agent_id", "") or "unknown")
+    return f"user={user_id} · agent={agent_id}"

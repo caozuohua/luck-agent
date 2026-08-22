@@ -68,6 +68,32 @@ async def test_mem0_health_and_search(monkeypatch: Any) -> None:
     }
 
 
+async def test_mem0_list_uses_configured_scope_and_limit(monkeypatch: Any) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        FakeResponse({"memories": [{"id": "m1", "memory": "AWS"}]}),
+    ]
+    monkeypatch.setattr("tools.mem0_client.httpx.AsyncClient", FakeAsyncClient)
+    client = Mem0Client(
+        base_url="http://mem0:8888",
+        api_key="secret",
+        user_id="u1",
+        agent_id="a1",
+    )
+
+    results = await client.list_memories(limit=99)
+
+    assert results[0]["id"] == "m1"
+    request = FakeAsyncClient.requests[0]
+    assert request["params"] == {
+        "user_id": "u1",
+        "agent_id": "a1",
+        "page": 1,
+        "page_size": 20,
+    }
+    assert request["headers"] == {"X-API-Key": "secret"}
+
+
 async def test_mem0_smoke_deletes_only_added_ids(monkeypatch: Any) -> None:
     FakeAsyncClient.requests = []
     FakeAsyncClient.responses = [

@@ -24,7 +24,7 @@ class ServiceOperationSpec:
 
 
 SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
-    ServiceSpec("mem0", "Mem0", "mem0", "记忆 API 状态、smoke 和搜索"),
+    ServiceSpec("mem0", "Mem0", "mem0", "记忆 API 状态、浏览、搜索和 smoke"),
     ServiceSpec("a2a", "A2A", "probe", "目标机 A2A Agent Card 健康检查"),
     ServiceSpec("new-api", "new-api", "http", "OpenAI-compatible models 健康检查"),
     ServiceSpec("luck-agent", "Luck Agent", "sysops", "宿主机服务状态", restartable=True),
@@ -74,5 +74,5 @@ def format_service_catalog(*, allowed: set[str] | frozenset[str] | None = None) 
     lines = ["🧩 可用服务："]
     for item in specs:
         lines.append(f"• `{item.service_id}`：{item.description}")
-    lines.append("用法：`/vps service SERVICE status|smoke|search 关键词`")
+    lines.append("用法：`/vps service SERVICE status|list|smoke|search 关键词`")
     return "\n".join(lines)

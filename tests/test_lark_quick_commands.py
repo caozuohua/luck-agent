@@ -117,6 +117,9 @@ class FakeMem0:
     async def search(self, query: str) -> list[dict]:
         return [{"id": "memory-1", "memory": f"remember {query}", "score": 0.9}]
 
+    async def list_memories(self, *, limit: int = 10) -> list[dict]:
+        return [{"id": "memory-1", "memory": "user prefers concise answers"}][:limit]
+
     async def add(self, text: str, **kwargs) -> dict:
         self.add_calls.append((text, kwargs))
         return {"memories": [{"id": "memory-new", "memory": text}]}
@@ -130,6 +133,9 @@ class FailingMem0(FakeMem0):
         raise RuntimeError("Mem0 unavailable")
 
     async def delete(self, memory_id: str) -> None:
+        raise RuntimeError("Mem0 unavailable")
+
+    async def list_memories(self, *, limit: int = 10) -> list[dict]:
         raise RuntimeError("Mem0 unavailable")
 
 
@@ -165,6 +171,7 @@ async def test_quick_commands_return_without_llm() -> None:
     assert "延迟：4 ms" in _text(await router.handle("/mem0 status"))
     assert "临时标识" in _text(await router.handle("/mem0 smoke"))
     assert "remember database" in _text(await router.handle("/mem0 search database"))
+    assert "user prefers concise answers" in _text(await router.handle("/mem0 list"))
     assert await router.handle("check the server") is None
 
 
@@ -192,6 +199,22 @@ async def test_mem0_write_commands_require_approval_and_do_not_auto_write() -> N
 
     await router.handle("/mem0 search concise", user_id="alice")
     assert len(mem0.add_calls) == 1
+
+
+async def test_mem0_list_is_read_only_and_available_through_service_catalog() -> None:
+    mem0 = FakeMem0()
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        mem0=mem0,
+    )
+
+    result = await router.handle("/vps service mem0 list", user_id="alice")
+
+    assert "Scope" in _text(result)
+    assert "memory-1" in _text(result)
+    assert mem0.add_calls == []
+    assert mem0.delete_calls == []
 
 
 async def test_mem0_delete_is_scoped_and_validated() -> None:
@@ -234,9 +257,11 @@ async def test_mem0_write_failure_degrades_without_raising() -> None:
         user_id="alice",
         approval_token="approved",
     )
+    listed = await router.handle("/mem0 list", user_id="alice")
 
     assert "服务不可用" in _text(saved)
     assert "服务不可用" in _text(deleted)
+    assert "查询失败" in _text(listed)
 
 
 async def test_vps_logs_returns_paged_card_and_binds_session_to_user() -> None:

@@ -4,9 +4,12 @@ from core.targets import VpsTarget
 from interface.lark_cards import (
     build_log_page_card,
     build_output_page_card,
+    build_sections_card,
+    build_service_catalog_card,
     build_target_selection_card,
     build_text_card,
 )
+from core.services import SERVICE_CATALOG
 
 
 def test_card_has_mobile_header_and_compatible_markdown_body() -> None:
@@ -50,3 +53,18 @@ def test_generic_output_page_card_uses_separate_callback_action() -> None:
 
     button = card["body"]["elements"][-1]["columns"][0]["elements"][0]
     assert button["behaviors"][0]["value"]["action"] == "vps_output_page"
+
+
+def test_sections_card_keeps_each_result_section_scannable() -> None:
+    card = build_sections_card(["**状态**：✅ 正常", "• 延迟：4 ms"], title="Luck Agent · Mem0")
+
+    elements = card["body"]["elements"]
+    assert [element["tag"] for element in elements] == ["markdown", "markdown"]
+    assert elements[1]["content"] == "• 延迟：4 ms"
+
+
+def test_service_catalog_card_contains_one_section_per_service() -> None:
+    card = build_service_catalog_card(list(SERVICE_CATALOG))
+
+    assert card["header"]["title"]["content"].startswith("Luck Agent · 服务目录")
+    assert len(card["body"]["elements"]) == len(SERVICE_CATALOG) + 2

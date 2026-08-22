@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.services import ServiceSpec
 from core.targets import VpsTarget
 
 
@@ -27,6 +28,39 @@ def build_text_card(text: str, *, title: str = "Luck Agent") -> dict[str, Any]:
             ]
         },
     }
+
+
+def build_sections_card(
+    sections: list[str],
+    *,
+    title: str = "Luck Agent",
+) -> dict[str, Any]:
+    """Build a Card 2.0 result with separately scannable Markdown sections."""
+    content_sections = [str(section or "（无返回内容）").strip() for section in sections]
+    content_sections = [section for section in content_sections if section]
+    if not content_sections:
+        content_sections = ["（无返回内容）"]
+    card = build_text_card("\n\n".join(content_sections), title=title)
+    card["body"]["elements"] = [
+        {"tag": "markdown", "content": section} for section in content_sections
+    ]
+    return card
+
+
+def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
+    """Build a compact, one-service-per-section catalog card."""
+    if not specs:
+        return build_sections_card(
+            ["🧩 当前没有已授权的服务"],
+            title="Luck Agent · 服务目录",
+        )
+    sections = ["🧩 **可用服务**"]
+    sections.extend(
+        f"**`{spec.service_id}` · {spec.label}**\n{spec.description}"
+        for spec in specs
+    )
+    sections.append("用法：`/vps service SERVICE status|smoke|search 关键词`")
+    return build_sections_card(sections, title="Luck Agent · 服务目录")
 
 
 def build_target_selection_card(

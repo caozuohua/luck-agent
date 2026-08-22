@@ -56,6 +56,49 @@ def build_assistant_result_card(text: str) -> dict[str, Any]:
     )
 
 
+def build_memory_proposal_card(content: str, *, reason: str = "") -> dict[str, Any]:
+    """Build a proposal card whose button only starts the approval flow."""
+    card = build_sections_card(
+        [
+            "🧠 检测到可能需要长期记忆的信息，但当前不会自动保存。",
+            f"• 候选内容：{content}",
+            f"• 原因：{reason}" if reason else "",
+            "点击按钮后会生成一次性确认码；确认前不会写入 Mem0。",
+        ],
+        title="Luck Agent · 记忆提议",
+    )
+    card["body"]["elements"].append(
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "type": "primary",
+                            "text": {"tag": "plain_text", "content": "发起保存确认"},
+                            "behaviors": [
+                                {
+                                    "type": "callback",
+                                    "value": {
+                                        "action": "memory_save_proposal",
+                                        "content": content,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    return card
+
+
 def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
     """Build a compact, one-service-per-section catalog card."""
     if not specs:

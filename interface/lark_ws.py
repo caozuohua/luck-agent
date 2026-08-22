@@ -8,7 +8,11 @@ from typing import Any, Protocol
 from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
-from interface.lark_cards import build_assistant_result_card, build_goal_result_card
+from interface.lark_cards import (
+    build_assistant_result_card,
+    build_goal_result_card,
+    build_memory_proposal_card,
+)
 from interface.lark_commands import QuickCommandResult
 from memory.proposal import MemoryProposalDetector
 from runtime.contracts import RuntimeHandleResult
@@ -173,14 +177,10 @@ class LarkWebSocketInterface:
         if approved is None and self.memory_proposer is not None:
             proposal = self.memory_proposer.detect(text)
             if proposal is not None:
-                response = (
-                    "🧠 检测到可能需要长期记忆的信息，但当前不会自动保存。\n"
-                    f"• 候选内容：{proposal.content}\n"
-                    f"• 原因：{proposal.reason}\n"
-                    f"• 如需保存，请发送：`{proposal.save_command}`\n"
-                    "发送保存命令后仍需一次性确认。"
+                await self.sender.send_card(
+                    chat_id,
+                    build_memory_proposal_card(proposal.content, reason=proposal.reason),
                 )
-                await self.sender.send_card(chat_id, self.build_card(response))
                 log.info("lark_memory_proposal_presented", user_id=user_id, chat_id=chat_id)
                 return True
         response = None
@@ -260,6 +260,26 @@ class LarkWebSocketInterface:
         action_tag = str(action.get("tag") or "")
         if action_tag == "button":
             raw_value = action.get("value")
+            if isinstance(raw_value, dict) and raw_value.get("action") == "memory_save_proposal":
+                if self.approval_manager is None:
+                    return {"toast": {"type": "error", "content": "当前未启用记忆确认"}}
+                content = " ".join(str(raw_value.get("content") or "").strip().split())
+                if not content or len(content) > 4000:
+                    return {"toast": {"type": "error", "content": "记忆内容无效或过长"}}
+                pending = self.approval_manager.issue(
+                    user_id=user_id,
+                    request=f"/mem0 save {content}",
+                )
+                response = (
+                    "⚠️ 已准备保存这条记忆，但尚未写入。\n"
+                    f"• 内容：{content}\n"
+                    f"• 请确认：`/confirm {pending.token}`\n"
+                    f"• 有效期：{int(self.approval_manager.ttl_seconds // 60)} 分钟"
+                )
+                return {
+                    "toast": {"type": "success", "content": "已生成保存确认，请发送确认码"},
+                    "card": {"type": "raw", "data": self.build_card(response)},
+                }
             page_actions = {"vps_logs_page", "vps_output_page"}
             if isinstance(raw_value, dict) and raw_value.get("action") in page_actions:
                 action_name = str(raw_value.get("action"))

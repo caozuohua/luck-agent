@@ -5,6 +5,7 @@ from interface.lark_cards import (
     build_assistant_result_card,
     build_goal_result_card,
     build_log_page_card,
+    build_memory_proposal_card,
     build_output_page_card,
     build_sections_card,
     build_service_catalog_card,
@@ -63,6 +64,17 @@ def test_sections_card_keeps_each_result_section_scannable() -> None:
     elements = card["body"]["elements"]
     assert [element["tag"] for element in elements] == ["markdown", "markdown"]
     assert elements[1]["content"] == "• 延迟：4 ms"
+
+
+def test_memory_proposal_card_has_approval_callback_button() -> None:
+    card = build_memory_proposal_card("我偏好简洁回答", reason="偏好")
+
+    button = card["body"]["elements"][-1]["columns"][0]["elements"][0]
+    assert button["text"]["content"] == "发起保存确认"
+    assert button["behaviors"][0]["value"] == {
+        "action": "memory_save_proposal",
+        "content": "我偏好简洁回答",
+    }
 
 
 def test_service_catalog_card_contains_one_section_per_service() -> None:

@@ -501,7 +501,46 @@ async def test_lark_memory_proposal_never_calls_agent_or_mem0() -> None:
 
     assert processed is True
     assert agent.calls == []
-    assert "/mem0 save 我喜欢简洁回答" in str(sender.cards[-1])
+    button = sender.cards[-1]["body"]["elements"][-1]["columns"][0]["elements"][0]
+    assert button["text"]["content"] == "发起保存确认"
+    assert button["behaviors"][0]["value"]["action"] == "memory_save_proposal"
+
+
+async def test_memory_proposal_button_starts_confirmation_without_typing_save_command() -> None:
+    agent = FakeAgent()
+    sender = FakeSender()
+    manager = LarkApprovalManager()
+    mem0 = FakeMem0()
+    interface = LarkWebSocketInterface(
+        agent=agent,
+        sender=sender,
+        quick_commands=QuickCommandRouter(
+            health=FakeHealth(),
+            vps=FakeVps(),
+            mem0=mem0,
+            approval_checker=manager.consume_grant,
+        ),
+        approval_manager=manager,
+        memory_proposer=MemoryProposalDetector(),
+    )
+    base = {"chat_id": "chat-1", "user_id": "alice"}
+
+    assert await interface.handle_message(
+        {**base, "message_id": "memory-proposal-2", "text": "请记住我喜欢简洁回答"}
+    )
+    proposal_card = sender.cards[-1]
+    action = proposal_card["body"]["elements"][-1]["columns"][0]["elements"][0]["behaviors"][0]
+    callback_response = interface.handle_card_action(
+        {**base, "action": {"tag": "button", "value": action["value"]}}
+    )
+
+    assert callback_response["toast"]["type"] == "success"
+    confirmation_text = callback_response["card"]["data"]["body"]["elements"][0]["content"]
+    token = confirmation_text.split("/confirm ", 1)[1].split("`", 1)[0]
+    assert await interface.handle_message(
+        {**base, "message_id": "memory-confirm-1", "text": f"/confirm {token}"}
+    )
+    assert mem0.add_calls[0][0] == "我喜欢简洁回答"
 
 
 async def test_target_commands_return_card_and_keep_user_selection() -> None:

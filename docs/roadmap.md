@@ -181,8 +181,9 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 
 当前进展：已完成 `/lark chat`、`/lark messages [数量]`、`/lark chat members [数量]` 和
 `/lark chat announcement` 四个只读能力；仅读取当前事件会话，消息/成员最多返回 10 条摘要，不暴露原始 ID，
-并已通过 Bot 测试会话的 REST 探测。Wiki 搜索需要 `user_access_token`，当前暂不引入 OAuth；后续继续按单能力、
-单权限、单验收推进。
+并已通过 Bot 测试会话的 REST 探测。Wiki 搜索确认需要 `user_access_token`，现已引入独立的只读 User OAuth
+边界：`/lark auth` 生成一次性授权链接，健康端口接收 `/oauth/lark/callback`，默认 scope 为
+`wiki:wiki:readonly`，令牌只保存在内存中。下一步是配置并完成首次真实授权，然后接入 Wiki 搜索单能力验收。
 
 按优先级逐步接入消息卡片、文档、多维表格、表格、日历、任务、邮件、
 会议和知识库。每次只引入一个可验收的只读或低风险能力，再开放写操作。

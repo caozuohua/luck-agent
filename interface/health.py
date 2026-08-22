@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
+from interface.lark_oauth import LarkOAuthManager
 from memory.db import Database
 from memory.goal_store import GoalStatus, GoalStore
 
@@ -18,6 +21,7 @@ class HealthService:
         curator_last_run_at: float | None = None,
         curator: Any | None = None,
         llm: Any | None = None,
+        lark_oauth: LarkOAuthManager | None = None,
         host: str = "0.0.0.0",
         port: int = 8080,
     ) -> None:
@@ -26,6 +30,7 @@ class HealthService:
         self.curator_last_run_at = curator_last_run_at
         self.curator = curator
         self.llm = llm
+        self.lark_oauth = lark_oauth
         self.host = host
         self.port = port
         self._server: asyncio.AbstractServer | None = None
@@ -68,12 +73,55 @@ class HealthService:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        request_line = await reader.readline()
+        request_target = ""
+        try:
+            parts = request_line.decode("latin-1").split()
+            request_target = parts[1] if len(parts) >= 2 else ""
+        except UnicodeDecodeError:
+            request_target = ""
+        if urlsplit(request_target).path == "/oauth/lark/callback":
+            await self._handle_lark_oauth_callback(request_target, writer)
+            return
         await reader.read(4096)
         payload = await self.collect_status()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        await self._send_response(writer, 200, "application/json; charset=utf-8", body)
+
+    async def _handle_lark_oauth_callback(
+        self,
+        request_target: str,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            body = _oauth_html("授权回调未配置", ok=False)
+            await self._send_response(writer, 503, "text/html; charset=utf-8", body)
+            return
+        query = parse_qs(urlsplit(request_target).query, keep_blank_values=True)
+        result = await self.lark_oauth.handle_callback(
+            code=_first_query_value(query, "code"),
+            state=_first_query_value(query, "state"),
+            error=_first_query_value(query, "error"),
+        )
+        status = 200 if result.ok else 400
+        await self._send_response(
+            writer,
+            status,
+            "text/html; charset=utf-8",
+            _oauth_html(result.detail, ok=result.ok),
+        )
+
+    async def _send_response(
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        content_type: str,
+        body: bytes,
+    ) -> None:
+        reason = "OK" if status == 200 else "Service Unavailable" if status == 503 else "Bad Request"
         headers = (
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json; charset=utf-8\r\n"
+            f"HTTP/1.1 {status} {reason}\r\n"
+            f"Content-Type: {content_type}\r\n"
             f"Content-Length: {len(body)}\r\n"
             "Connection: close\r\n\r\n"
         ).encode("utf-8")
@@ -143,3 +191,20 @@ class HealthService:
             "failed": failed,
             "success_rate": (done / total) if total else 0.0,
         }
+
+
+def _first_query_value(query: dict[str, list[str]], key: str) -> str:
+    values = query.get(key) or []
+    return str(values[0] if values else "")
+
+
+def _oauth_html(detail: str, *, ok: bool) -> bytes:
+    title = "Luck Agent 授权完成" if ok else "Luck Agent 授权未完成"
+    message = html.escape(str(detail or ""), quote=True)
+    markup = (
+        "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+        f"<title>{html.escape(title)}</title><body>"
+        f"<h2>{html.escape(title)}</h2><p>{message}</p>"
+        "<p>可以关闭此页面，返回 Lark 继续操作。</p></body></html>"
+    )
+    return markup.encode("utf-8")

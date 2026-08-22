@@ -16,6 +16,7 @@ from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_api import LarkApiSender
 from interface.lark_platform import LarkPlatformClient
+from interface.lark_oauth import LarkOAuthManager
 from interface.lark_sdk import LarkSdkRunner
 from interface.web import WebInterface
 from llm.fake import FakeLLMClient
@@ -177,6 +178,7 @@ class Runtime:
             new_api_target_id=settings.new_api_target_id,
             approval_checker=self.lark_approval_manager.consume_grant,
             audit_writer=self.db.insert_operation_audit,
+            lark_oauth=None,
         )
         self.graph_runtime = GraphRuntime(
             goal_store=self.goal_store,
@@ -199,6 +201,17 @@ class Runtime:
                 .build()
             )
             self.quick_commands.lark_platform = LarkPlatformClient(self.lark_api_client)
+            self.lark_oauth = LarkOAuthManager(
+                client=self.lark_api_client,
+                app_id=settings.lark_app_id,
+                redirect_uri=settings.lark_oauth_redirect_uri,
+                domain=settings.lark_domain,
+                scopes=settings.lark_oauth_scopes,
+                state_ttl_seconds=settings.lark_oauth_state_ttl_seconds,
+                token_skew_seconds=settings.lark_oauth_token_skew_seconds,
+            )
+            self.quick_commands.lark_oauth = self.lark_oauth
+            self.health.lark_oauth = self.lark_oauth
 
             self.lark = LarkWebSocketInterface(
                 agent=self.agent,
@@ -211,6 +224,7 @@ class Runtime:
             )
             self.lark_runner: LarkSdkRunner | None = None
         else:
+            self.lark_oauth = None
             self.lark = WebInterface(
                 agent=self.agent,
                 host=settings.web_host,

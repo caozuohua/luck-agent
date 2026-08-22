@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.operation_policy import OperationPermissionPolicy
+from core.services import get_service_operation
 from core.targets import VpsTarget, VpsTargetRegistry
 
 
@@ -74,10 +75,6 @@ class VpsSysopsAdapter:
     SERVICE_UNITS: dict[str, str] = {
         "luck-agent": "luck-agent.service",
     }
-    SERVICE_RESTART_COMMANDS: dict[str, str] = {
-        "luck-agent": "sudo -n /usr/local/sbin/luck-agent-restart",
-    }
-
     def __init__(
         self,
         *,
@@ -321,9 +318,9 @@ class VpsSysopsAdapter:
         """Restart one explicitly allowlisted systemd unit; never accepts a unit name."""
         service = service.strip().lower()
         unit = self.SERVICE_UNITS.get(service)
-        restart_command = self.SERVICE_RESTART_COMMANDS.get(service)
+        operation_spec = get_service_operation(service, "restart")
         target = self.target_registry.current(user_id) if self.target_registry else self.target
-        if unit is None or restart_command is None:
+        if unit is None or operation_spec is None:
             return VpsSysopsResult(
                 operation="restart",
                 ok=False,
@@ -355,7 +352,7 @@ class VpsSysopsAdapter:
             )
         env = self._build_environment(target, is_local=is_local)
         command, cwd = self._build_probe_command(
-            probe=restart_command,
+            probe=operation_spec.entrypoint,
             target=target,
             is_local=is_local,
             env=env,

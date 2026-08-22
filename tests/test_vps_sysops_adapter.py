@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.operation_policy import OperationPermissionPolicy
+from core.services import get_service_operation
 from core.targets import VpsTarget, VpsTargetRegistry
 from tools.vps_sysops import (
     VpsSysopsAdapter,
@@ -177,6 +178,26 @@ async def test_non_log_output_is_available_as_pages(monkeypatch, tmp_path: Path)
     assert result.output_pages == ("A" * 10, "A" * 10, "A" * 5)
     assert result.truncated is True
     assert result.pages_complete is True
+
+
+async def test_restart_uses_registered_fixed_operation_entrypoint(monkeypatch) -> None:
+    adapter = VpsSysopsAdapter()
+    captured: dict[str, str] = {}
+
+    def fake_build_probe_command(*, probe, target, is_local, env):
+        captured["probe"] = probe
+        return (["true"], None)
+
+    monkeypatch.setattr(adapter, "_build_probe_command", fake_build_probe_command)
+    monkeypatch.setattr(
+        "tools.vps_sysops.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+
+    result = await adapter.restart_service("luck-agent")
+
+    assert captured["probe"] == get_service_operation("luck-agent", "restart").entrypoint
+    assert result.operation == "restart"
 
 
 def test_result_exposes_stable_status_and_secret_free_dict() -> None:

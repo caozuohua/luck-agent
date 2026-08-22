@@ -152,11 +152,33 @@ class QuickCommandRouter:
             failed = int(goals.get("failed", 0))
             sqlite_mark = "✅" if sqlite_ok else "❌"
             process_mark = "✅" if process_ok else "❌"
-            return (
-                f"🩺 Luck Agent 健康：{process_mark}\n"
-                f"• SQLite：{sqlite_mark}\n"
-                f"• 目标：完成 {done}，失败 {failed}"
-            )
+            lines = [
+                f"🩺 Luck Agent 健康：{process_mark}",
+                f"• SQLite：{sqlite_mark}",
+                f"• 目标：完成 {done}，失败 {failed}",
+            ]
+            llm = status.get("llm") or {}
+            providers = llm.get("providers") or []
+            active_provider = str(llm.get("active_provider") or "")
+            if providers and active_provider:
+                ready = sum(1 for item in providers if item.get("state") == "ready")
+                active = next(
+                    (item for item in providers if item.get("provider") == active_provider),
+                    {},
+                )
+                active_state = str(active.get("state") or "unknown")
+                active_mark = "✅" if active_state == "ready" else "⚠️"
+                detail = ""
+                if active_state == "cooldown":
+                    detail = (
+                        f"，冷却 {active.get('cooldown_remaining_seconds', 0)} 秒"
+                        f"（{active.get('cooldown_kind') or 'temporary'}）"
+                    )
+                lines.append(
+                    f"• LLM：{active_mark} {active_provider}"
+                    f"（可用 {ready}/{len(providers)}{detail}）"
+                )
+            return "\n".join(lines)
         except Exception as exc:
             log.error("quick_health_failed", error=str(exc))
             return "🩺 Luck Agent 健康：⚠️ 暂时无法读取状态"

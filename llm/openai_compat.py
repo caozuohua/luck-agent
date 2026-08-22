@@ -182,6 +182,20 @@ class OpenAICompatClient:
             provider=self.provider_name,
         )
 
+    def status(self) -> dict[str, Any]:
+        """Return secret-free provider state for health and diagnostics."""
+        remaining = max(0.0, self._circuit_open_until - time.monotonic())
+        return {
+            "provider": self.provider_name or "default",
+            "model": self.model,
+            "state": "cooldown" if remaining > 0 else "ready",
+            "cooldown_kind": self._circuit_kind if remaining > 0 else "",
+            "cooldown_remaining_seconds": int(remaining + 0.999)
+            if remaining > 0
+            else 0,
+            "consecutive_failures": self._consecutive_failures,
+        }
+
     def _ensure_available(self) -> None:
         if self._circuit_open_until <= 0:
             return

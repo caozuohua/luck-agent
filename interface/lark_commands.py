@@ -134,11 +134,13 @@ class QuickCommandRouter:
             return self._targets(user_id)
         for prefix in ("/target ", "target ", "/目标 ", "目标 "):
             if command.startswith(prefix):
-                return self._select_target(
+                result = self._select_target(
                     raw_command[len(prefix) :].strip(),
                     user_id,
                     chat_id=chat_id,
                 )
+                await self.persist_target_selection(user_id=user_id, chat_id=chat_id)
+                return result
         if command in {"/health", "health", "健康", "/健康"}:
             return await self._health()
         if command in {"/vps", "vps", "/status", "status"}:
@@ -302,13 +304,20 @@ class QuickCommandRouter:
             return ""
         return self.targets.current(user_id).label
 
+    async def persist_target_selection(self, *, user_id: str, chat_id: str = "") -> None:
+        """Persist a selection made by a text command or card callback."""
+        if self.target_store is None:
+            return
+        key = (str(user_id or "default"), str(chat_id or ""))
+        selected = self._pending_target_selections.pop(key, None)
+        if selected:
+            await self.target_store.set(key[0], key[1], selected)
+
     async def _restore_target_selection(self, user_id: str, chat_id: str) -> None:
         if self.targets is None or self.target_store is None:
             return
         key = (str(user_id or "default"), str(chat_id or ""))
-        pending = self._pending_target_selections.pop(key, None)
-        if pending:
-            await self.target_store.set(key[0], key[1], pending)
+        await self.persist_target_selection(user_id=key[0], chat_id=key[1])
         selected = await self.target_store.get(key[0], key[1])
         if selected and self.targets.select(key[0], selected) is None:
             log.warning("target_selection_restore_skipped", user_id=key[0], target_id=selected)

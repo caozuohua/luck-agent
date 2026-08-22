@@ -364,6 +364,7 @@ class LarkWebSocketInterface:
             text = result.text
         else:
             text = str(result or "目标已更新")
+        self._schedule_target_persistence(user_id=user_id, chat_id=chat_id)
         log.info("lark_target_selected", user_id=user_id, chat_id=chat_id, target_id=target_id)
         return {"toast": {"type": "success", "content": text[:100]}}
 
@@ -400,6 +401,32 @@ class LarkWebSocketInterface:
             return str(getter(user_id) or "")
         except Exception:
             return ""
+
+    def _schedule_target_persistence(self, *, user_id: str, chat_id: str) -> None:
+        persist = getattr(self.quick_commands, "persist_target_selection", None)
+        if not callable(persist):
+            return
+        try:
+            loop = self._application_loop or asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("lark_target_persistence_skipped", reason="event_loop_unavailable")
+            return
+        if loop.is_closed():
+            log.warning("lark_target_persistence_skipped", reason="event_loop_closed")
+            return
+
+        def create_task() -> None:
+            task = asyncio.create_task(
+                persist(user_id=user_id, chat_id=chat_id),
+                name="lark-target-selection-persistence",
+            )
+            self._active_handlers.add(task)
+            task.add_done_callback(self._active_handlers.discard)
+
+        if loop is self._application_loop:
+            loop.call_soon_threadsafe(create_task)
+        else:
+            create_task()
 
     def _schedule_approved_card_action(
         self,

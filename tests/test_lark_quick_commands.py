@@ -541,7 +541,7 @@ async def test_target_selection_persists_per_user_and_chat() -> None:
         )
 
         await first.handle("/target gcp-01", user_id="alice", chat_id="chat-1")
-        await first.handle("/targets", user_id="alice", chat_id="chat-1")
+        assert await store.get("alice", "chat-1") == "gcp-01"
 
         restarted_targets = VpsTargetRegistry.from_csv("gcp-01|gcp|||personal", default_target=default)
         second = QuickCommandRouter(
@@ -555,6 +555,43 @@ async def test_target_selection_persists_per_user_and_chat() -> None:
         assert result.text == "🎯 当前目标：GCP / gcp-01"
         assert restarted_targets.current("alice").label == "gcp-01"
         assert restarted_targets.current("alice-other-chat").label == "aws-01"
+    finally:
+        await db.close()
+
+
+async def test_lark_target_card_persists_selection_immediately() -> None:
+    db = Database(":memory:")
+    await db.initialize()
+    try:
+        store = TargetSelectionStore(db)
+        targets = VpsTargetRegistry.from_csv(
+            "gcp-01|gcp|||personal",
+            default_target=VpsTarget(provider="aws", target_id="aws-01"),
+        )
+        router = QuickCommandRouter(
+            health=FakeHealth(),
+            vps=FakeVps(),
+            targets=targets,
+            target_store=store,
+        )
+        interface = LarkWebSocketInterface(
+            agent=FakeAgent(),
+            sender=FakeSender(),
+            quick_commands=router,
+        )
+        interface.start()
+
+        response = interface.handle_card_action(
+            {
+                "chat_id": "chat-1",
+                "user_id": "alice",
+                "action": {"tag": "select_static", "value": {"target_id": "gcp-01"}},
+            }
+        )
+        assert response["toast"]["type"] == "success"
+        await asyncio.sleep(0.01)
+
+        assert await store.get("alice", "chat-1") == "gcp-01"
     finally:
         await db.close()
 

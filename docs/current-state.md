@@ -122,8 +122,10 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
    其他服务的变更操作仍未开放。
 3. A2A、new-api 独立只读健康检查已完成；A2A 通过 GCP/Azure 目标 SSH 执行固定 probe，
    new-api 使用 OpenAI-compatible token 访问 `/models`，尚未开放写操作或任务 smoke。
-4. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级尚未完成。
-5. Dockerfile、systemd 用户和部署脚本仍存在配置一致性待核对项。
+4. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级已完成；GCP new-api 的
+   `step-3.7-flash → gemini-2.5-flash` fallback 已真实验证，Hermes OpenRouter 当前仅能读
+   `/models`，completion 返回 402，因此未纳入生产 fallback。
+5. Dockerfile、systemd 用户和部署脚本的 V2 配置一致性已核对完成。
 6. 旧 README、SPEC、CLAUDE、AGENTS 和 DOCX 手册仍包含部分 V1/Gemini/单 VPS 描述。
 
 ## 实施顺序

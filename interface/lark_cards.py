@@ -47,6 +47,15 @@ def build_sections_card(
     return card
 
 
+def build_assistant_result_card(text: str) -> dict[str, Any]:
+    """Build the default card for natural-language or LLM responses."""
+    content = str(text or "（无返回内容）").strip()
+    return build_sections_card(
+        _chunk_markdown(content),
+        title="Luck Agent",
+    )
+
+
 def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
     """Build a compact, one-service-per-section catalog card."""
     if not specs:
@@ -234,3 +243,29 @@ def _template(content: str) -> str:
 def _truncate(value: str, limit: int = 60) -> str:
     value = " ".join(value.split())
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _chunk_markdown(content: str, *, limit: int = 1800) -> list[str]:
+    """Split long Markdown at paragraph boundaries without dropping content."""
+    if len(content) <= limit:
+        return [content]
+    paragraphs = content.split("\n\n")
+    sections: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if not paragraph:
+            continue
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            sections.append(current)
+            current = ""
+        while len(paragraph) > limit:
+            sections.append(paragraph[:limit])
+            paragraph = paragraph[limit:]
+        current = paragraph
+    if current:
+        sections.append(current)
+    return sections or [content[:limit]]

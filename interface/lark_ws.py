@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
-from interface.lark_cards import build_goal_result_card, build_text_card
+from interface.lark_cards import build_assistant_result_card, build_goal_result_card
 from interface.lark_commands import QuickCommandResult
 from runtime.contracts import RuntimeHandleResult
 
@@ -323,7 +323,7 @@ class LarkWebSocketInterface:
         return None
 
     def build_card(self, text: str) -> dict[str, Any]:
-        return build_text_card(text)
+        return build_assistant_result_card(text)
 
     def mark_heartbeat(self) -> None:
         self.last_heartbeat_at = time.time()

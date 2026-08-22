@@ -68,6 +68,12 @@ class AgentSettings:
     lark_allowed_chat_ids: str = ""
     lark_allow_unconfigured: bool = False
     lark_approval_ttl_seconds: float = 300.0
+    # User OAuth is intentionally limited to read-only Wiki/Docs scopes.
+    # Tokens remain in memory and are dropped on restart in this rollout.
+    lark_oauth_redirect_uri: str = ""
+    lark_oauth_scopes: str = "wiki:wiki:readonly"
+    lark_oauth_state_ttl_seconds: float = 600.0
+    lark_oauth_token_skew_seconds: float = 60.0
     ops_allowed_user_ids: str = ""
     ops_allowed_targets: str = ""
     ops_allowed_services: str = ""
@@ -138,6 +144,16 @@ def load_settings() -> AgentSettings:
         lark_allow_unconfigured=os.environ.get("LARK_ALLOW_UNCONFIGURED", "false").lower()
         in {"1", "true", "yes", "on"},
         lark_approval_ttl_seconds=float(os.environ.get("LARK_APPROVAL_TTL_SECONDS", "300")),
+        lark_oauth_redirect_uri=os.environ.get("LARK_OAUTH_REDIRECT_URI", ""),
+        lark_oauth_scopes=os.environ.get(
+            "LARK_OAUTH_SCOPES", "wiki:wiki:readonly"
+        ),
+        lark_oauth_state_ttl_seconds=float(
+            os.environ.get("LARK_OAUTH_STATE_TTL_SECONDS", "600")
+        ),
+        lark_oauth_token_skew_seconds=float(
+            os.environ.get("LARK_OAUTH_TOKEN_SKEW_SECONDS", "60")
+        ),
         ops_allowed_user_ids=os.environ.get("OPS_ALLOWED_USER_IDS", ""),
         ops_allowed_targets=os.environ.get("OPS_ALLOWED_TARGETS", ""),
         ops_allowed_services=os.environ.get("OPS_ALLOWED_SERVICES", ""),

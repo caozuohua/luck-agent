@@ -33,6 +33,7 @@ from interface.lark_platform import (
     LarkChatMemberInfo,
     LarkMessageInfo,
 )
+from interface.lark_oauth import LarkOAuthError
 from memory.scope_store import MemoryScopeStore
 from memory.target_store import TargetSelectionStore
 
@@ -71,6 +72,15 @@ class LarkPlatformProvider(Protocol):
     async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None: ...
 
 
+class LarkOAuthProvider(Protocol):
+    @property
+    def configured(self) -> bool: ...
+
+    def authorization_url(self, *, user_id: str, chat_id: str) -> str: ...
+
+    def has_access(self, user_id: str) -> bool: ...
+
+
 @dataclass(frozen=True)
 class QuickCommandResult:
     text: str
@@ -104,6 +114,7 @@ class QuickCommandRouter:
         approval_checker: ApprovalChecker | None = None,
         audit_writer: AuditWriter | None = None,
         lark_platform: LarkPlatformProvider | None = None,
+        lark_oauth: LarkOAuthProvider | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
@@ -120,6 +131,7 @@ class QuickCommandRouter:
         self.approval_checker = approval_checker
         self.audit_writer = audit_writer
         self.lark_platform = lark_platform
+        self.lark_oauth = lark_oauth
         self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
         self._pending_target_selections: dict[tuple[str, str], str] = {}
         self._log_page_ttl_seconds = 10 * 60
@@ -154,6 +166,7 @@ class QuickCommandRouter:
                 "• `/lark messages [数量]` 查看当前会话最近消息（只读，最多 10 条）\n"
                 "• `/lark chat members [数量]` 查看当前会话成员摘要（只读，最多 10 名）\n"
                 "• `/lark chat announcement` 查看当前会话公告（只读）\n"
+                "• `/lark auth` 发起 Wiki/文档只读授权\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -208,6 +221,15 @@ class QuickCommandRouter:
             "chat announcement",
         }:
             return await self._lark_chat_announcement(chat_id)
+        if command in {"/lark auth", "lark auth", "/lark oauth", "lark oauth"}:
+            return self._lark_auth(user_id=user_id, chat_id=chat_id)
+        if command in {
+            "/lark auth status",
+            "lark auth status",
+            "/lark oauth status",
+            "lark oauth status",
+        }:
+            return self._lark_auth_status(user_id=user_id)
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
@@ -736,6 +758,37 @@ class QuickCommandRouter:
             if announcement.update_time:
                 text += f"\n• 更新时间：`{announcement.update_time}`"
         return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    def _lark_auth(self, *, user_id: str, chat_id: str) -> QuickCommandResult:
+        title = "Luck Agent · Lark User OAuth"
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = (
+                "🔐 Lark User OAuth：⚠️ 尚未配置回调地址\n"
+                "• 需要先配置 `LARK_OAUTH_REDIRECT_URI`，并在 Lark 开发者后台加入同一地址。"
+            )
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            url = self.lark_oauth.authorization_url(user_id=user_id, chat_id=chat_id)
+        except (LarkOAuthError, ValueError) as exc:
+            text = f"🔐 Lark User OAuth：⚠️ {exc}"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        text = (
+            "🔐 Lark Wiki/文档只读授权\n"
+            "请打开下面的授权链接，完成后返回 Lark：\n"
+            f"{url}\n"
+            "• 授权范围仅限只读 scope；授权状态有效期 10 分钟。"
+        )
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    def _lark_auth_status(self, *, user_id: str) -> QuickCommandResult:
+        title = "Luck Agent · Lark User OAuth"
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "🔐 Lark User OAuth：⚠️ 尚未配置"
+        elif self.lark_oauth.has_access(user_id):
+            text = "🔐 Lark User OAuth：✅ 当前用户已有有效只读授权"
+        else:
+            text = "🔐 Lark User OAuth：未授权或授权已过期"
+        return QuickCommandResult(text, build_sections_card([text], title=title))
 
     async def _new_api_status(self) -> str | QuickCommandResult:
         if self.new_api is None:

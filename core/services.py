@@ -10,6 +10,7 @@ class ServiceSpec:
     backend: str
     description: str
     restartable: bool = False
+    target_providers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,15 @@ SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
         "probe",
         "目标机 A2A Agent Card 健康检查",
         restartable=True,
+        target_providers=("gcp", "azure"),
+    ),
+    ServiceSpec(
+        "hermes-gateway",
+        "Hermes Gateway",
+        "probe",
+        "Azure Hermes messaging gateway 健康检查",
+        restartable=True,
+        target_providers=("azure",),
     ),
     ServiceSpec(
         "new-api",
@@ -98,6 +108,20 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
             ),
         ),
         target_providers=("gcp", "azure"),
+    ),
+    ServiceOperationSpec(
+        service_id="hermes-gateway",
+        operation="restart",
+        entrypoint=(
+            "systemctl --user restart hermes-gateway.service && "
+            "systemctl --user is-active hermes-gateway.service"
+        ),
+        rollback_strategy=(
+            "restart 不修改 Hermes 配置或数据；失败时可再次执行同一固定 user-service restart，"
+            "版本回滚必须走 Hermes 独立、显式批准的部署回滚操作"
+        ),
+        verification="systemctl --user is-active hermes-gateway.service",
+        target_providers=("azure",),
     ),
 )
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.operation_policy import OperationPermissionPolicy
-from core.services import get_service_operation
+from core.services import get_service, get_service_operation
 from core.targets import VpsTarget, VpsTargetRegistry
 
 
@@ -71,9 +71,11 @@ class VpsSysopsAdapter:
             "test -n \"$endpoint\"; "
             "curl -fsS --max-time 5 \"http://${endpoint}/.well-known/agent-card.json\""
         ),
+        "hermes-gateway": "systemctl --user is-active hermes-gateway.service",
     }
     SERVICE_UNITS: dict[str, str] = {
         "a2a": "hermes-a2a-bridge.service",
+        "hermes-gateway": "hermes-gateway.service",
         "luck-agent": "luck-agent.service",
         "new-api": "new-api.service",
     }
@@ -234,6 +236,18 @@ class VpsSysopsAdapter:
                 operation=f"service:{service}",
                 ok=False,
                 error=f"不支持的服务探针: {service or '(empty)'}",
+                target=target,
+            )
+        spec = get_service(service)
+        provider = target.provider if target is not None else ""
+        if spec is not None and spec.target_providers and provider not in spec.target_providers:
+            return VpsSysopsResult(
+                operation=f"service:{service}",
+                ok=False,
+                error=(
+                    f"服务 `{service}` 不支持目标 provider：`{provider or '(unknown)'}`；"
+                    f"仅支持：{', '.join(spec.target_providers)}"
+                ),
                 target=target,
             )
         if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):

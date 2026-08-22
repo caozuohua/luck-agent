@@ -500,6 +500,13 @@ class QuickCommandRouter:
         denied = self._target_denial(user_id)
         if denied:
             return denied
+        if spec.target_providers and self.targets is not None:
+            target = self.targets.current(user_id)
+            if target.provider not in spec.target_providers:
+                return (
+                    f"⚠️ 服务 `{spec.service_id}` 不支持当前目标 provider："
+                    f"`{target.provider}`；仅支持：{', '.join(spec.target_providers)}"
+                )
 
         action = parts[1].lower() if len(parts) > 1 else "status"
         argument = parts[2].strip() if len(parts) > 2 else ""

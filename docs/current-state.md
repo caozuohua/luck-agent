@@ -65,7 +65,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|list|smoke|search` 调用 Mem0 API，
   `a2a` 通过目标 SSH 上的固定 Agent Card probe 检查，`new-api` 只读访问 `/v1/models`，
   `luck-agent` 可查看宿主机服务状态；`/vps service luck-agent restart`、
-  `/vps service new-api restart` 和 `/vps service a2a restart` 是当前开放的变更操作，必须通过一次性确认、目标/服务/操作
+  `/vps service new-api restart`、`/vps service a2a restart` 和 Azure-only
+  `/vps service hermes-gateway restart` 是当前开放的变更操作，必须通过一次性确认、目标/服务/操作
   allowlist 和固定入口；不接受任意服务名或 Shell。
 - `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api`、`a2a` restart 登记固定入口、回滚策略和验收定义；
   仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
@@ -92,6 +93,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - GCP A2A 受控重启已在线验证：adapter 仅执行固定 `hermes-a2a-bridge.service` 入口，重启返回
   `active`，随后 Agent Card probe 返回 `gcp-hermeslite` `0.3.0`；Azure 使用用户级 systemd
   入口，AWS 目标在审批前拒绝。
+- Azure Hermes Gateway 受控重启已在线验证：adapter 仅执行固定用户级
+  `hermes-gateway.service` 入口，重启后 `systemctl --user is-active` 返回 `active`；GCP/AWS
+  目标在执行前拒绝。
 - 重启确认卡会显示实际目标；生产 `new-api` 已绑定 `gcp-free-vps-oregon`，目标不匹配时在
   执行前拒绝；目标选择持久化、确认卡目标展示和真实 Lark 一键重启均已验收。
 
@@ -144,7 +148,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前待办与阻塞项
 
 1. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前已开放 `luck-agent`、
-   `new-api` 和 `a2a`。
+   `new-api`、`a2a` 和 Azure-only `hermes-gateway`。
 2. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
    后立即落库，消除“选择后尚未发送下一条消息时进程重启”的极小窗口。
 3. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。

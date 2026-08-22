@@ -70,6 +70,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 已开放受控的 `/vps service a2a restart`：GCP 使用固定 `hermes-a2a-bridge.service` 系统级入口，
   Azure 使用固定用户级 systemd 入口，AWS 目标在执行前拒绝；GCP 真实重启后 Agent Card probe
   返回 `gcp-hermeslite` `0.3.0`。
+- 已开放 Azure-only `/vps service hermes-gateway restart`：使用固定用户级
+  `hermes-gateway.service` 入口，真实重启后 `systemctl --user is-active` 返回 `active`；
+  GCP/AWS 目标在执行前拒绝。
 - `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，
   过期或越权令牌不会返回内容，原有日志回调保持兼容。
 - `/vps service list`、Mem0 状态/smoke/search、new-api 和 A2A 探针已统一返回分段 Markdown
@@ -123,7 +126,7 @@ AWS 重启恢复、三目标只读路由、真实 Lark 基础链路和运行时�
 剩余收尾：
 
 1. 核心命令结果已统一为结构化卡片，后续只做细分模板优化；
-2. Luck Agent、new-api 和 A2A 已有受控变更入口；其他服务变更仍需逐项定义固定入口、回滚策略和验收测试，不能复用任意 Shell；
+2. Luck Agent、new-api、A2A 和 Azure Hermes Gateway 已有受控变更入口；其他服务变更仍需逐项定义固定入口、回滚策略和验收测试，不能复用任意 Shell；
 3. 生产运维用户白名单已启用；重启确认卡已支持一键确认并完成真实 Lark 验收，备用验证码已
    支持独立展示和只粘贴验证码确认，并完成真实 Lark 验收；
 4. 确认卡已显示实际目标；`new-api` 已绑定 GCP 目标并在执行前拒绝错误目标；用户目标选择
@@ -153,7 +156,7 @@ Provider → Account → Region → Target → Service → Operation
 ```
 
 AWS、GCP、Azure 的只读目标路由、固定服务目录和独立健康检查已完成；Luck Agent、GCP
-new-api 与 A2A 的受控重启路径已完成。下一步继续扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
+new-api、A2A 与 Azure Hermes Gateway 的受控重启路径已完成。下一步继续扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
 Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略

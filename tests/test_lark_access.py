@@ -153,6 +153,24 @@ async def test_dangerous_request_requires_one_time_confirmation() -> None:
     assert agent.calls[0][2]
 
 
+async def test_bare_approval_token_is_accepted() -> None:
+    agent = FakeAgent()
+    sender = FakeSender()
+    manager = LarkApprovalManager(ttl_seconds=300)
+    interface = LarkWebSocketInterface(
+        agent=agent,
+        sender=sender,
+        approval_manager=manager,
+    )
+    base = {"chat_id": "oc_allowed", "user_id": "ou_allowed"}
+    pending = manager.issue(user_id="ou_allowed", request="重启服务")
+
+    assert await interface.handle_message(
+        {**base, "message_id": "bare-token", "text": pending.token}
+    )
+    assert agent.calls[0][0:2] == ("重启服务", "ou_allowed")
+
+
 def test_allowed_card_action_switches_target() -> None:
     selected: list[tuple[str, str]] = []
 

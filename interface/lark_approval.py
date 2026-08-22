@@ -64,6 +64,11 @@ class LarkApprovalManager:
             self._approved[key] = pending
         return pending
 
+    def has_pending(self, *, user_id: str, token: str) -> bool:
+        """Return whether a token can be safely accepted without a command prefix."""
+        self._purge()
+        return (user_id, token.strip().lower()) in self._pending
+
     def consume_grant(
         self,
         user_id: str,

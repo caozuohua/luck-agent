@@ -388,6 +388,8 @@ class LarkWebSocketInterface:
                     token=token,
                 )
                 return request if request is not None else "__INVALID__"
+        if self.approval_manager.has_pending(user_id=user_id, token=normalized):
+            return self.approval_manager.confirm(user_id=user_id, token=normalized)
         return None
 
     def build_card(self, text: str) -> dict[str, Any]:

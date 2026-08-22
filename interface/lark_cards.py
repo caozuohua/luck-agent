@@ -111,10 +111,12 @@ def build_approval_card(
     card = build_sections_card(
         [
             "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
-            f"• 文字确认：`/confirm {token}`",
+            f"• 文字确认：直接回复验证码，或 `/confirm {token}`",
             f"• 目标：`{target}`" if target else "",
             f"• 请求：{str(request or '').strip()}",
-            "点击「确认执行」即可继续；也可使用下方验证码文字确认。",
+            "点击「确认执行」即可继续；如无法点击，可直接回复下方验证码。",
+            f"```\n{token}\n```",
+            f"备用命令：`/confirm {token}`",
             f"• 有效期：{minutes} 分钟",
         ],
         title="Luck Agent · 操作确认",

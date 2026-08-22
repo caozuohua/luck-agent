@@ -34,10 +34,9 @@ def test_card_template_reflects_failure_or_confirmation() -> None:
 def test_approval_card_has_one_click_confirm_and_text_fallback() -> None:
     card = build_approval_card("/vps service new-api restart", token="abc123", ttl_seconds=300)
 
-    assert any(
-        "/confirm abc123" in element.get("content", "")
-        for element in card["body"]["elements"]
-    )
+    contents = [element.get("content", "") for element in card["body"]["elements"]]
+    assert "```\nabc123\n```" in contents
+    assert "备用命令：`/confirm abc123`" in contents
     buttons = card["body"]["elements"][-1]["columns"]
     assert buttons[0]["elements"][0]["text"]["content"] == "确认执行"
     assert buttons[0]["elements"][0]["behaviors"][0]["value"] == {

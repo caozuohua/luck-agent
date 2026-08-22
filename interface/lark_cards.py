@@ -63,6 +63,26 @@ def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
     return build_sections_card(sections, title="Luck Agent · 服务目录")
 
 
+def build_goal_result_card(
+    *,
+    goal_id: str,
+    status: str,
+    result: str = "",
+    error: str = "",
+) -> dict[str, Any]:
+    """Build a structured terminal card for a background Goal."""
+    normalized_status = str(status or "").upper()
+    completed = normalized_status == "DONE"
+    mark = "✅" if completed else "❌"
+    title = "Luck Agent · 任务完成" if completed else "Luck Agent · 任务失败"
+    heading = f"{mark} 后台任务{'完成' if completed else '失败'}"
+    detail = str(result if completed else (error or result) or "请检查任务状态。").strip()
+    return build_sections_card(
+        [heading, f"• Goal：`{str(goal_id or '')[:8]}`", detail],
+        title=title,
+    )
+
+
 def build_target_selection_card(
     targets: list[VpsTarget],
     *,

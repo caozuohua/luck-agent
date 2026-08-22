@@ -45,6 +45,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   分页令牌按用户隔离并在 10 分钟后过期。
 - `/vps service list`、Mem0 状态/smoke/search、new-api 和 A2A 探针现在返回分段 Markdown
   Card 2.0，同时保留原始文本摘要供旧发送器和测试兼容。
+- 后台 Goal 终态回推现在使用独立任务结果卡片：完成为绿色、失败为红色，Goal 标识和结果/错误
+  分段展示；不改变 Goal 状态机和通知时机。
 - `interface/lark_sdk.py` 已在 `main.py` 中完成生产 WebSocket 接线，并同时注册消息和卡片回调；
   `core/lark_ws_runner.py` 保留为独立生命周期测试封装。
 - `tools/vps_sysops.py` 通过固定 allowlist 调用独立的 vps_sysops 项目，不接受用户任意 Shell。
@@ -120,8 +122,8 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前阻塞项
 
-1. 命令结果还未全部统一为适合手机查看的结构化卡片；服务目录、Mem0、new-api/A2A 探针已完成，
-   Goal 终态和更多自然语言结果仍需继续收敛。
+1. 命令结果还未全部统一为适合手机查看的结构化卡片；服务目录、Mem0、new-api/A2A 探针和 Goal
+   终态已完成，更多自然语言结果仍需继续收敛。
 2. Provider → Account → Region → Target → Service 模型已有元数据基础；目标和服务 allowlist、
    AWS/GCP/Azure 只读 SSH 执行路由已可用；目前只有 luck-agent 重启具备受限变更路径，
    其他服务的变更操作仍未开放。

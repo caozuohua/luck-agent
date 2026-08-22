@@ -15,6 +15,12 @@ from tools.base import Tool, ToolResult
 from tools.registry import ToolRegistry
 
 
+def test_new_api_backup_command_requires_confirmation() -> None:
+    manager = LarkApprovalManager()
+
+    assert manager.requires_confirmation("/vps service new-api backup")
+
+
 class RestartTool(Tool):
     name = "service_restart"
     description = "restart a named service"

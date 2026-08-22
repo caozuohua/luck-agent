@@ -11,6 +11,10 @@ from tools.vps_status import HostStatus
 from tools.vps_sysops import VpsSysopsResult
 
 
+def _text(result: str | QuickCommandResult | None) -> str:
+    return result.text if isinstance(result, QuickCommandResult) else str(result or "")
+
+
 class FakeHealth:
     async def collect_status(self) -> dict:
         return {
@@ -139,9 +143,9 @@ async def test_quick_commands_return_without_llm() -> None:
     assert "SQLite：✅" in (await router.handle("/health") or "")
     assert "aws-test" in (await router.handle("/vps") or "")
     assert "checked resources" in (await router.handle("/vps resources") or "")
-    assert "延迟：4 ms" in (await router.handle("/mem0 status") or "")
-    assert "临时标识" in (await router.handle("/mem0 smoke") or "")
-    assert "remember database" in (await router.handle("/mem0 search database") or "")
+    assert "延迟：4 ms" in _text(await router.handle("/mem0 status"))
+    assert "临时标识" in _text(await router.handle("/mem0 smoke"))
+    assert "remember database" in _text(await router.handle("/mem0 search database"))
     assert await router.handle("check the server") is None
 
 
@@ -199,12 +203,10 @@ async def test_service_catalog_routes_mem0_and_host_services() -> None:
     )
 
     catalog = await router.handle("/vps service list")
-    assert "`mem0`" in (catalog or "")
-    assert "`a2a`" in (catalog or "")
-    assert "延迟：4 ms" in (await router.handle("/vps service mem0 status") or "")
-    assert "checked services" in (
-        await router.handle("/vps service a2a status") or ""
-    )
+    assert "`mem0`" in _text(catalog)
+    assert "`a2a`" in _text(catalog)
+    assert "延迟：4 ms" in _text(await router.handle("/vps service mem0 status"))
+    assert "checked services" in _text(await router.handle("/vps service a2a status"))
 
 
 async def test_service_catalog_honors_service_allowlist() -> None:
@@ -217,8 +219,8 @@ async def test_service_catalog_honors_service_allowlist() -> None:
     )
 
     catalog = await router.handle("/vps service list")
-    assert "`mem0`" in (catalog or "")
-    assert "`a2a`" not in (catalog or "")
+    assert "`mem0`" in _text(catalog)
+    assert "`a2a`" not in _text(catalog)
     denied = await router.handle("/vps service a2a status")
     assert "无权访问服务" in (denied or "")
 
@@ -246,8 +248,8 @@ async def test_service_catalog_uses_api_and_fixed_probe_backends() -> None:
 
     new_api = await router.handle("/vps service new-api status")
     a2a = await router.handle("/vps service a2a status")
-    assert "延迟：7 ms" in (new_api or "")
-    assert "gcp-hermeslite" in (a2a or "")
+    assert "延迟：7 ms" in _text(new_api)
+    assert "gcp-hermeslite" in _text(a2a)
 
 
 async def test_restart_requires_one_time_approval_and_audits_execution() -> None:

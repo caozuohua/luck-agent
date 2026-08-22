@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from core.log import get_logger
 from core.operation_policy import OperationPermissionPolicy
-from core.services import format_service_catalog, get_service
+from core.services import SERVICE_CATALOG, format_service_catalog, get_service
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
@@ -17,6 +17,8 @@ from core.targets import VpsTargetRegistry
 from interface.lark_cards import (
     build_log_page_card,
     build_output_page_card,
+    build_sections_card,
+    build_service_catalog_card,
     build_target_selection_card,
 )
 
@@ -363,11 +365,19 @@ class QuickCommandRouter:
             return None
         return f"⛔ 当前用户无权访问目标：`{target.label}`"
 
-    def _service_catalog(self) -> str:
+    def _service_catalog(self) -> QuickCommandResult:
         allowed = None
         if self.permission_policy is not None and self.permission_policy.allowed_services:
             allowed = self.permission_policy.allowed_services
-        return format_service_catalog(allowed=allowed)
+        specs = [
+            spec
+            for spec in SERVICE_CATALOG
+            if allowed is None or spec.service_id in allowed
+        ]
+        return QuickCommandResult(
+            format_service_catalog(allowed=allowed),
+            build_service_catalog_card(specs),
+        )
 
     async def _service(
         self,
@@ -436,17 +446,23 @@ class QuickCommandRouter:
         result = await self._sysops("services", user_id)
         return _prefix_result(f"🧩 {spec.label} · 宿主机服务清单", result)
 
-    async def _new_api_status(self) -> str:
+    async def _new_api_status(self) -> str | QuickCommandResult:
         if self.new_api is None:
-            return "🤖 new-api：⚠️ 未配置 LLM_BASE_URL"
+            text = "🤖 new-api：⚠️ 未配置 LLM_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · new-api"))
         try:
             status = await self.new_api.health()
             mark = "✅" if status.ok else "❌"
             detail = f"\n• 说明：{status.detail}" if status.detail else ""
-            return f"🤖 new-api API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            text = f"🤖 new-api API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · new-api"),
+            )
         except Exception as exc:
             log.error("quick_new_api_status_failed", error=str(exc))
-            return "🤖 new-api API：⚠️ 暂时无法读取状态"
+            text = "🤖 new-api API：⚠️ 暂时无法读取状态"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · new-api"))
 
     async def _service_probe(self, service: str, user_id: str) -> str | QuickCommandResult:
         probe = getattr(self.sysops, "probe_service", None)
@@ -460,10 +476,18 @@ class QuickCommandRouter:
                 if "user_id" not in str(exc):
                     raise
                 result = await probe(service)
-            return _format_service_probe(service, result)
+            text = _format_service_probe(service, result)
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title=f"Luck Agent · {service} 探针"),
+            )
         except Exception as exc:
             log.error("quick_service_probe_failed", service=service, error=str(exc))
-            return f"🧩 {service}：⚠️ 服务探针失败"
+            text = f"🧩 {service}：⚠️ 服务探针失败"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title=f"Luck Agent · {service} 探针"),
+            )
 
     async def _restart_service(
         self,
@@ -549,46 +573,64 @@ class QuickCommandRouter:
         except Exception:
             log.warning("quick_service_audit_failed", service=service, target=target)
 
-    async def _mem0_status(self) -> str:
+    async def _mem0_status(self) -> str | QuickCommandResult:
         if self.mem0 is None:
-            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
             status = await self.mem0.health()
             mark = "✅" if status.ok else "❌"
             detail = f"\n• 说明：{status.detail}" if status.detail else ""
-            return f"🧠 Mem0 API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            text = f"🧠 Mem0 API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0"),
+            )
         except Exception as exc:
             log.error("quick_mem0_status_failed", error=str(exc))
-            return "🧠 Mem0 API：⚠️ 暂时无法读取状态"
+            text = "🧠 Mem0 API：⚠️ 暂时无法读取状态"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
 
-    async def _mem0_smoke(self) -> str:
+    async def _mem0_smoke(self) -> str | QuickCommandResult:
         if self.mem0 is None:
-            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
         try:
             result: Mem0SmokeResult = await self.mem0.smoke()
             mark = "✅" if result.ok and result.cleanup_confirmed else "⚠️"
             detail = f"\n• 说明：{result.detail}" if result.detail else ""
-            return (
+            text = (
                 f"🧠 Mem0 smoke：{mark}\n"
                 f"• 写入：{result.added}\n"
                 f"• 搜索命中：{result.found}\n"
                 f"• 清理：{result.deleted}\n"
                 f"• 临时标识：`{result.marker}`{detail}"
             )
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 smoke"),
+            )
         except Exception as exc:
             log.error("quick_mem0_smoke_failed", error=str(exc))
-            return "🧠 Mem0 smoke：⚠️ 测试失败"
+            text = "🧠 Mem0 smoke：⚠️ 测试失败"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
 
-    async def _mem0_search(self, query: str) -> str:
+    async def _mem0_search(self, query: str) -> str | QuickCommandResult:
         if not query:
             return "用法：`/mem0 search 关键词`"
         if self.mem0 is None:
-            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
             results = await self.mem0.search(query)
             if not results:
-                return f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆"
+                text = f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆"
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 搜索"),
+                )
             lines = [f"🧠 Mem0 搜索：{len(results)} 条结果"]
+            sections = [lines[0]]
             for index, item in enumerate(results[:5], start=1):
                 text = _memory_text(item) or "（无文本）"
                 memory_id = str(item.get("id", ""))
@@ -596,11 +638,20 @@ class QuickCommandRouter:
                 suffix = f" · {memory_id[:12]}" if memory_id else ""
                 if isinstance(score, (int, float)):
                     suffix += f" · score {score:.3f}"
-                lines.append(f"{index}. {text[:180]}{suffix}")
-            return "\n".join(lines)
+                line = f"{index}. {text[:180]}{suffix}"
+                lines.append(line)
+                sections.append(line)
+            return QuickCommandResult(
+                "\n".join(lines),
+                build_sections_card(sections, title="Luck Agent · Mem0 搜索"),
+            )
         except Exception as exc:
             log.error("quick_mem0_search_failed", error=str(exc))
-            return "🧠 Mem0 搜索：⚠️ 查询失败"
+            text = "🧠 Mem0 搜索：⚠️ 查询失败"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 搜索"),
+            )
 
 
 def _format_service_probe(service: str, result: Any) -> str:

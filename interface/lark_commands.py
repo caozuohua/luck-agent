@@ -27,7 +27,7 @@ from interface.lark_cards import (
     build_service_catalog_card,
     build_target_selection_card,
 )
-from interface.lark_platform import LarkChatInfo
+from interface.lark_platform import LarkChatInfo, LarkMessageInfo
 from memory.scope_store import MemoryScopeStore
 from memory.target_store import TargetSelectionStore
 
@@ -53,6 +53,8 @@ class ServiceHealthProvider(Protocol):
 
 class LarkPlatformProvider(Protocol):
     async def get_chat_info(self, chat_id: str) -> LarkChatInfo: ...
+
+    async def list_messages(self, chat_id: str, *, limit: int = 5) -> tuple[LarkMessageInfo, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,7 @@ class QuickCommandRouter:
                 "• `/targets` 选择 VPS 目标\n"
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/lark chat` 查询当前会话基础信息（只读）\n"
+                "• `/lark messages [数量]` 查看当前会话最近消息（只读，最多 10 条）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -158,6 +161,18 @@ class QuickCommandRouter:
             return await self._health()
         if command in {"/lark chat", "lark chat", "/chat info", "chat info"}:
             return await self._lark_chat(chat_id)
+        if command in {"/lark messages", "lark messages", "/chat messages", "chat messages"}:
+            return await self._lark_messages(chat_id, limit=5)
+        for prefix in ("/lark messages ", "lark messages ", "/chat messages ", "chat messages "):
+            if command.startswith(prefix):
+                raw_limit = raw_command[len(prefix) :].strip()
+                try:
+                    limit = int(raw_limit)
+                except ValueError:
+                    return "用法：`/lark messages [数量 1-10]`"
+                if not 1 <= limit <= 10:
+                    return "用法：`/lark messages [数量 1-10]`"
+                return await self._lark_messages(chat_id, limit=limit)
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
@@ -623,6 +638,27 @@ class QuickCommandRouter:
             lines.append(f"• 外部会话：`{'是' if info.external else '否'}`")
         if info.chat_status:
             lines.append(f"• 状态：`{info.chat_status}`")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    async def _lark_messages(self, chat_id: str, *, limit: int) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "💬 Lark 消息：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "💬 Lark 消息：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        try:
+            messages = await self.lark_platform.list_messages(chat_id, limit=limit)
+        except Exception as exc:
+            log.error("quick_lark_messages_failed", error=str(exc))
+            text = "💬 Lark 消息：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        lines = [f"💬 当前会话最近消息：✅（{len(messages)} 条）"]
+        for message in messages:
+            sender = "Bot" if message.sender_type == "app" else "用户"
+            content = message.content or "（空消息）"
+            lines.append(f"• `{sender}` [{message.msg_type or 'unknown'}] {content}")
         text = "\n".join(lines)
         return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
 

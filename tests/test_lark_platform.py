@@ -16,11 +16,15 @@ class FakeChatEndpoint:
         self.request = request
         return self.response
 
+    def list(self, request):
+        self.request = request
+        return self.response
+
 
 def _client(response):
     endpoint = FakeChatEndpoint(response)
     client = SimpleNamespace(
-        im=SimpleNamespace(v1=SimpleNamespace(chat=endpoint)),
+        im=SimpleNamespace(v1=SimpleNamespace(chat=endpoint, message=endpoint)),
     )
     return client, endpoint
 
@@ -50,3 +54,29 @@ async def test_get_chat_info_rejects_empty_id() -> None:
 
     with pytest.raises(ValueError, match="chat_id"):
         await LarkPlatformClient(client).get_chat_info("")
+
+
+async def test_list_messages_maps_text_and_card_summaries() -> None:
+    items = [
+        SimpleNamespace(
+            message_id="m-1",
+            msg_type="text",
+            create_time=1,
+            sender=SimpleNamespace(sender_type="user"),
+            body=SimpleNamespace(content='{"text":"hello"}'),
+        ),
+        SimpleNamespace(
+            message_id="m-2",
+            msg_type="interactive",
+            create_time=2,
+            sender=SimpleNamespace(sender_type="app"),
+            body=SimpleNamespace(content='{"title":"a card"}'),
+        ),
+    ]
+    data = SimpleNamespace(items=items)
+    client, _ = _client(SimpleNamespace(code=0, msg="success", data=data))
+
+    result = await LarkPlatformClient(client).list_messages("oc_test", limit=2)
+
+    assert [item.content for item in result] == ["hello", "a card"]
+    assert result[1].sender_type == "app"

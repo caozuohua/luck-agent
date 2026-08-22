@@ -6,7 +6,7 @@ from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
-from interface.lark_platform import LarkChatInfo
+from interface.lark_platform import LarkChatInfo, LarkMessageInfo
 from interface.lark_ws import LarkWebSocketInterface
 from memory.db import Database
 from memory.proposal import MemoryProposalDetector
@@ -130,6 +130,22 @@ class FakeLarkPlatform:
             user_count="1",
             external=False,
         )
+
+    async def list_messages(self, chat_id: str, *, limit: int = 5) -> tuple[LarkMessageInfo, ...]:
+        return (
+            LarkMessageInfo(
+                message_id="m-1",
+                msg_type="text",
+                sender_type="user",
+                content="hello",
+            ),
+            LarkMessageInfo(
+                message_id="m-2",
+                msg_type="interactive",
+                sender_type="app",
+                content="Luck Agent · Lark",
+            ),
+        )[:limit]
 
 
 class FakeMem0:
@@ -426,6 +442,23 @@ async def test_lark_chat_is_a_read_only_platform_command() -> None:
     assert "oc_test" in _text(result)
     assert "p2p" in _text(result)
     assert "外部会话：`否`" in _text(result)
+
+
+async def test_lark_messages_is_limited_to_the_current_chat() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+    )
+
+    result = await router.handle(
+        "/lark messages 1",
+        user_id="alice",
+        chat_id="oc_test",
+    )
+
+    assert "最近消息：✅（1 条）" in _text(result)
+    assert "hello" in _text(result)
 
 
 async def test_a2a_restart_rejects_aws_before_approval() -> None:

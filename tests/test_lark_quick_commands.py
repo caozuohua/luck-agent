@@ -378,6 +378,22 @@ async def test_service_catalog_routes_mem0_and_host_services() -> None:
     assert "checked services" in _text(await router.handle("/vps service a2a status"))
 
 
+async def test_a2a_restart_rejects_aws_before_approval() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        targets=VpsTargetRegistry.from_csv(
+            "",
+            default_target=VpsTarget(provider="aws", target_id="aws-01"),
+        ),
+    )
+
+    result = await router.handle("/vps service a2a restart", user_id="alice")
+
+    assert "不支持当前目标 provider" in _text(result)
+
+
 async def test_service_catalog_honors_service_allowlist() -> None:
     router = QuickCommandRouter(
         health=FakeHealth(),

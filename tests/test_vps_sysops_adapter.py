@@ -220,6 +220,32 @@ async def test_new_api_restart_uses_registered_fixed_operation_entrypoint(monkey
     assert result.operation == "restart"
 
 
+async def test_a2a_restart_uses_azure_user_service_entrypoint(monkeypatch) -> None:
+    target = VpsTarget(
+        provider="azure",
+        target_id="az-01",
+        ssh_host="azure-ts",
+        ssh_user="caozuohua",
+    )
+    adapter = VpsSysopsAdapter(target=target)
+    captured: dict[str, str] = {}
+
+    def fake_build_probe_command(*, probe, target, is_local, env):
+        captured["probe"] = probe
+        return (["true"], None)
+
+    monkeypatch.setattr(adapter, "_build_probe_command", fake_build_probe_command)
+    monkeypatch.setattr(
+        "tools.vps_sysops.asyncio.create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+
+    result = await adapter.restart_service("a2a")
+
+    assert result.ok is False
+    assert "--user" in captured["probe"]
+
+
 def test_result_exposes_stable_status_and_secret_free_dict() -> None:
     result = VpsSysopsResult(
         operation="logs",

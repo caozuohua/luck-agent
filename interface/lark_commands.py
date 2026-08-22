@@ -10,7 +10,12 @@ from typing import Any, Protocol
 
 from core.log import get_logger
 from core.operation_policy import OperationPermissionPolicy
-from core.services import SERVICE_CATALOG, format_service_catalog, get_service
+from core.services import (
+    SERVICE_CATALOG,
+    format_service_catalog,
+    get_service,
+    get_service_operation,
+)
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
@@ -501,6 +506,15 @@ class QuickCommandRouter:
         if action == "restart":
             if not spec.restartable:
                 return f"⚠️ 服务 `{spec.service_id}` 当前不开放重启操作"
+            operation_spec = get_service_operation(spec.service_id, "restart")
+            if operation_spec is not None and self.targets is not None:
+                target = self.targets.current(user_id)
+                if not operation_spec.supports_provider(target.provider):
+                    return (
+                        f"⚠️ 服务 `{spec.service_id}` 不支持当前目标 provider："
+                        f"`{target.provider}`；仅支持："
+                        f"{', '.join(operation_spec.target_providers)}"
+                    )
             if (
                 spec.service_id == "new-api"
                 and self.new_api_target_id

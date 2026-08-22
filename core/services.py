@@ -21,11 +21,31 @@ class ServiceOperationSpec:
     entrypoint: str
     rollback_strategy: str
     verification: str
+    provider_entrypoints: tuple[tuple[str, str], ...] = ()
+    target_providers: tuple[str, ...] = ()
+
+    def entrypoint_for(self, provider: str = "") -> str:
+        normalized = str(provider or "").strip().lower()
+        for provider_id, entrypoint in self.provider_entrypoints:
+            if provider_id == normalized:
+                return entrypoint
+        return self.entrypoint
+
+    def supports_provider(self, provider: str = "") -> bool:
+        if not self.target_providers:
+            return True
+        return str(provider or "").strip().lower() in self.target_providers
 
 
 SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
     ServiceSpec("mem0", "Mem0", "mem0", "记忆 API 状态、浏览、搜索和 smoke"),
-    ServiceSpec("a2a", "A2A", "probe", "目标机 A2A Agent Card 健康检查"),
+    ServiceSpec(
+        "a2a",
+        "A2A",
+        "probe",
+        "目标机 A2A Agent Card 健康检查",
+        restartable=True,
+    ),
     ServiceSpec(
         "new-api",
         "new-api",
@@ -57,6 +77,27 @@ SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
             "版本回滚必须走独立、显式批准的镜像或配置回滚操作"
         ),
         verification="systemctl is-active new-api.service + /v1/models",
+    ),
+    ServiceOperationSpec(
+        service_id="a2a",
+        operation="restart",
+        entrypoint=(
+            "sudo -n systemctl restart hermes-a2a-bridge.service && "
+            "systemctl is-active hermes-a2a-bridge.service"
+        ),
+        rollback_strategy=(
+            "restart 不修改 A2A 配置或数据；失败时可再次执行同一固定 restart，"
+            "版本回滚必须走 Hermes/A2A 独立、显式批准的部署回滚操作"
+        ),
+        verification="systemctl is-active hermes-a2a-bridge.service + Agent Card probe",
+        provider_entrypoints=(
+            (
+                "azure",
+                "systemctl --user restart hermes-a2a-bridge.service && "
+                "systemctl --user is-active hermes-a2a-bridge.service",
+            ),
+        ),
+        target_providers=("gcp", "azure"),
     ),
 )
 

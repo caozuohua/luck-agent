@@ -26,3 +26,15 @@ def test_new_api_restart_has_a_fixed_contract() -> None:
         "sudo -n systemctl restart new-api.service && systemctl is-active new-api.service"
     )
     assert "/v1/models" in operation.verification
+
+
+def test_a2a_restart_has_provider_specific_fixed_contract() -> None:
+    operation = get_service_operation("a2a", "restart")
+
+    assert operation is not None
+    assert operation.supports_provider("gcp")
+    assert operation.supports_provider("azure")
+    assert not operation.supports_provider("aws")
+    assert "hermes-a2a-bridge.service" in operation.entrypoint_for("gcp")
+    assert "--user" in operation.entrypoint_for("azure")
+    assert "Agent Card" in operation.verification

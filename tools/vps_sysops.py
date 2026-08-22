@@ -73,6 +73,7 @@ class VpsSysopsAdapter:
         ),
     }
     SERVICE_UNITS: dict[str, str] = {
+        "a2a": "hermes-a2a-bridge.service",
         "luck-agent": "luck-agent.service",
         "new-api": "new-api.service",
     }
@@ -328,6 +329,17 @@ class VpsSysopsAdapter:
                 error=f"不支持重启服务：{service or '(empty)'}",
                 target=target,
             )
+        provider = target.provider if target is not None else ""
+        if not operation_spec.supports_provider(provider):
+            return VpsSysopsResult(
+                operation="restart",
+                ok=False,
+                error=(
+                    f"服务 `{service}` 不支持目标 provider：`{provider or '(unknown)'}`；"
+                    f"仅支持：{', '.join(operation_spec.target_providers)}"
+                ),
+                target=target,
+            )
         if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
             return VpsSysopsResult(
                 operation="restart",
@@ -353,7 +365,7 @@ class VpsSysopsAdapter:
             )
         env = self._build_environment(target, is_local=is_local)
         command, cwd = self._build_probe_command(
-            probe=operation_spec.entrypoint,
+            probe=operation_spec.entrypoint_for(provider),
             target=target,
             is_local=is_local,
             env=env,

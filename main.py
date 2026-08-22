@@ -24,6 +24,7 @@ from memory.curator import Curator
 from memory.db import Database
 from memory.goal_store import GoalStore
 from memory.pattern_store import PatternStore
+from memory.proposal import MemoryProposalDetector
 from runtime.graph_runtime import GraphRuntime
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
@@ -198,6 +199,7 @@ class Runtime:
                 runtime=self.graph_runtime,
                 access_policy=self.lark_access_policy,
                 approval_manager=self.lark_approval_manager,
+                memory_proposer=MemoryProposalDetector(),
             )
             self.lark_runner: LarkSdkRunner | None = None
         else:

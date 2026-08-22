@@ -240,3 +240,10 @@ def test_confirmation_scope_parses_explicit_mem0_write() -> None:
         "memory_write",
         {"service": "mem0", "operation": "write"},
     )
+
+
+def test_natural_language_memory_request_is_not_an_operation_confirmation() -> None:
+    manager = LarkApprovalManager()
+
+    assert not manager.requires_confirmation("请记住我喜欢简洁回答")
+    assert manager.requires_confirmation("/mem0 save 我喜欢简洁回答")

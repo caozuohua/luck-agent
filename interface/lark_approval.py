@@ -10,10 +10,11 @@ from core.operation_policy import OperationScope, scope_from_request, scope_from
 
 _DANGEROUS_REQUEST_RE = re.compile(
     r"(?:"
-    r"重启|重置|停止|启动|部署|升级|回滚|删除|清理|恢复|备份|安装|卸载|推送|修改|写入|保存|记住|防火墙|杀进程"
+    r"重启|重置|停止|启动|部署|升级|回滚|删除|清理|恢复|备份|安装|卸载|推送|修改|写入|防火墙|杀进程"
     r"|\brestart\b|\breboot\b|\bstop\b|\bstart\b|\bdeploy\b|\bupgrade\b"
     r"|\brollback\b|\bdelete\b|\bremove\b|\brestore\b|\binstall\b|\buninstall\b"
-    r"|\bpush\b|\bsave\b|\bremember\b|\bsudo\b|\bsystemctl\b|\bkill\b|\brm\b|\bgit\s+(?:commit|push|reset|clean)\b"
+    r"|\bpush\b|\bsudo\b|\bsystemctl\b|\bkill\b|\brm\b|git\s+(?:commit|push|reset|clean)\b"
+    r"|(?:^|\s)/?mem0\s+(?:save|remember|delete)\b"
     r")",
     re.IGNORECASE,
 )

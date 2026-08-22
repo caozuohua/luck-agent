@@ -5,6 +5,7 @@ from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
+from memory.proposal import MemoryProposalDetector
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
 from tools.service_health import ServiceHealthResult
 from tools.vps_status import HostStatus
@@ -478,6 +479,29 @@ async def test_lark_interface_short_circuits_quick_command() -> None:
     assert processed is True
     assert agent.calls == []
     assert "pong" in str(sender.cards[0])
+
+
+async def test_lark_memory_proposal_never_calls_agent_or_mem0() -> None:
+    agent = FakeAgent()
+    sender = FakeSender()
+    interface = LarkWebSocketInterface(
+        agent=agent,
+        sender=sender,
+        memory_proposer=MemoryProposalDetector(),
+    )
+
+    processed = await interface.handle_message(
+        {
+            "message_id": "memory-proposal-1",
+            "chat_id": "chat-1",
+            "user_id": "alice",
+            "text": "请记住我喜欢简洁回答",
+        }
+    )
+
+    assert processed is True
+    assert agent.calls == []
+    assert "/mem0 save 我喜欢简洁回答" in str(sender.cards[-1])
 
 
 async def test_target_commands_return_card_and_keep_user_selection() -> None:

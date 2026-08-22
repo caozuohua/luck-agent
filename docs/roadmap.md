@@ -156,7 +156,7 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 3. 避免每条消息都触发 LLM 或 Mem0 写入；
 4. 记忆服务不可用时，不阻塞普通运维任务。
 
-当前进展：已完成显式命令边界、第一版浏览体验和可配置 scope：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读。`MEM0_SCOPE_MODE=configured` 保持现有固定 user，`lark_user` 可按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 被观察到。保存、删除和浏览失败会降级为提示，不阻塞其他任务。自动记忆提议、临时上下文以及项目级 scope 仍待继续设计。
+当前进展：已完成显式命令边界、第一版浏览体验、可配置 scope 和自动记忆提议：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读。明确的“请记住/个人偏好”只展示提议卡，不自动调用 LLM/Mem0。`MEM0_SCOPE_MODE=configured` 保持现有固定 user，`lark_user` 可按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 被观察到。保存、删除和浏览失败会降级为提示，不阻塞其他任务。临时上下文和项目级 scope 仍待继续设计。
 
 ### 阶段五：Lark 平台能力
 

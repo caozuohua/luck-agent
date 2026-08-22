@@ -10,6 +10,7 @@ from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
 from interface.lark_cards import build_assistant_result_card, build_goal_result_card
 from interface.lark_commands import QuickCommandResult
+from memory.proposal import MemoryProposalDetector
 from runtime.contracts import RuntimeHandleResult
 
 log = get_logger("interface.lark_ws")
@@ -90,6 +91,7 @@ class LarkWebSocketInterface:
         runtime: RuntimeProtocol | None = None,
         access_policy: LarkAccessPolicy | None = None,
         approval_manager: LarkApprovalManager | None = None,
+        memory_proposer: MemoryProposalDetector | None = None,
         deduper: LarkMessageDeduper | None = None,
         reconnect_delay_seconds: float = 3.0,
         heartbeat_timeout_seconds: float = 60.0,
@@ -100,6 +102,7 @@ class LarkWebSocketInterface:
         self.runtime = runtime
         self.access_policy = access_policy
         self.approval_manager = approval_manager
+        self.memory_proposer = memory_proposer
         self.deduper = deduper or LarkMessageDeduper(ttl_seconds=60)
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
@@ -167,6 +170,19 @@ class LarkWebSocketInterface:
         approval_token = approved.token if approved is not None else None
         if approved is not None:
             text = approved.request
+        if approved is None and self.memory_proposer is not None:
+            proposal = self.memory_proposer.detect(text)
+            if proposal is not None:
+                response = (
+                    "🧠 检测到可能需要长期记忆的信息，但当前不会自动保存。\n"
+                    f"• 候选内容：{proposal.content}\n"
+                    f"• 原因：{proposal.reason}\n"
+                    f"• 如需保存，请发送：`{proposal.save_command}`\n"
+                    "发送保存命令后仍需一次性确认。"
+                )
+                await self.sender.send_card(chat_id, self.build_card(response))
+                log.info("lark_memory_proposal_presented", user_id=user_id, chat_id=chat_id)
+                return True
         response = None
         response_card: dict[str, Any] | None = None
         if self.quick_commands is not None:

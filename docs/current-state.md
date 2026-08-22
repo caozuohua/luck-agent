@@ -70,7 +70,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api` restart 登记固定入口、回滚策略和验收定义；
   仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；重启确认卡已支持一键确认，真实
-  Lark 已验证按钮回调、GCP `new-api` 重启和结果回卡；验证码仍保留为备用入口。
+  Lark 已验证按钮回调、GCP `new-api` 重启和结果回卡；备用验证码已改为独立代码块展示，
+  支持只粘贴验证码完成确认，并已通过真实 Lark 验收。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；
   `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，空配置保持兼容。

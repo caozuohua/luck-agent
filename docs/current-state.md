@@ -69,7 +69,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   allowlist 和固定入口；不接受任意服务名或 Shell。
 - `core.services.SERVICE_OPERATIONS` 已为 `luck-agent`、`new-api` restart 登记固定入口、回滚策略和验收定义；
   仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
-- Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
+- Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；重启确认卡已支持一键确认，真实
+  Lark 已验证按钮回调、GCP `new-api` 重启和结果回卡；验证码仍保留为备用入口。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；
   `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，空配置保持兼容。
@@ -137,7 +138,8 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前待办与阻塞项
 
 1. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前只开放 `luck-agent` 和 `new-api`。
-2. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
+2. 目标选择目前保存在进程内存；需要补充确认卡目标展示、`new-api` 的 GCP 目标绑定，以及重启后的目标选择恢复。
+3. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
 
 ## 实施顺序
 

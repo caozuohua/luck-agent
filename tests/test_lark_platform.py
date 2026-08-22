@@ -24,7 +24,9 @@ class FakeChatEndpoint:
 def _client(response):
     endpoint = FakeChatEndpoint(response)
     client = SimpleNamespace(
-        im=SimpleNamespace(v1=SimpleNamespace(chat=endpoint, message=endpoint)),
+        im=SimpleNamespace(
+            v1=SimpleNamespace(chat=endpoint, message=endpoint, chat_members=endpoint),
+        ),
     )
     return client, endpoint
 
@@ -80,3 +82,16 @@ async def test_list_messages_maps_text_and_card_summaries() -> None:
 
     assert [item.content for item in result] == ["hello", "a card"]
     assert result[1].sender_type == "app"
+
+
+async def test_list_chat_members_maps_names_without_returning_ids() -> None:
+    items = [
+        SimpleNamespace(name="曹佐华", member_id_type="open_id", member_id="ou_secret"),
+    ]
+    data = SimpleNamespace(items=items)
+    client, _ = _client(SimpleNamespace(code=0, msg="success", data=data))
+
+    result = await LarkPlatformClient(client).list_chat_members("oc_test", limit=10)
+
+    assert result[0].name == "曹佐华"
+    assert not hasattr(result[0], "member_id")

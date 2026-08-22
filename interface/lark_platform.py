@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import GetChatRequest, ListMessageRequest
+from lark_oapi.api.im.v1 import GetChatMembersRequest, GetChatRequest, ListMessageRequest
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,14 @@ class LarkMessageInfo:
     sender_type: str = ""
     content: str = ""
     create_time: int = 0
+
+
+@dataclass(frozen=True)
+class LarkChatMemberInfo:
+    """Privacy-safe summary of one member in the current chat."""
+
+    name: str = ""
+    member_id_type: str = ""
 
 
 class LarkPlatformClient:
@@ -90,6 +98,34 @@ class LarkPlatformClient:
                 )
             )
         return tuple(result)
+
+    async def list_chat_members(
+        self,
+        chat_id: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[LarkChatMemberInfo, ...]:
+        normalized = str(chat_id or "").strip()
+        if not normalized:
+            raise ValueError("chat_id is required")
+        page_size = max(1, min(int(limit), 10))
+        request = (
+            GetChatMembersRequest.builder()
+            .chat_id(normalized)
+            .member_id_type("open_id")
+            .page_size(page_size)
+            .build()
+        )
+        response = await asyncio.to_thread(self.client.im.v1.chat_members.get, request)
+        if response.code != 0 or response.data is None:
+            raise RuntimeError(f"Lark chat members query failed: {response.code} {response.msg}")
+        return tuple(
+            LarkChatMemberInfo(
+                name=str(getattr(item, "name", "") or "")[:80],
+                member_id_type=str(getattr(item, "member_id_type", "") or ""),
+            )
+            for item in (response.data.items or ())
+        )
 
 
 def _message_content(raw_content: str) -> str:

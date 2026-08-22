@@ -6,7 +6,7 @@ from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
-from interface.lark_platform import LarkChatInfo, LarkMessageInfo
+from interface.lark_platform import LarkChatInfo, LarkChatMemberInfo, LarkMessageInfo
 from interface.lark_ws import LarkWebSocketInterface
 from memory.db import Database
 from memory.proposal import MemoryProposalDetector
@@ -146,6 +146,14 @@ class FakeLarkPlatform:
                 content="Luck Agent · Lark",
             ),
         )[:limit]
+
+    async def list_chat_members(
+        self,
+        chat_id: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[LarkChatMemberInfo, ...]:
+        return (LarkChatMemberInfo(name="曹佐华", member_id_type="open_id"),)[:limit]
 
 
 class FakeMem0:
@@ -459,6 +467,23 @@ async def test_lark_messages_is_limited_to_the_current_chat() -> None:
 
     assert "最近消息：✅（1 条）" in _text(result)
     assert "hello" in _text(result)
+
+
+async def test_lark_chat_members_hides_member_ids() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+    )
+
+    result = await router.handle(
+        "/lark chat members 5",
+        user_id="alice",
+        chat_id="oc_test",
+    )
+
+    assert "曹佐华" in _text(result)
+    assert "open_id" not in _text(result)
 
 
 async def test_a2a_restart_rejects_aws_before_approval() -> None:

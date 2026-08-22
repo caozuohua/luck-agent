@@ -57,6 +57,16 @@ async def test_lark_natural_language_uses_goal_runtime() -> None:
     assert sender.cards[0][1]["body"]["elements"][0]["content"] == "已接收"
 
 
+def test_default_natural_language_card_chunks_long_result() -> None:
+    interface = LarkWebSocketInterface(agent=FakeAgent(), sender=FakeSender())
+
+    card = interface.build_card("结论\n\n" + ("详细结果。" * 500))
+
+    sections = [element["content"] for element in card["body"]["elements"]]
+    assert len(sections) > 1
+    assert sum(section.count("详细结果。") for section in sections) == 500
+
+
 async def test_lark_sends_terminal_goal_result() -> None:
     sender = FakeSender()
     interface = LarkWebSocketInterface(agent=FakeAgent(), sender=sender)

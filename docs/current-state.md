@@ -56,6 +56,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   `ok/partial/error` 三态和 `as_dict()` 结构化契约；日志脚本因系统日志权限产生的部分失败会明确标注。
 - `tools/mem0_client.py` 提供 Mem0 health、smoke 和 search；Mem0 业务记忆仍由 Agent 负责，vps_sysops 只负责服务运维。
 - 已增加显式 Mem0 记忆边界：`/mem0 save|remember` 和 `/mem0 delete MEMORY_ID` 需要一次性确认；普通消息、搜索和 `/mem0 list` 不触发 Mem0 写入。`/mem0 list` 展示当前 scope；`MEM0_SCOPE_MODE=configured` 保持兼容的固定 user，`lark_user` 按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 的 list/search/save 结果中出现。Mem0 不可用时仅返回降级提示。
+- Mem0 项目 scope 现在通过 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换；允许的项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化，所有保存/搜索/删除/smoke 均显式带入项目 scope。
 - 自然语言中的明确“请记住/个人偏好”现在只生成记忆提议卡，不调用 LLM 或 Mem0；用户点击“发起保存确认”后只需确认一次，仍复用 `/mem0 save` 的执行层校验。
 - 临时上下文现在按 `user_id + chat_id` 隔离：Goal 历史和压缩摘要不会跨群聊/会话串用；临时上下文仍保存在 SQLite/运行时，只有显式确认的业务记忆才进入 Mem0。
 - `core/services.py` 提供固定服务目录；`/vps service mem0 status|list|smoke|search` 调用 Mem0 API，

@@ -158,7 +158,7 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 
 当前进展：已完成显式命令边界、第一版浏览体验、可配置 scope 和自动记忆提议：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读。明确的“请记住/个人偏好”只展示提议卡，不自动调用 LLM/Mem0；提议卡可一键发起确认，用户只需再确认一次。`MEM0_SCOPE_MODE=configured` 保持现有固定 user，`lark_user` 可按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 被观察到。保存、删除和浏览失败会降级为提示，不阻塞其他任务。
 
-临时上下文边界已补强：`context_summaries` 与 Goal 历史均按 `user_id + chat_id` 隔离，不跨群聊复用；下一步继续实现 Mem0 项目 scope 的显式选择。
+临时上下文边界已补强：`context_summaries` 与 Goal 历史均按 `user_id + chat_id` 隔离，不跨群聊复用。Mem0 项目 scope 已支持 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换，允许项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化并显示在操作结果中；临时上下文仍不会写入 Mem0。
 
 ### 阶段五：Lark 平台能力
 

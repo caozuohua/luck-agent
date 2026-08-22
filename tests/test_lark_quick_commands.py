@@ -5,7 +5,9 @@ from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
 from interface.lark_ws import LarkWebSocketInterface
+from memory.db import Database
 from memory.proposal import MemoryProposalDetector
+from memory.scope_store import MemoryScopeStore
 from tools.mem0_client import Mem0Health, Mem0SmokeResult
 from tools.service_health import ServiceHealthResult
 from tools.vps_status import HostStatus
@@ -99,13 +101,15 @@ class FakeNewApi:
 
 class FakeMem0:
     def __init__(self) -> None:
+        self.agent_id = "luck-agent"
+        self.project_ids = ("luck-agent", "hermes")
         self.add_calls: list[tuple[str, dict]] = []
         self.delete_calls: list[str] = []
         self.search_calls: list[str] = []
         self.list_calls: list[str] = []
 
-    def scope_label(self, actor_id: str = "") -> str:
-        return f"mode=configured · user=personal · agent=luck-agent"
+    def scope_label(self, actor_id: str = "", project_id: str | None = None) -> str:
+        return f"mode=configured · user=personal · project={project_id or self.agent_id}"
 
     async def health(self) -> Mem0Health:
         return Mem0Health(ok=True, latency_ms=4, detail="test")
@@ -227,6 +231,41 @@ async def test_mem0_list_is_read_only_and_available_through_service_catalog() ->
     assert "memory-1" in _text(result)
     assert mem0.add_calls == []
     assert mem0.delete_calls == []
+
+
+async def test_mem0_scope_selection_is_persisted_per_chat() -> None:
+    db = Database(":memory:")
+    await db.initialize()
+    try:
+        mem0 = FakeMem0()
+        router = QuickCommandRouter(
+            health=FakeHealth(),
+            vps=FakeVps(),
+            mem0=mem0,
+            scope_store=MemoryScopeStore(db),
+        )
+
+        selected = await router.handle(
+            "/mem0 scope hermes",
+            user_id="alice",
+            chat_id="chat-a",
+        )
+        current = await router.handle(
+            "/mem0 scope",
+            user_id="alice",
+            chat_id="chat-a",
+        )
+        other_chat = await router.handle(
+            "/mem0 scope",
+            user_id="alice",
+            chat_id="chat-b",
+        )
+
+        assert "已切换" in _text(selected)
+        assert "`hermes`" in _text(current)
+        assert "`luck-agent`" in _text(other_chat)
+    finally:
+        await db.close()
 
 
 async def test_mem0_delete_is_scoped_and_validated() -> None:

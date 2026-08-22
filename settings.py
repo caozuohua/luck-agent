@@ -98,6 +98,7 @@ class AgentSettings:
     mem0_api_key: str = ""
     mem0_user_id: str = "personal"
     mem0_agent_id: str = "luck-agent"
+    mem0_projects: str = ""
     mem0_scope_mode: str = "configured"
     mem0_timeout_seconds: float = 10.0
     curator_trigger_interval: int = 50
@@ -170,6 +171,7 @@ def load_settings() -> AgentSettings:
         mem0_api_key=os.environ.get("MEM0_API_KEY", ""),
         mem0_user_id=os.environ.get("MEM0_USER_ID", "personal"),
         mem0_agent_id=os.environ.get("MEM0_AGENT_ID", "luck-agent"),
+        mem0_projects=os.environ.get("MEM0_PROJECTS", ""),
         mem0_scope_mode=os.environ.get("MEM0_SCOPE_MODE", "configured"),
         mem0_timeout_seconds=float(os.environ.get("MEM0_TIMEOUT_SECONDS", "10")),
         curator_trigger_interval=int(os.environ.get("CURATOR_TRIGGER_INTERVAL", "50")),

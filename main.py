@@ -25,6 +25,7 @@ from memory.db import Database
 from memory.goal_store import GoalStore
 from memory.pattern_store import PatternStore
 from memory.proposal import MemoryProposalDetector
+from memory.scope_store import MemoryScopeStore
 from runtime.graph_runtime import GraphRuntime
 from settings import AgentSettings, load_settings
 from tools.registry import ToolRegistry
@@ -147,6 +148,7 @@ class Runtime:
                 api_key=settings.mem0_api_key,
                 user_id=settings.mem0_user_id,
                 agent_id=settings.mem0_agent_id,
+                project_ids=settings.mem0_projects,
                 scope_mode=settings.mem0_scope_mode,
                 timeout_seconds=settings.mem0_timeout_seconds,
             )
@@ -163,6 +165,7 @@ class Runtime:
             vps=self.vps_status,
             sysops=self.vps_sysops,
             mem0=self.mem0,
+            scope_store=MemoryScopeStore(self.db),
             targets=self.target_registry,
             permission_policy=self.operation_permission_policy,
             mem0_target_id=self.vps_target.label,

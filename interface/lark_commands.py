@@ -22,6 +22,7 @@ from interface.lark_cards import (
     build_service_catalog_card,
     build_target_selection_card,
 )
+from memory.scope_store import MemoryScopeStore
 
 log = get_logger("interface.lark_commands")
 
@@ -65,6 +66,7 @@ class QuickCommandRouter:
         vps: VpsStatusService,
         sysops: VpsSysopsProvider | None = None,
         mem0: Mem0Client | None = None,
+        scope_store: MemoryScopeStore | None = None,
         targets: VpsTargetRegistry | None = None,
         permission_policy: OperationPermissionPolicy | None = None,
         mem0_target_id: str = "",
@@ -77,6 +79,7 @@ class QuickCommandRouter:
         self.vps = vps
         self.sysops = sysops
         self.mem0 = mem0
+        self.scope_store = scope_store
         self.targets = targets
         self.permission_policy = permission_policy
         self.mem0_target_id = mem0_target_id.strip().lower()
@@ -93,6 +96,7 @@ class QuickCommandRouter:
         text: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str | QuickCommandResult | None:
         raw_command = " ".join(text.strip().split())
@@ -112,6 +116,7 @@ class QuickCommandRouter:
                 "• `/targets` 选择 VPS 目标\n"
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
+                "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
                 "• `/mem0 smoke` Mem0 写入/搜索/清理测试\n"
                 "• `/mem0 search 关键词` 搜索记忆\n"
@@ -132,6 +137,7 @@ class QuickCommandRouter:
                 return await self._service(
                     raw_command[len(prefix) :].strip(),
                     user_id,
+                    chat_id=chat_id,
                     approval_token=approval_token,
                 )
         if command in {"/vps service", "vps service", "/service", "service"}:
@@ -143,15 +149,25 @@ class QuickCommandRouter:
                     return await self._sysops(operation, user_id)
                 return None
         if command in {"/mem0 status", "mem0 status"}:
-            return await self._mem0_status()
+            return await self._mem0_status(user_id=user_id, chat_id=chat_id)
+        if command in {"/mem0 scope", "mem0 scope", "/mem0 project", "mem0 project"}:
+            return await self._mem0_scope(user_id=user_id, chat_id=chat_id)
+        for prefix in ("/mem0 scope ", "mem0 scope ", "/mem0 project ", "mem0 project "):
+            if command.startswith(prefix):
+                project_id = raw_command[len(prefix) :].strip()
+                return await self._mem0_scope(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    project_id=project_id,
+                )
         if command in {"/mem0 list", "mem0 list", "/mem0 memories", "mem0 memories"}:
-            return await self._mem0_list(user_id=user_id)
+            return await self._mem0_list(user_id=user_id, chat_id=chat_id)
         if command in {"/mem0 smoke", "mem0 smoke"}:
-            return await self._mem0_smoke(user_id=user_id)
+            return await self._mem0_smoke(user_id=user_id, chat_id=chat_id)
         for prefix in ("/mem0 search ", "mem0 search "):
             if command.startswith(prefix):
                 query = raw_command[len(prefix) :].strip()
-                return await self._mem0_search(query, user_id=user_id)
+                return await self._mem0_search(query, user_id=user_id, chat_id=chat_id)
         for prefix in (
             "/mem0 save ",
             "mem0 save ",
@@ -163,6 +179,7 @@ class QuickCommandRouter:
                 return await self._mem0_save(
                     content,
                     user_id=user_id,
+                    chat_id=chat_id,
                     approval_token=approval_token,
                 )
         for prefix in ("/mem0 delete ", "mem0 delete "):
@@ -171,6 +188,7 @@ class QuickCommandRouter:
                 return await self._mem0_delete(
                     memory_id,
                     user_id=user_id,
+                    chat_id=chat_id,
                     approval_token=approval_token,
                 )
         return None
@@ -411,6 +429,7 @@ class QuickCommandRouter:
         request: str,
         user_id: str,
         *,
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str | QuickCommandResult:
         parts = request.split(maxsplit=2)
@@ -451,13 +470,17 @@ class QuickCommandRouter:
                         f"当前选择为 `{target.label}`，请先切换目标"
                     )
             if action in {"status", "health"}:
-                return await self._mem0_status()
+                return await self._mem0_status(user_id=user_id, chat_id=chat_id)
             if action == "smoke":
-                return await self._mem0_smoke(user_id=user_id)
+                return await self._mem0_smoke(user_id=user_id, chat_id=chat_id)
             if action == "list":
-                return await self._mem0_list(user_id=user_id)
+                return await self._mem0_list(user_id=user_id, chat_id=chat_id)
             if action == "search":
-                return await self._mem0_search(argument, user_id=user_id)
+                return await self._mem0_search(
+                    argument,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                )
             return "用法：`/vps service mem0 status|list|smoke|search 关键词`"
 
         if spec.backend == "http":
@@ -602,15 +625,91 @@ class QuickCommandRouter:
         except Exception:
             log.warning("quick_service_audit_failed", service=service, target=target)
 
-    async def _mem0_status(self) -> str | QuickCommandResult:
+    async def _mem0_scope(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        project_id: str = "",
+    ) -> str | QuickCommandResult:
+        if self.mem0 is None:
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
+        projects = tuple(getattr(self.mem0, "project_ids", ()) or ())
+        default_project = str(getattr(self.mem0, "agent_id", "luck-agent"))
+        if not projects:
+            projects = (default_project,)
+        current = await self._current_mem0_project(user_id, chat_id)
+        if project_id:
+            if project_id not in projects:
+                text = (
+                    f"🧠 Mem0 项目 scope：⚠️ 未授权项目 `{project_id}`\n"
+                    f"• 可选：{', '.join(f'`{item}`' for item in projects)}\n"
+                    f"• 当前：`{current}`"
+                )
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 Scope"),
+                )
+            if self.scope_store is None:
+                text = "🧠 Mem0 项目 scope：⚠️ 当前运行时未启用持久化选择"
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 Scope"),
+                )
+            await self.scope_store.set(user_id, chat_id, project_id)
+            current = project_id
+            text = f"🧠 Mem0 项目 scope 已切换：✅\n• 当前：`{current}`\n• 会话：按当前 Lark 会话保存"
+        else:
+            text = (
+                f"🧠 Mem0 项目 scope：`{current}`\n"
+                f"• 可选：{', '.join(f'`{item}`' for item in projects)}\n"
+                "• 切换：`/mem0 scope PROJECT_ID`\n"
+                "• 该选择按用户 + 会话保存；临时上下文不会写入 Mem0"
+            )
+        return QuickCommandResult(
+            text,
+            build_sections_card([text], title="Luck Agent · Mem0 Scope"),
+        )
+
+    async def _current_mem0_project(self, user_id: str, chat_id: str) -> str:
+        default_project = str(getattr(self.mem0, "agent_id", "luck-agent"))
+        if self.scope_store is None:
+            return default_project
+        selected = await self.scope_store.get(user_id, chat_id)
+        projects = set(getattr(self.mem0, "project_ids", ()) or ())
+        return selected if selected in projects else default_project
+
+    def _mem0_project_kwargs(self, project_id: str) -> dict[str, str]:
+        default_project = str(getattr(self.mem0, "agent_id", "luck-agent"))
+        return {} if project_id == default_project else {"project_id": project_id}
+
+    def _mem0_scope_label(self, user_id: str, project_id: str) -> str:
+        try:
+            return self.mem0.scope_label(user_id, project_id=project_id)
+        except TypeError:
+            # Keep lightweight test doubles and older senders compatible.
+            return self.mem0.scope_label(user_id)
+
+    async def _mem0_status(
+        self,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
         if self.mem0 is None:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
             status = await self.mem0.health()
+            project_id = await self._current_mem0_project(user_id, chat_id)
             mark = "✅" if status.ok else "❌"
             detail = f"\n• 说明：{status.detail}" if status.detail else ""
-            text = f"🧠 Mem0 API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            text = (
+                f"🧠 Mem0 API：{mark}\n"
+                f"• 延迟：{status.latency_ms} ms\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}{detail}"
+            )
             return QuickCommandResult(
                 text,
                 build_sections_card([text], title="Luck Agent · Mem0"),
@@ -620,12 +719,21 @@ class QuickCommandRouter:
             text = "🧠 Mem0 API：⚠️ 暂时无法读取状态"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
 
-    async def _mem0_smoke(self, *, user_id: str = "default") -> str | QuickCommandResult:
+    async def _mem0_smoke(
+        self,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
         if self.mem0 is None:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
         try:
-            result: Mem0SmokeResult = await self.mem0.smoke(actor_id=user_id)
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            result: Mem0SmokeResult = await self.mem0.smoke(
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
             mark = "✅" if result.ok and result.cleanup_confirmed else "⚠️"
             detail = f"\n• 说明：{result.detail}" if result.detail else ""
             text = (
@@ -633,7 +741,8 @@ class QuickCommandRouter:
                 f"• 写入：{result.added}\n"
                 f"• 搜索命中：{result.found}\n"
                 f"• 清理：{result.deleted}\n"
-                f"• 临时标识：`{result.marker}`{detail}"
+                f"• 临时标识：`{result.marker}`\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}{detail}"
             )
             return QuickCommandResult(
                 text,
@@ -649,6 +758,7 @@ class QuickCommandRouter:
         query: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
     ) -> str | QuickCommandResult:
         if not query:
             return "用法：`/mem0 search 关键词`"
@@ -656,15 +766,26 @@ class QuickCommandRouter:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
-            results = await self.mem0.search(query, actor_id=user_id)
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            results = await self.mem0.search(
+                query,
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
             if not results:
-                text = f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆"
+                text = (
+                    f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆\n"
+                    f"• Scope：{self._mem0_scope_label(user_id, project_id)}"
+                )
                 return QuickCommandResult(
                     text,
                     build_sections_card([text], title="Luck Agent · Mem0 搜索"),
                 )
-            lines = [f"🧠 Mem0 搜索：{len(results)} 条结果"]
-            sections = [lines[0]]
+            lines = [
+                f"🧠 Mem0 搜索：{len(results)} 条结果",
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}",
+            ]
+            sections = list(lines)
             for index, item in enumerate(results[:5], start=1):
                 text = _memory_text(item) or "（无文本）"
                 memory_id = str(item.get("id", ""))
@@ -687,13 +808,23 @@ class QuickCommandRouter:
                 build_sections_card([text], title="Luck Agent · Mem0 搜索"),
             )
 
-    async def _mem0_list(self, *, user_id: str = "default") -> str | QuickCommandResult:
+    async def _mem0_list(
+        self,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
         if self.mem0 is None:
             text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
             return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
-            results = await self.mem0.list_memories(limit=10, actor_id=user_id)
-            scope = self.mem0.scope_label(user_id)
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            results = await self.mem0.list_memories(
+                limit=10,
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
+            scope = self._mem0_scope_label(user_id, project_id)
             if not results:
                 text = f"🧠 Mem0 记忆清单：当前没有记忆\n• Scope：{scope}"
                 return QuickCommandResult(
@@ -728,6 +859,7 @@ class QuickCommandRouter:
         content: str,
         *,
         user_id: str,
+        chat_id: str,
         approval_token: str | None,
     ) -> str | QuickCommandResult:
         if not content:
@@ -745,13 +877,19 @@ class QuickCommandRouter:
         if denied:
             return denied
         try:
+            project_id = await self._current_mem0_project(user_id, chat_id)
             payload = await self.mem0.add(
                 content,
                 metadata={"source": "lark-explicit", "user_confirmed": True},
                 actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
             )
             added = _memory_result_count(payload)
-            text = f"🧠 Mem0 记忆已保存：✅\n• 内容长度：{len(content)}\n• 写入条目：{added}"
+            text = (
+                f"🧠 Mem0 记忆已保存：✅\n"
+                f"• 内容长度：{len(content)}\n• 写入条目：{added}\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}"
+            )
             return QuickCommandResult(
                 text,
                 build_sections_card([text], title="Luck Agent · Mem0 保存"),
@@ -769,6 +907,7 @@ class QuickCommandRouter:
         memory_id: str,
         *,
         user_id: str,
+        chat_id: str,
         approval_token: str | None,
     ) -> str | QuickCommandResult:
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", memory_id):
@@ -784,8 +923,16 @@ class QuickCommandRouter:
         if denied:
             return denied
         try:
-            await self.mem0.delete(memory_id, actor_id=user_id)
-            text = f"🧠 Mem0 记忆已删除：✅\n• ID：`{memory_id}`"
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            await self.mem0.delete(
+                memory_id,
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
+            text = (
+                f"🧠 Mem0 记忆已删除：✅\n• ID：`{memory_id}`\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}"
+            )
             return QuickCommandResult(
                 text,
                 build_sections_card([text], title="Luck Agent · Mem0 删除"),

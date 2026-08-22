@@ -78,6 +78,16 @@ class Database:
                 turn_range  TEXT,
                 created_at  INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS memory_scopes (
+                user_id    TEXT NOT NULL,
+                chat_id    TEXT NOT NULL DEFAULT '',
+                project_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, chat_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_scopes_updated
+                ON memory_scopes(updated_at);
             """
         )
         # Existing V2 databases predate chat_id. Keep the migration local and

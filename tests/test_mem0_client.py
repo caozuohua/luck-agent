@@ -112,8 +112,27 @@ async def test_mem0_lark_user_scope_overrides_configured_user(monkeypatch: Any) 
 
     assert results[0]["id"] == "m1"
     assert FakeAsyncClient.requests[0]["json"]["filters"]["user_id"] == "ou_alice"
-    assert client.scope_label("ou_alice") == "mode=lark_user · user=ou_alice · agent=a1"
+    assert client.scope_label("ou_alice") == "mode=lark_user · user=ou_alice · project=a1"
     assert client.effective_user_id("default") == "personal"
+
+
+async def test_mem0_project_scope_is_explicitly_sent(monkeypatch: Any) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        FakeResponse({"results": [{"id": "m1", "memory": "project note"}]}),
+    ]
+    monkeypatch.setattr("tools.mem0_client.httpx.AsyncClient", FakeAsyncClient)
+    client = Mem0Client(
+        base_url="http://mem0:8888",
+        api_key="secret",
+        agent_id="luck-agent",
+        project_ids="luck-agent,hermes",
+    )
+
+    await client.search("note", project_id="hermes")
+
+    assert FakeAsyncClient.requests[0]["json"]["filters"]["agent_id"] == "hermes"
+    assert client.scope_label(project_id="hermes").endswith("project=hermes")
 
 
 async def test_mem0_lark_user_delete_requires_visible_memory(monkeypatch: Any) -> None:

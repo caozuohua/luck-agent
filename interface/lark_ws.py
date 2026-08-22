@@ -189,6 +189,7 @@ class LarkWebSocketInterface:
             response = await self.quick_commands.handle(
                 text,
                 user_id=user_id,
+                chat_id=chat_id,
                 approval_token=approval_token,
             )
             if response is not None:

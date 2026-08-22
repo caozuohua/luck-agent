@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.targets import VpsTarget
 from interface.lark_cards import (
+    build_goal_result_card,
     build_log_page_card,
     build_output_page_card,
     build_sections_card,
@@ -68,3 +69,21 @@ def test_service_catalog_card_contains_one_section_per_service() -> None:
 
     assert card["header"]["title"]["content"].startswith("Luck Agent · 服务目录")
     assert len(card["body"]["elements"]) == len(SERVICE_CATALOG) + 2
+
+
+def test_goal_result_card_distinguishes_done_and_failed_states() -> None:
+    done = build_goal_result_card(
+        goal_id="goal-123456",
+        status="DONE",
+        result="服务正常",
+    )
+    failed = build_goal_result_card(
+        goal_id="goal-123456",
+        status="FAILED",
+        error="目标不可达",
+    )
+
+    assert done["header"]["template"] == "green"
+    assert failed["header"]["template"] == "red"
+    assert done["body"]["elements"][1]["content"] == "• Goal：`goal-123`"
+    assert failed["body"]["elements"][2]["content"] == "目标不可达"

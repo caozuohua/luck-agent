@@ -70,4 +70,24 @@ async def test_lark_sends_terminal_goal_result() -> None:
         }
     )
 
-    assert "服务正常" in sender.cards[0][1]["body"]["elements"][0]["content"]
+    assert "服务正常" in sender.cards[0][1]["body"]["elements"][2]["content"]
+    assert sender.cards[0][1]["header"]["template"] == "green"
+
+
+async def test_lark_sends_failed_terminal_goal_as_error_card() -> None:
+    sender = FakeSender()
+    interface = LarkWebSocketInterface(agent=FakeAgent(), sender=sender)
+
+    await interface.send_goal_result(
+        {
+            "goal_id": "goal-failed",
+            "chat_id": "c1",
+            "status": "FAILED",
+            "result": "",
+            "error": "目标不可达",
+        }
+    )
+
+    card = sender.cards[0][1]
+    assert card["header"]["template"] == "red"
+    assert card["body"]["elements"][2]["content"] == "目标不可达"

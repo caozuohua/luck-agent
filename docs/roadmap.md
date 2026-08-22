@@ -68,6 +68,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   过期或越权令牌不会返回内容，原有日志回调保持兼容。
 - `/vps service list`、Mem0 状态/smoke/search、new-api 和 A2A 探针已统一返回分段 Markdown
   Card 2.0，并保留文本摘要兼容旧发送器。
+- Goal 后台任务终态回推已使用独立结果卡片，完成/失败分别采用绿色/红色状态和分段结果展示，
+  不改变现有状态机、通知时机或执行语义。
 - 正式 Lark 自然语言入口已接入 Goal Runtime + LangGraph：SQLite Goal、内存有界队列、启动恢复、
   `EXECUTING → AWAITING_RESULT → EVALUATING → DONE/FAILED` 状态闭环和终态回推均已有自动化测试；
   快捷命令继续保持独立的无 LLM 控制面。
@@ -114,8 +116,8 @@ AWS 重启恢复、三目标只读路由和运行时配置一致性已完成。
 仍需完成：
 
 1. 目标主机、服务、操作和用户级 allowlist 已建立；AWS 生产待取得可靠操作者 `open_id` 后再启用用户白名单；
-2. 将其余命令结果继续统一为适合手机查看的结构化卡片；vps_sysops 长结果分页已完成，仍需继续收敛
-   Goal 终态和更多自然语言结果的卡片结构；
+2. 将其余命令结果继续统一为适合手机查看的结构化卡片；vps_sysops 长结果、服务目录、Mem0、
+   new-api/A2A 探针和 Goal 终态已完成，仍需继续收敛更多自然语言结果的卡片结构；
 3. 已完成 Luck Agent 自身的受控重启路由；继续扩展其他服务前，必须为每个操作单独定义固定入口、
    回滚策略和验收测试，不能复用任意 Shell。
 

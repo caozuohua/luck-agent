@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
-from interface.lark_cards import build_text_card
+from interface.lark_cards import build_goal_result_card, build_text_card
 from interface.lark_commands import QuickCommandResult
 from runtime.contracts import RuntimeHandleResult
 
@@ -220,11 +220,15 @@ class LarkWebSocketInterface:
         goal_id = str(goal.get("goal_id") or "")[:8]
         result = str(goal.get("result") or "").strip()
         error = str(goal.get("error") or "").strip()
-        if status == "DONE":
-            text = f"✅ 后台任务完成\n• Goal：`{goal_id}`\n{result or '任务已完成。'}"
-        else:
-            text = f"⚠️ 后台任务未完成\n• Goal：`{goal_id}`\n{error or result or '请检查任务状态。'}"
-        await self.sender.send_card(chat_id, self.build_card(text))
+        await self.sender.send_card(
+            chat_id,
+            build_goal_result_card(
+                goal_id=goal_id,
+                status=status,
+                result=result,
+                error=error,
+            ),
+        )
 
     def handle_card_action(self, event: dict[str, Any]) -> dict[str, Any]:
         """Handle a Card 2.0 action synchronously on the SDK callback thread."""

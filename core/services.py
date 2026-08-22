@@ -12,6 +12,17 @@ class ServiceSpec:
     restartable: bool = False
 
 
+@dataclass(frozen=True)
+class ServiceOperationSpec:
+    """Fixed contract for one mutating service operation."""
+
+    service_id: str
+    operation: str
+    entrypoint: str
+    rollback_strategy: str
+    verification: str
+
+
 SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
     ServiceSpec("mem0", "Mem0", "mem0", "记忆 API 状态、smoke 和搜索"),
     ServiceSpec("a2a", "A2A", "probe", "目标机 A2A Agent Card 健康检查"),
@@ -20,9 +31,36 @@ SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
 )
 
 
+SERVICE_OPERATIONS: tuple[ServiceOperationSpec, ...] = (
+    ServiceOperationSpec(
+        service_id="luck-agent",
+        operation="restart",
+        entrypoint="sudo -n /usr/local/sbin/luck-agent-restart",
+        rollback_strategy=(
+            "restart 不修改持久化配置；若启动验收失败，由 systemd Restart=always 保持恢复，"
+            "版本回滚必须走独立、显式批准的 Git rollback 操作"
+        ),
+        verification="systemctl is-active luck-agent.service + /health",
+    ),
+)
+
+
 def get_service(service_id: str) -> ServiceSpec | None:
     normalized = str(service_id or "").strip().lower()
     return next((item for item in SERVICE_CATALOG if item.service_id == normalized), None)
+
+
+def get_service_operation(service_id: str, operation: str) -> ServiceOperationSpec | None:
+    normalized_service = str(service_id or "").strip().lower()
+    normalized_operation = str(operation or "").strip().lower()
+    return next(
+        (
+            item
+            for item in SERVICE_OPERATIONS
+            if item.service_id == normalized_service and item.operation == normalized_operation
+        ),
+        None,
+    )
 
 
 def format_service_catalog(*, allowed: set[str] | frozenset[str] | None = None) -> str:

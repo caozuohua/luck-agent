@@ -59,6 +59,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   `a2a` 通过目标 SSH 上的固定 Agent Card probe 检查，`new-api` 只读访问 `/v1/models`，
   `luck-agent` 可查看宿主机服务状态；`/vps service luck-agent restart` 是当前唯一开放的
   变更操作，必须通过一次性确认、目标/服务/操作 allowlist 和固定 sudo wrapper；不接受任意服务名或 Shell。
+- `core.services.SERVICE_OPERATIONS` 已为当前 restart 操作登记固定入口、回滚策略和验收定义；
+  仓库中的 backup/upgrade/rollback 脚本尚未部署到生产，因此不会被命令路由自动开放。
 - Lark 入口已支持用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前配置为已验证测试群。
 - 危险工具在执行层再次校验确认码；拒绝、批准和执行结果写入 SQLite `operation_audit`，确认码只消费一次。
 - 可选 `OPS_ALLOWED_TARGETS`、`OPS_ALLOWED_SERVICES`、`OPS_ALLOWED_OPERATIONS` 已接入工具执行层；

@@ -19,6 +19,13 @@ class _FakeProcess:
         return b"partial log report\n", b""
 
 
+class _LongOutputProcess:
+    returncode = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"A" * 25, b""
+
+
 async def _fake_create_subprocess_exec(*args, **kwargs) -> _FakeProcess:
     return _FakeProcess()
 
@@ -149,6 +156,27 @@ def test_log_pagination_has_a_hard_page_limit() -> None:
 
     assert len(pages) == 3
     assert complete is False
+
+
+async def test_non_log_output_is_available_as_pages(monkeypatch, tmp_path: Path) -> None:
+    script = tmp_path / "scripts" / "07_resources.sh"
+    script.parent.mkdir()
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    async def fake_long_process(*args, **kwargs) -> _LongOutputProcess:
+        return _LongOutputProcess()
+
+    monkeypatch.setattr(
+        "tools.vps_sysops.asyncio.create_subprocess_exec",
+        fake_long_process,
+    )
+
+    result = await VpsSysopsAdapter(root=str(tmp_path), max_output_chars=10).run("resources")
+
+    assert result.output == "A" * 10
+    assert result.output_pages == ("A" * 10, "A" * 10, "A" * 5)
+    assert result.truncated is True
+    assert result.pages_complete is True
 
 
 def test_result_exposes_stable_status_and_secret_free_dict() -> None:

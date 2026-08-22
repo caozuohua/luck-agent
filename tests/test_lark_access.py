@@ -95,6 +95,40 @@ def test_log_page_card_action_returns_updated_card() -> None:
     assert response["toast"]["type"] == "success"
 
 
+def test_generic_output_page_card_action_uses_output_renderer() -> None:
+    calls: list[tuple[str, int, str]] = []
+
+    class FakeQuickCommands:
+        def render_output_page(self, token: str, page: int, *, user_id: str) -> QuickCommandResult:
+            calls.append((token, page, user_id))
+            return QuickCommandResult(
+                f"输出第 {page} 页",
+                {"schema": "2.0", "body": {"elements": []}},
+            )
+
+    interface = LarkWebSocketInterface(
+        agent=FakeAgent(),
+        sender=FakeSender(),
+        quick_commands=FakeQuickCommands(),
+        access_policy=LarkAccessPolicy(allowed_chat_ids=frozenset({"oc_allowed"})),
+    )
+
+    response = interface.handle_card_action(
+        {
+            "chat_id": "oc_allowed",
+            "user_id": "ou_user",
+            "action": {
+                "tag": "button",
+                "value": {"action": "vps_output_page", "token": "output-token", "page": "2"},
+            },
+        }
+    )
+
+    assert calls == [("output-token", 2, "ou_user")]
+    assert response["card"]["type"] == "raw"
+    assert response["toast"]["type"] == "success"
+
+
 async def test_dangerous_request_requires_one_time_confirmation() -> None:
     agent = FakeAgent()
     sender = FakeSender()

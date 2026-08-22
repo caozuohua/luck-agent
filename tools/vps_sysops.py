@@ -197,17 +197,12 @@ class VpsSysopsAdapter:
             )
 
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
-        output_pages: tuple[str, ...] = ()
-        pages_complete = True
-        if operation == "logs":
-            output_pages, pages_complete = _paginate_output(
-                output,
-                self.max_output_chars,
-            )
-            output = output_pages[0] if output_pages else ""
-            truncated = len(output_pages) > 1 or not pages_complete
-        else:
-            output, truncated = _truncate_output(output, self.max_output_chars)
+        output_pages, pages_complete = _paginate_output(
+            output,
+            self.max_output_chars,
+        )
+        output = output_pages[0] if output_pages else ""
+        truncated = len(output_pages) > 1 or not pages_complete
         returncode = process.returncode
         error = "" if returncode == 0 else f"脚本退出码 {returncode}"
         partial = (
@@ -303,7 +298,12 @@ class VpsSysopsAdapter:
                 target=target,
             )
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
-        output, truncated = _truncate_output(output, self.max_output_chars)
+        output_pages, pages_complete = _paginate_output(
+            output,
+            self.max_output_chars,
+        )
+        output = output_pages[0] if output_pages else ""
+        truncated = len(output_pages) > 1 or not pages_complete
         returncode = process.returncode
         return VpsSysopsResult(
             operation=f"service:{service}",
@@ -313,6 +313,8 @@ class VpsSysopsAdapter:
             returncode=returncode,
             target=target,
             truncated=truncated,
+            output_pages=output_pages,
+            pages_complete=pages_complete,
         )
 
     async def restart_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
@@ -387,7 +389,12 @@ class VpsSysopsAdapter:
                 target=target,
             )
         output = _clean_output(stdout.decode("utf-8", errors="replace"))
-        output, truncated = _truncate_output(output, self.max_output_chars)
+        output_pages, pages_complete = _paginate_output(
+            output,
+            self.max_output_chars,
+        )
+        output = output_pages[0] if output_pages else ""
+        truncated = len(output_pages) > 1 or not pages_complete
         returncode = process.returncode
         return VpsSysopsResult(
             operation="restart",
@@ -397,6 +404,8 @@ class VpsSysopsAdapter:
             returncode=returncode,
             target=target,
             truncated=truncated,
+            output_pages=output_pages,
+            pages_complete=pages_complete,
         )
 
     def _is_local_target(self, target: VpsTarget | None) -> bool | None:
@@ -528,7 +537,8 @@ def format_vps_sysops_result(result: VpsSysopsResult) -> str:
     if not result.ok and result.error and result.output.strip():
         body = f"{result.error}\n{body}"
     if result.output_pages and len(result.output_pages) > 1:
-        body += f"\n\n📄 日志第 1/{len(result.output_pages)} 页"
+        page_label = "日志" if result.operation == "logs" else "输出"
+        body += f"\n\n📄 {page_label}第 1/{len(result.output_pages)} 页"
         if not result.pages_complete:
             body += "（已达到分页缓存上限）"
     return f"🖥️ vps_sysops · {title} {mark}{target_line}\n{body}"

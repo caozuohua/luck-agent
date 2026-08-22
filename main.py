@@ -15,6 +15,7 @@ from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandRouter
 from interface.lark_api import LarkApiSender
+from interface.lark_platform import LarkPlatformClient
 from interface.lark_sdk import LarkSdkRunner
 from interface.web import WebInterface
 from llm.fake import FakeLLMClient
@@ -197,6 +198,7 @@ class Runtime:
                 .domain(settings.lark_domain)
                 .build()
             )
+            self.quick_commands.lark_platform = LarkPlatformClient(self.lark_api_client)
 
             self.lark = LarkWebSocketInterface(
                 agent=self.agent,

@@ -6,6 +6,7 @@ from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
+from interface.lark_platform import LarkChatInfo
 from interface.lark_ws import LarkWebSocketInterface
 from memory.db import Database
 from memory.proposal import MemoryProposalDetector
@@ -119,6 +120,16 @@ class FakeProbeSysops(FakeSysops):
 class FakeNewApi:
     async def health(self) -> ServiceHealthResult:
         return ServiceHealthResult("new-api", True, 7, "models reachable")
+
+
+class FakeLarkPlatform:
+    async def get_chat_info(self, chat_id: str) -> LarkChatInfo:
+        return LarkChatInfo(
+            chat_id=chat_id,
+            chat_mode="p2p",
+            user_count="1",
+            external=False,
+        )
 
 
 class FakeMem0:
@@ -397,6 +408,24 @@ async def test_service_catalog_routes_mem0_and_host_services() -> None:
     assert "gcp-free-vps-oregon" in _text(catalog)
     assert "延迟：4 ms" in _text(await router.handle("/vps service mem0 status"))
     assert "checked services" in _text(await router.handle("/vps service a2a status"))
+
+
+async def test_lark_chat_is_a_read_only_platform_command() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+    )
+
+    result = await router.handle(
+        "/lark chat",
+        user_id="alice",
+        chat_id="oc_test",
+    )
+
+    assert "oc_test" in _text(result)
+    assert "p2p" in _text(result)
+    assert "外部会话：`否`" in _text(result)
 
 
 async def test_a2a_restart_rejects_aws_before_approval() -> None:

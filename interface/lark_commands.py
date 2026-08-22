@@ -27,6 +27,7 @@ from interface.lark_cards import (
     build_service_catalog_card,
     build_target_selection_card,
 )
+from interface.lark_platform import LarkChatInfo
 from memory.scope_store import MemoryScopeStore
 from memory.target_store import TargetSelectionStore
 
@@ -48,6 +49,10 @@ class VpsSysopsProvider(Protocol):
 
 class ServiceHealthProvider(Protocol):
     async def health(self) -> Any: ...
+
+
+class LarkPlatformProvider(Protocol):
+    async def get_chat_info(self, chat_id: str) -> LarkChatInfo: ...
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,7 @@ class QuickCommandRouter:
         new_api_target_id: str = "",
         approval_checker: ApprovalChecker | None = None,
         audit_writer: AuditWriter | None = None,
+        lark_platform: LarkPlatformProvider | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
@@ -97,6 +103,7 @@ class QuickCommandRouter:
         self.new_api_target_id = new_api_target_id.strip().lower()
         self.approval_checker = approval_checker
         self.audit_writer = audit_writer
+        self.lark_platform = lark_platform
         self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
         self._pending_target_selections: dict[tuple[str, str], str] = {}
         self._log_page_ttl_seconds = 10 * 60
@@ -127,6 +134,7 @@ class QuickCommandRouter:
                 "• `/vps service luck-agent restart` 重启 Agent（需确认）\n"
                 "• `/targets` 选择 VPS 目标\n"
                 "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
+                "• `/lark chat` 查询当前会话基础信息（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -148,6 +156,8 @@ class QuickCommandRouter:
                 return result
         if command in {"/health", "health", "健康", "/健康"}:
             return await self._health()
+        if command in {"/lark chat", "lark chat", "/chat info", "chat info"}:
+            return await self._lark_chat(chat_id)
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
@@ -584,6 +594,37 @@ class QuickCommandRouter:
             return f"用法：`/vps service {spec.service_id} status`"
         result = await self._sysops("services", user_id)
         return _prefix_result(f"🧩 {spec.label} · 宿主机服务清单", result)
+
+    async def _lark_chat(self, chat_id: str) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "💬 Lark 会话信息：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "💬 Lark 会话信息：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        try:
+            info = await self.lark_platform.get_chat_info(chat_id)
+        except Exception as exc:
+            log.error("quick_lark_chat_failed", error=str(exc))
+            text = "💬 Lark 会话信息：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        lines = [
+            "💬 Lark 当前会话：✅",
+            f"• Chat ID：`{info.chat_id}`",
+            f"• 模式：`{info.chat_mode or 'unknown'}`",
+        ]
+        if info.name:
+            lines.append(f"• 名称：{info.name}")
+        if info.chat_type:
+            lines.append(f"• 类型：`{info.chat_type}`")
+        if info.user_count:
+            lines.append(f"• 成员数：`{info.user_count}`")
+        if info.external is not None:
+            lines.append(f"• 外部会话：`{'是' if info.external else '否'}`")
+        if info.chat_status:
+            lines.append(f"• 状态：`{info.chat_status}`")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
 
     async def _new_api_status(self) -> str | QuickCommandResult:
         if self.new_api is None:

@@ -70,3 +70,11 @@ class FakeLLMClient:
             },
             ensure_ascii=False,
         )
+
+    def status(self) -> dict[str, str]:
+        """Expose the offline mode in the same shape as real providers."""
+        return {
+            "provider": "fake",
+            "model": self.model,
+            "state": "offline",
+        }

@@ -77,6 +77,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
   fallback 只发生在 LLM 生成/修复阶段，不重复执行工具副作用。
 - 已在 AWS 生产机真实验证 GCP new-api 的 `step-3.7-flash → gemini-2.5-flash` fallback；
   Hermes 的 OpenRouter key 读取 `/models` 成功但 completion 返回 402，已按配额故障排除。
+- `/health` 已报告 active Provider、各 Provider 状态、失败次数和 cooldown 原因，且不暴露
+  endpoint 或密钥；快捷 `/health` 同步显示当前可用 Provider 数量。
 
 ## 4. 当前执行顺序
 

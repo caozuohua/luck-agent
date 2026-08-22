@@ -17,6 +17,7 @@ class HealthService:
         goal_store: GoalStore,
         curator_last_run_at: float | None = None,
         curator: Any | None = None,
+        llm: Any | None = None,
         host: str = "0.0.0.0",
         port: int = 8080,
     ) -> None:
@@ -24,6 +25,7 @@ class HealthService:
         self.goal_store = goal_store
         self.curator_last_run_at = curator_last_run_at
         self.curator = curator
+        self.llm = llm
         self.host = host
         self.port = port
         self._server: asyncio.AbstractServer | None = None
@@ -44,6 +46,7 @@ class HealthService:
             "curator": {
                 "last_run_at": self._curator_last_run_at(),
             },
+            "llm": self._llm_status(),
         }
 
     async def start(self) -> None:
@@ -90,6 +93,37 @@ class HealthService:
         if self.curator is not None:
             return getattr(self.curator, "last_run_at", None)
         return self.curator_last_run_at
+
+    def _llm_status(self) -> dict[str, Any]:
+        if self.llm is None:
+            return {"configured": False, "active_provider": "", "providers": []}
+        status_fn = getattr(self.llm, "status", None)
+        if not callable(status_fn):
+            return {
+                "configured": True,
+                "active_provider": "unknown",
+                "providers": [],
+            }
+        try:
+            status = status_fn()
+        except Exception:
+            return {
+                "configured": True,
+                "active_provider": "unknown",
+                "providers": [],
+                "status_error": True,
+            }
+        if not isinstance(status, dict):
+            return {
+                "configured": True,
+                "active_provider": "unknown",
+                "providers": [],
+            }
+        return {
+            "configured": True,
+            "active_provider": str(status.get("active_provider") or ""),
+            "providers": status.get("providers", []),
+        }
 
     async def _goal_stats(self) -> dict[str, Any]:
         rows = await self.db.fetchall(

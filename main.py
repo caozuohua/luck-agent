@@ -109,6 +109,7 @@ class Runtime:
             db=self.db,
             goal_store=self.goal_store,
             curator=self.curator,
+            llm=self.llm_client,
             host=settings.health_host,
             port=settings.health_port,
         )

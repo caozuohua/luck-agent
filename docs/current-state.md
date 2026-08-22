@@ -36,6 +36,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - LLM 已由 `LLMProviderRouter` 统一调度；`LLM_*` 继续作为 primary，备用 Provider 使用
   `LLM_PROVIDER_<NAME>_*`。Provider 自己维护普通故障熔断，429/余额/配额耗尽进入独立长冷却，
   Router 只在模型生成或 JSON 修复阶段切换 Provider。
+- `/health` 现在报告 active Provider、各 Provider 模型、状态、失败次数和 cooldown 原因；
+  不返回 endpoint 或密钥，便于在不调用 LLM 的情况下判断当前降级状态。
 - `interface/` 当前包含 Lark 消息处理核心和本地 Web 测试接口；AWS 生产环境已完成真实 Lark WebSocket 收发和卡片发送验证。
 - Lark 回复已使用 Card 2.0 标题、状态颜色和 Markdown 正文；`/targets` 会返回
   VPS 目标下拉框，`select_static` 回调已接入用户级目标切换；其他变更运维按钮仍未开放。
@@ -122,7 +124,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
    其他服务的变更操作仍未开放。
 3. A2A、new-api 独立只读健康检查已完成；A2A 通过 GCP/Azure 目标 SSH 执行固定 probe，
    new-api 使用 OpenAI-compatible token 访问 `/models`，尚未开放写操作或任务 smoke。
-4. LLM Provider Router、跨 Provider 配额熔断和多 Provider 降级已完成；GCP new-api 的
+4. LLM Provider Router、跨 Provider 配额熔断、多 Provider 降级和无密钥运行态观测已完成；GCP new-api 的
    `step-3.7-flash → gemini-2.5-flash` fallback 已真实验证，Hermes OpenRouter 当前仅能读
    `/models`，completion 返回 402，因此未纳入生产 fallback。
 5. Dockerfile、systemd 用户和部署脚本的 V2 配置一致性已核对完成。
@@ -132,8 +134,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 详细基线见 [`docs/roadmap.md`](roadmap.md)。当前顺序为：
 
-1. 细粒度目标权限、AWS 重启恢复、运行时配置一致性和 LLM 容错；
-2. 多云目标模型；
-3. 无 LLM VPS 运维控制面扩展；
-4. Mem0 记忆策略与 LLM Provider Router；
-5. 再逐步开放 Lark 平台能力和高风险写操作。
+1. 阶段二控制面收尾：移动端友好的结构化结果卡片、长结果展示和更多受控服务变更；
+2. 阶段四 Mem0 记忆策略：自动记忆、确认记忆、临时上下文和失败降级边界；
+3. Lark 平台能力与高风险写操作继续按固定入口、审批和回滚逐项开放；
+4. 清理旧版文档中的 V1/Gemini/单 VPS 描述，并持续保持两套开发环境的配置与进度同步。

@@ -79,6 +79,32 @@ class LLMProviderRouter:
     def provider_names(self) -> tuple[str, ...]:
         return tuple(self._order)
 
+    def status(self) -> dict[str, Any]:
+        """Return provider state without exposing endpoints or credentials."""
+        providers: list[dict[str, Any]] = []
+        for name in self._order:
+            client = self._providers[name]
+            status_fn = getattr(client, "status", None)
+            status = status_fn() if callable(status_fn) else {}
+            providers.append(
+                {
+                    "provider": name,
+                    "model": str(status.get("model") or getattr(client, "model", "")),
+                    "state": str(status.get("state") or "ready"),
+                    "cooldown_kind": str(status.get("cooldown_kind") or ""),
+                    "cooldown_remaining_seconds": int(
+                        status.get("cooldown_remaining_seconds") or 0
+                    ),
+                    "consecutive_failures": int(
+                        status.get("consecutive_failures") or 0
+                    ),
+                }
+            )
+        return {
+            "active_provider": self._active_provider,
+            "providers": providers,
+        }
+
     async def generate(self, system_prompt: str, task_prompt: str) -> str:
         return await self._invoke("generate", system_prompt, task_prompt)
 

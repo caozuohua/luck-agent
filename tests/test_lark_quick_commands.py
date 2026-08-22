@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
@@ -525,6 +527,47 @@ async def test_lark_confirmation_passes_token_to_quick_restart() -> None:
     assert await interface.handle_message(
         {**base, "message_id": "restart-2", "text": f"/confirm {token}"}
     )
+    assert sysops.restart_calls == [("luck-agent", "alice")]
+
+
+async def test_lark_confirmation_button_executes_without_copying_token() -> None:
+    sysops = FakeRestartSysops()
+    manager = LarkApprovalManager()
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=sysops,
+        targets=VpsTargetRegistry.from_csv(
+            "",
+            default_target=VpsTarget(provider="aws", target_id="aws-01"),
+        ),
+        approval_checker=manager.consume_grant,
+    )
+    sender = FakeSender()
+    interface = LarkWebSocketInterface(
+        agent=FakeAgent(),
+        sender=sender,
+        quick_commands=router,
+        approval_manager=manager,
+    )
+    base = {"chat_id": "chat-1", "user_id": "alice"}
+
+    await interface.handle_message(
+        {**base, "message_id": "restart-button-1", "text": "/vps service luck-agent restart"}
+    )
+    interface.start()
+    button = sender.cards[-1]["body"]["elements"][-1]["columns"][0]["elements"][0]
+    response = interface.handle_card_action(
+        {
+            **base,
+            "message_id": "restart-button-2",
+            "action": {"tag": "button", "value": button["behaviors"][0]["value"]},
+        }
+    )
+
+    assert response["toast"]["type"] == "success"
+    await asyncio.sleep(0.01)
+    await interface.drain_active()
     assert sysops.restart_calls == [("luck-agent", "alice")]
 
 

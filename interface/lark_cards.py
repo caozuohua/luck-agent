@@ -99,6 +99,74 @@ def build_memory_proposal_card(content: str, *, reason: str = "") -> dict[str, A
     return card
 
 
+def build_approval_card(
+    request: str,
+    *,
+    token: str,
+    ttl_seconds: float,
+) -> dict[str, Any]:
+    """Build a one-click confirmation card with a text fallback."""
+    minutes = max(1, int(ttl_seconds // 60))
+    card = build_sections_card(
+        [
+            "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
+            f"• 文字确认：`/confirm {token}`",
+            f"• 请求：{str(request or '').strip()}",
+            "点击「确认执行」即可继续；也可使用下方验证码文字确认。",
+            f"• 有效期：{minutes} 分钟",
+        ],
+        title="Luck Agent · 操作确认",
+    )
+    card["body"]["elements"].append(
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "type": "primary",
+                            "text": {"tag": "plain_text", "content": "确认执行"},
+                            "behaviors": [
+                                {
+                                    "type": "callback",
+                                    "value": {
+                                        "action": "approval_confirm",
+                                        "token": token,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "type": "default",
+                            "text": {"tag": "plain_text", "content": "取消"},
+                            "behaviors": [
+                                {
+                                    "type": "callback",
+                                    "value": {"action": "approval_cancel"},
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    return card
+
+
 def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
     """Build a compact, one-service-per-section catalog card."""
     if not specs:

@@ -10,6 +10,7 @@ from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
 from interface.lark_cards import (
     build_assistant_result_card,
+    build_approval_card,
     build_goal_result_card,
     build_memory_proposal_card,
 )
@@ -115,6 +116,7 @@ class LarkWebSocketInterface:
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._active_handlers: set[asyncio.Task[Any]] = set()
+        self._application_loop: asyncio.AbstractEventLoop | None = None
 
     async def handle_message(self, event: dict[str, Any]) -> bool:
         current_task = asyncio.current_task()
@@ -145,8 +147,10 @@ class LarkWebSocketInterface:
             log.warning("lark_access_denied", user_id=user_id, chat_id=chat_id)
             return False
 
+        internal_approval_token = str(event.get("_approval_token") or "").strip()
         approved: PendingApproval | None = None
-        if self.approval_manager is not None:
+        approval_token = internal_approval_token or None
+        if self.approval_manager is not None and not internal_approval_token:
             approval_result = self._consume_approval_command(text, user_id=user_id)
             if approval_result == "__CANCELLED__":
                 response = "✅ 已取消待确认操作"
@@ -160,18 +164,16 @@ class LarkWebSocketInterface:
                 approved = approval_result
             if approval_result is None and self.approval_manager.requires_confirmation(text):
                 pending = self.approval_manager.issue(user_id=user_id, request=text)
-                response = (
-                    "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
-                    f"• 请求：{text.strip()}\n"
-                    f"• 确认：`/confirm {pending.token}`\n"
-                    "• 取消：`/cancel`\n"
-                    f"• 有效期：{int(self.approval_manager.ttl_seconds // 60)} 分钟"
+                response_card = build_approval_card(
+                    text,
+                    token=pending.token,
+                    ttl_seconds=self.approval_manager.ttl_seconds,
                 )
-                await self.sender.send_card(chat_id, self.build_card(response))
+                await self.sender.send_card(chat_id, response_card)
                 log.info("lark_approval_requested", user_id=user_id, chat_id=chat_id)
                 return True
 
-        approval_token = approved.token if approved is not None else None
+        approval_token = approved.token if approved is not None else approval_token
         if approved is not None:
             text = approved.request
         if approved is None and self.memory_proposer is not None:
@@ -261,6 +263,29 @@ class LarkWebSocketInterface:
         action_tag = str(action.get("tag") or "")
         if action_tag == "button":
             raw_value = action.get("value")
+            if isinstance(raw_value, dict) and raw_value.get("action") in {
+                "approval_confirm",
+                "approval_cancel",
+            }:
+                if self.approval_manager is None:
+                    return {"toast": {"type": "error", "content": "当前未启用操作确认"}}
+                action_name = str(raw_value.get("action"))
+                if action_name == "approval_cancel":
+                    self.approval_manager.cancel(user_id=user_id)
+                    return {"toast": {"type": "success", "content": "已取消待确认操作"}}
+                token = str(raw_value.get("token") or "").strip()
+                pending = self.approval_manager.confirm(user_id=user_id, token=token)
+                if pending is None:
+                    return {"toast": {"type": "error", "content": "确认已失效或不属于当前用户"}}
+                loop = self._application_loop
+                if loop is None or loop.is_closed():
+                    return {"toast": {"type": "error", "content": "执行通道未就绪，请使用文字确认"}}
+                loop.call_soon_threadsafe(
+                    self._schedule_approved_card_action,
+                    pending,
+                    chat_id,
+                )
+                return {"toast": {"type": "success", "content": "已确认，正在执行"}}
             if isinstance(raw_value, dict) and raw_value.get("action") == "memory_save_proposal":
                 if self.approval_manager is None:
                     return {"toast": {"type": "error", "content": "当前未启用记忆确认"}}
@@ -271,15 +296,14 @@ class LarkWebSocketInterface:
                     user_id=user_id,
                     request=f"/mem0 save {content}",
                 )
-                response = (
-                    "⚠️ 已准备保存这条记忆，但尚未写入。\n"
-                    f"• 内容：{content}\n"
-                    f"• 请确认：`/confirm {pending.token}`\n"
-                    f"• 有效期：{int(self.approval_manager.ttl_seconds // 60)} 分钟"
+                response = build_approval_card(
+                    f"/mem0 save {content}",
+                    token=pending.token,
+                    ttl_seconds=self.approval_manager.ttl_seconds,
                 )
                 return {
-                    "toast": {"type": "success", "content": "已生成保存确认，请发送确认码"},
-                    "card": {"type": "raw", "data": self.build_card(response)},
+                    "toast": {"type": "success", "content": "已生成保存确认，可直接点击按钮"},
+                    "card": {"type": "raw", "data": response},
                 }
             page_actions = {"vps_logs_page", "vps_output_page"}
             if isinstance(raw_value, dict) and raw_value.get("action") in page_actions:
@@ -362,6 +386,26 @@ class LarkWebSocketInterface:
     def build_card(self, text: str) -> dict[str, Any]:
         return build_assistant_result_card(text)
 
+    def _schedule_approved_card_action(
+        self,
+        pending: PendingApproval,
+        chat_id: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self.handle_message(
+                {
+                    "message_id": f"card-confirm-{pending.token}",
+                    "chat_id": chat_id,
+                    "user_id": pending.user_id,
+                    "text": pending.request,
+                    "_approval_token": pending.token,
+                }
+            ),
+            name="lark-card-approved-operation",
+        )
+        self._active_handlers.add(task)
+        task.add_done_callback(self._active_handlers.discard)
+
     def mark_heartbeat(self) -> None:
         self.last_heartbeat_at = time.time()
         self.connected = True
@@ -404,6 +448,7 @@ class LarkWebSocketInterface:
     def start(self, connect_once=None) -> asyncio.Task[None] | None:
         if connect_once is None:
             self._running = True
+            self._application_loop = asyncio.get_running_loop()
             self.connected = False
             log.info("lark_websocket_interface_started")
             return None

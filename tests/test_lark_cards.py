@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.targets import VpsTarget
 from interface.lark_cards import (
     build_assistant_result_card,
+    build_approval_card,
     build_goal_result_card,
     build_log_page_card,
     build_memory_proposal_card,
@@ -28,6 +29,24 @@ def test_card_has_mobile_header_and_compatible_markdown_body() -> None:
 def test_card_template_reflects_failure_or_confirmation() -> None:
     assert build_text_card("❌ 操作失败")["header"]["template"] == "red"
     assert build_text_card("⚠️ 待确认") ["header"]["template"] == "orange"
+
+
+def test_approval_card_has_one_click_confirm_and_text_fallback() -> None:
+    card = build_approval_card("/vps service new-api restart", token="abc123", ttl_seconds=300)
+
+    assert any(
+        "/confirm abc123" in element.get("content", "")
+        for element in card["body"]["elements"]
+    )
+    buttons = card["body"]["elements"][-1]["columns"]
+    assert buttons[0]["elements"][0]["text"]["content"] == "确认执行"
+    assert buttons[0]["elements"][0]["behaviors"][0]["value"] == {
+        "action": "approval_confirm",
+        "token": "abc123",
+    }
+    assert buttons[1]["elements"][0]["behaviors"][0]["value"] == {
+        "action": "approval_cancel",
+    }
 
 
 def test_target_selection_card_uses_lark_compatible_string_values() -> None:

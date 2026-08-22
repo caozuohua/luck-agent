@@ -132,17 +132,20 @@ class MinimalAgent:
         user_input: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str:
         if self.execution_mode == "legacy":
             return await self._run_turn_legacy(
                 user_input,
                 user_id=user_id,
+                chat_id=chat_id,
                 approval_token=approval_token,
             )
         return await self._run_turn_graph(
             user_input,
             user_id=user_id,
+            chat_id=chat_id,
             approval_token=approval_token,
         )
 
@@ -151,6 +154,7 @@ class MinimalAgent:
         user_input: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str:
         """ReAct loop via LangGraph: multi-step Think->Act->Observe->Supervise.
@@ -166,6 +170,7 @@ class MinimalAgent:
             return await self._run_turn_graph_limited(
                 user_input,
                 user_id=user_id,
+                chat_id=chat_id,
                 approval_token=approval_token,
             )
 
@@ -174,6 +179,7 @@ class MinimalAgent:
         user_input: str,
         *,
         user_id: str,
+        chat_id: str,
         approval_token: str | None,
     ) -> str:
         self.state = AgentState.IDLE
@@ -183,7 +189,10 @@ class MinimalAgent:
             self._transition(goal, AgentState.PLANNING)
         history = self._build_history_summary()
         await self._maybe_compress_context(
-            user_id, user_input, self.prompt_builder.build_system_prompt()
+            user_id,
+            user_input,
+            self.prompt_builder.build_system_prompt(),
+            chat_id=chat_id,
         )
 
         request = GraphExecutionRequest(
@@ -216,6 +225,7 @@ class MinimalAgent:
         user_input: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str:
         self.state = AgentState.IDLE
@@ -226,7 +236,12 @@ class MinimalAgent:
         self._transition(goal, AgentState.PLANNING)
         system_prompt = self.prompt_builder.build_system_prompt()
         history_summary = self._build_history_summary()
-        await self._maybe_compress_context(user_id, user_input, system_prompt)
+        await self._maybe_compress_context(
+            user_id,
+            user_input,
+            system_prompt,
+            chat_id=chat_id,
+        )
         task_prompt = await self.prompt_builder.build_task_prompt_with_experience_search(
             intent,
             tools,
@@ -384,6 +399,8 @@ class MinimalAgent:
         user_id: str,
         user_input: str,
         system_prompt: str,
+        *,
+        chat_id: str = "",
     ) -> None:
         if self.context_store is None or len(self.conversation_history) <= 3:
             return
@@ -408,6 +425,7 @@ class MinimalAgent:
         task = asyncio.create_task(
             self.context_store.save_summary(
                 user_id=user_id,
+                chat_id=chat_id,
                 summary=self.history_summary,
                 turn_range=turn_range,
             )

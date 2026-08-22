@@ -256,7 +256,10 @@ class GraphRuntime:
     async def _build_history(self, goal: Goal) -> str:
         parts: list[str] = []
         if self.context_store is not None:
-            summary = await self.context_store.get_latest_summary(goal.user_id)
+            summary = await self.context_store.get_latest_summary(
+                goal.user_id,
+                chat_id=goal.chat_id,
+            )
             if summary and summary.get("summary"):
                 parts.append(f"[earlier summary]\n{summary['summary']}")
 

@@ -79,15 +79,17 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
 - AWS 生产当前已显式允许 `aws-codex-vps`、`gcp-free-vps-oregon`、`az-free-vm` 三个目标；
   新增目标前必须同步更新 allowlist。
 - VPS 已使用 `VpsTarget(provider/account/region/target_id/role)` 统一描述目标，并将
-  元数据传给状态与 vps_sysops 适配器；`VPS_TARGETS` 支持注册多个目标并按 Lark 用户保存
-  当前选择；目标还可附带 `ssh_host/ssh_user/ssh_port/sysops_root`，用于受控远程执行。未配置
-  远程通道时，Agent 会拒绝把 AWS 本机资源错误标记成 GCP/Azure。
+  元数据传给状态与 vps_sysops 适配器；`VPS_TARGETS` 支持注册多个目标，当前选择按
+  `user_id + chat_id` 持久化到 SQLite；目标还可附带 `ssh_host/ssh_user/ssh_port/sysops_root`，
+  用于受控远程执行。未配置远程通道时，Agent 会拒绝把 AWS 本机资源错误标记成 GCP/Azure。
 - AWS、GCP、Azure 三个已配置目标的 `resources` 远程执行已在线验证成功；三个目标的 `logs`
   均可返回可读报告，权限不足部分以 `partial` 状态呈现。
 - AWS 上的 `luck-agent` 受控重启已在线验证：确认结果先返回，3 秒后由 systemd 调度重启；
   wrapper 只允许 `luck-agent` 调用固定服务重启入口，服务重启后保持 `active`。
 - GCP `new-api` 受控重启已在线验证：adapter 仅执行固定 `new-api.service` 入口，重启返回
   `active`，随后认证 `/v1/models` 检查成功。
+- 重启确认卡会显示实际目标；生产 `new-api` 已绑定 `gcp-free-vps-oregon`，目标不匹配时在
+  执行前拒绝；目标选择持久化、确认卡目标展示和真实 Lark 一键重启均已验收。
 
 ## 目标对象模型
 
@@ -138,7 +140,8 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 ## 当前待办与阻塞项
 
 1. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前只开放 `luck-agent` 和 `new-api`。
-2. 目标选择目前保存在进程内存；需要补充确认卡目标展示、`new-api` 的 GCP 目标绑定，以及重启后的目标选择恢复。
+2. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
+   后立即落库，消除“选择后尚未发送下一条消息时进程重启”的极小窗口。
 3. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
 
 ## 实施顺序

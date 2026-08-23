@@ -115,6 +115,7 @@ class Runtime:
             goal_store=self.goal_store,
             curator=self.curator,
             llm=self.llm_client,
+            lark_oauth_callback_port=settings.lark_oauth_callback_port,
             host=settings.health_host,
             port=settings.health_port,
         )

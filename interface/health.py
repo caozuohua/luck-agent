@@ -22,6 +22,7 @@ class HealthService:
         curator: Any | None = None,
         llm: Any | None = None,
         lark_oauth: LarkOAuthManager | None = None,
+        lark_oauth_callback_port: int = 8090,
         host: str = "0.0.0.0",
         port: int = 8080,
     ) -> None:
@@ -31,9 +32,11 @@ class HealthService:
         self.curator = curator
         self.llm = llm
         self.lark_oauth = lark_oauth
+        self.lark_oauth_callback_port = int(lark_oauth_callback_port)
         self.host = host
         self.port = port
         self._server: asyncio.AbstractServer | None = None
+        self._oauth_server: asyncio.AbstractServer | None = None
 
     async def collect_status(self) -> dict[str, Any]:
         sqlite_connected = await self._sqlite_connected()
@@ -60,6 +63,12 @@ class HealthService:
             self.host,
             self.port,
         )
+        if self.lark_oauth is not None:
+            self._oauth_server = await asyncio.start_server(
+                self._handle_oauth_client,
+                "127.0.0.1",
+                self.lark_oauth_callback_port,
+            )
 
     async def stop(self) -> None:
         if self._server is None:
@@ -67,6 +76,10 @@ class HealthService:
         self._server.close()
         await self._server.wait_closed()
         self._server = None
+        if self._oauth_server is not None:
+            self._oauth_server.close()
+            await self._oauth_server.wait_closed()
+            self._oauth_server = None
 
     async def _handle_client(
         self,
@@ -87,6 +100,21 @@ class HealthService:
         payload = await self.collect_status()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         await self._send_response(writer, 200, "application/json; charset=utf-8", body)
+
+    async def _handle_oauth_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        request_line = await reader.readline()
+        request_target = ""
+        try:
+            parts = request_line.decode("latin-1").split()
+            request_target = parts[1] if len(parts) >= 2 else ""
+        except UnicodeDecodeError:
+            request_target = ""
+        await reader.read(4096)
+        await self._handle_lark_oauth_callback(request_target, writer)
 
     async def _handle_lark_oauth_callback(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -36,6 +37,24 @@ class FakeClient:
             v1=SimpleNamespace(
                 oidc_access_token=FakeOidc(),
                 oidc_refresh_access_token=FakeOidc(),
+            )
+        )
+
+
+class SlowOidc:
+    def create(self, request):
+        time.sleep(0.2)
+        return SimpleNamespace(code=0, msg="ok", data=SimpleNamespace(
+            access_token="user-token", expires_in=3600,
+        ))
+
+
+class SlowClient:
+    def __init__(self) -> None:
+        self.authen = SimpleNamespace(
+            v1=SimpleNamespace(
+                oidc_access_token=SlowOidc(),
+                oidc_refresh_access_token=SlowOidc(),
             )
         )
 
@@ -104,3 +123,21 @@ async def test_unknown_state_does_not_exchange_code() -> None:
 
     assert result.ok is False
     assert client.authen.v1.oidc_access_token.codes == []
+
+
+@pytest.mark.asyncio
+async def test_callback_returns_when_exchange_times_out() -> None:
+    manager = LarkOAuthManager(
+        client=SlowClient(),
+        app_id="cli_test",
+        redirect_uri="https://agent.example.test/oauth/lark/callback",
+        domain="https://open.feishu.cn",
+        exchange_timeout_seconds=0.05,
+    )
+    url = manager.authorization_url(user_id="ou-user", chat_id="oc-chat")
+    state = parse_qs(urlsplit(url).query)["state"][0]
+
+    result = await manager.handle_callback(code="slow-code", state=state)
+
+    assert result.ok is False
+    assert "超时" in result.detail

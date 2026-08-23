@@ -78,6 +78,7 @@ class LarkOAuthManager:
         scopes: str = "wiki:wiki:readonly",
         state_ttl_seconds: float = 600.0,
         token_skew_seconds: float = 60.0,
+        exchange_timeout_seconds: float = 15.0,
         max_states: int = 128,
     ) -> None:
         self.client = client
@@ -87,6 +88,7 @@ class LarkOAuthManager:
         self.scopes = _normalize_scopes(scopes)
         self.state_ttl_seconds = max(60.0, float(state_ttl_seconds))
         self.token_skew_seconds = max(0.0, float(token_skew_seconds))
+        self.exchange_timeout_seconds = max(0.1, float(exchange_timeout_seconds))
         self.max_states = max(8, int(max_states))
         self._states: dict[str, PendingLarkAuthorization] = {}
         self._tokens: dict[str, LarkUserToken] = {}
@@ -167,7 +169,17 @@ class LarkOAuthManager:
         if not normalized_code:
             return LarkOAuthCallback(False, "回调缺少授权码")
         try:
-            token = await asyncio.to_thread(self._exchange_code, normalized_code)
+            token = await asyncio.wait_for(
+                asyncio.to_thread(self._exchange_code, normalized_code),
+                timeout=self.exchange_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return LarkOAuthCallback(
+                False,
+                f"授权码交换超时（{self.exchange_timeout_seconds:g} 秒），请重新发送 /lark auth 后重试",
+                pending.user_id,
+                pending.chat_id,
+            )
         except Exception as exc:
             detail = str(exc).strip() or "授权码交换失败"
             return LarkOAuthCallback(False, detail, pending.user_id, pending.chat_id)

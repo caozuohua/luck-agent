@@ -64,7 +64,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   `wiki:node:retrieve` 只读 scope；该 scope 已在生产 `.env` 启用并完成重新授权，真实 Lark 消息已验收
   `/lark wiki get`，成功读取“QPC个人知识库”
   节点详情。已实现 `/lark wiki summary <Wiki 链接或节点 token>` 第一版多维表格摘要，仅读取应用名和前 10 张
-  数据表名称，不读取记录、不返回 app/table ID；该能力额外允许 `bitable:app:readonly`，尚待后台发布、重新授权和真实消息验收。
+  数据表名称，不读取记录、不返回 app/table ID；`bitable:app:readonly` 已加入生产 scope 并完成重新授权，真实 Lark 消息已成功返回
+  1 张“QPC个人知识库”数据表。阶段五下一步评估 Docx 文档只读摘要。
 - 生产 `EXECUTION_MODE` 使用 `graph`；本地 Web 直连 Agent、`legacy_inline` skill、旧
   `GoalManager` 和早期 `ExecutionEngine` 已明确登记为兼容路径，不是生产主链，边界见
   [`docs/legacy-runtime.md`](legacy-runtime.md)。

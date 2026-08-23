@@ -110,6 +110,41 @@ async def test_callback_exchanges_code_once_and_keeps_token_in_memory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pasted_callback_url_completes_for_the_originating_user() -> None:
+    client = FakeClient()
+    manager = LarkOAuthManager(
+        client=client,
+        app_id="cli_test",
+        redirect_uri="https://agent.example.test/oauth/lark/callback",
+        domain="https://open.feishu.cn",
+    )
+    url = manager.authorization_url(user_id="ou-user", chat_id="oc-chat")
+    state = parse_qs(urlsplit(url).query)["state"][0]
+
+    result = await manager.handle_callback_url(
+        "https://agent.example.test/oauth/lark/callback?code=pasted-code&state=" + state,
+        expected_user_id="ou-user",
+    )
+
+    assert result.ok is True
+    assert client.authen.v1.oidc_access_token.codes == ["pasted-code"]
+
+
+@pytest.mark.asyncio
+async def test_pasted_callback_url_rejects_wrong_redirect_or_user() -> None:
+    manager = make_manager()
+    url = manager.authorization_url(user_id="ou-user", chat_id="oc-chat")
+    state = parse_qs(urlsplit(url).query)["state"][0]
+
+    wrong_url = await manager.handle_callback_url(
+        "https://evil.example.test/oauth/lark/callback?code=code&state=" + state,
+        expected_user_id="ou-user",
+    )
+    assert wrong_url.ok is False
+    assert "redirect_uri" in wrong_url.detail
+
+
+@pytest.mark.asyncio
 async def test_unknown_state_does_not_exchange_code() -> None:
     client = FakeClient()
     manager = LarkOAuthManager(

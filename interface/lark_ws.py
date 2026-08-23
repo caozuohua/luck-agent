@@ -84,6 +84,21 @@ class LarkMessageDeduper:
             self._seen.pop(message_id, None)
 
 
+def _safe_command_for_log(text: str) -> str:
+    """Keep OAuth callback URLs and their one-time code out of logs."""
+    normalized = " ".join(str(text or "").strip().split())
+    lowered = normalized.lower()
+    for prefix in (
+        "/lark auth complete ",
+        "lark auth complete ",
+        "/lark oauth complete ",
+        "lark oauth complete ",
+    ):
+        if lowered.startswith(prefix):
+            return prefix.rstrip() + " <redacted>"
+    return lowered
+
+
 class LarkWebSocketInterface:
     """Message handling core for Lark WebSocket + Card 2.0 replies."""
 
@@ -199,7 +214,10 @@ class LarkWebSocketInterface:
                 if isinstance(response, QuickCommandResult):
                     response_card = response.card
                     response = response.text
-                log.info("lark_quick_command_handled", command=text.strip().lower())
+                log.info(
+                    "lark_quick_command_handled",
+                    command=_safe_command_for_log(text),
+                )
         if response is None:
             if self.runtime is not None:
                 runtime_result = await self.runtime.handle_message(
@@ -230,6 +248,7 @@ class LarkWebSocketInterface:
             message_id=message_id,
         )
         return True
+
 
     async def send_goal_result(self, goal: dict[str, Any]) -> None:
         """Send a background Goal's terminal result to its owning chat."""

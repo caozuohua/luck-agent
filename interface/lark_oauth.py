@@ -5,7 +5,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import lark_oapi as lark
 from lark_oapi.api.authen.v1 import (
@@ -191,6 +191,34 @@ class LarkOAuthManager:
             pending.chat_id,
         )
 
+    async def handle_callback_url(
+        self,
+        callback_url: str,
+        *,
+        expected_user_id: str = "",
+    ) -> LarkOAuthCallback:
+        """Complete OAuth from a pasted redirect URL when the browser cannot reach Funnel."""
+        candidate = urlsplit(str(callback_url or "").strip())
+        expected = urlsplit(self.redirect_uri)
+        if (
+            candidate.scheme.lower() != expected.scheme.lower()
+            or candidate.netloc.lower() != expected.netloc.lower()
+            or candidate.path != expected.path
+        ):
+            return LarkOAuthCallback(False, "回调地址与已配置的 redirect_uri 不匹配")
+        query = parse_qs(candidate.query, keep_blank_values=True)
+        state = _first_query_value(query, "state")
+        pending = self._states.get(state)
+        if pending is None:
+            return LarkOAuthCallback(False, "授权状态无效或已过期")
+        if expected_user_id and pending.user_id != str(expected_user_id).strip():
+            return LarkOAuthCallback(False, "该授权由其他 Lark 用户发起")
+        return await self.handle_callback(
+            code=_first_query_value(query, "code"),
+            state=state,
+            error=_first_query_value(query, "error"),
+        )
+
     def _consume_state(self, state: str) -> PendingLarkAuthorization | None:
         if not state:
             return None
@@ -246,6 +274,11 @@ def _normalize_scopes(raw: str) -> tuple[str, ...]:
     if invalid:
         raise ValueError(f"只读 OAuth 不允许的 scope：{', '.join(invalid)}")
     return values
+
+
+def _first_query_value(query: dict[str, list[str]], key: str) -> str:
+    values = query.get(key) or []
+    return str(values[0] if values else "").strip()
 
 
 def _token_from_response(data: Any) -> LarkUserToken:

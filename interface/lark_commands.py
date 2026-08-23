@@ -80,6 +80,13 @@ class LarkOAuthProvider(Protocol):
 
     def has_access(self, user_id: str) -> bool: ...
 
+    async def handle_callback_url(
+        self,
+        callback_url: str,
+        *,
+        expected_user_id: str = "",
+    ) -> Any: ...
+
 
 @dataclass(frozen=True)
 class QuickCommandResult:
@@ -167,6 +174,7 @@ class QuickCommandRouter:
                 "• `/lark chat members [数量]` 查看当前会话成员摘要（只读，最多 10 名）\n"
                 "• `/lark chat announcement` 查看当前会话公告（只读）\n"
                 "• `/lark auth` 发起 Wiki/文档只读授权\n"
+                "• `/lark auth complete <回调URL>` 浏览器超时后粘贴地址栏 URL 完成授权\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -230,6 +238,17 @@ class QuickCommandRouter:
             "lark oauth status",
         }:
             return self._lark_auth_status(user_id=user_id)
+        for prefix in (
+            "/lark auth complete ",
+            "lark auth complete ",
+            "/lark oauth complete ",
+            "lark oauth complete ",
+        ):
+            if command.startswith(prefix):
+                return await self._lark_auth_complete(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
@@ -788,6 +807,27 @@ class QuickCommandRouter:
             text = "🔐 Lark User OAuth：✅ 当前用户已有有效只读授权"
         else:
             text = "🔐 Lark User OAuth：未授权或授权已过期"
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_auth_complete(
+        self,
+        callback_url: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark User OAuth"
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "🔐 Lark User OAuth：⚠️ 尚未配置"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if not callback_url.startswith(("https://", "http://")):
+            text = "🔐 Lark User OAuth：⚠️ 请粘贴浏览器地址栏中的完整回调 URL"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        result = await self.lark_oauth.handle_callback_url(
+            callback_url,
+            expected_user_id=user_id,
+        )
+        mark = "✅" if result.ok else "⚠️"
+        text = f"🔐 Lark User OAuth：{mark} {result.detail}"
         return QuickCommandResult(text, build_sections_card([text], title=title))
 
     async def _new_api_status(self) -> str | QuickCommandResult:

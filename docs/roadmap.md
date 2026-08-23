@@ -192,6 +192,9 @@ User OAuth，不返回 node/object token。SDK 异常时保留同一 token 的 H
 `wiki:node:retrieve` 只读 scope，但不改变默认 `LARK_OAUTH_SCOPES`；需在开发者后台加权、发布后，再以
 `LARK_OAUTH_SCOPES="wiki:wiki:readonly wiki:node:retrieve"` 重新授权并做真实验收。
 
+节点详情已完成真实 Lark 消息验收：实测读取“QPC个人知识库”节点，返回 `bitable`、`origin`、无子节点及
+最近时间戳；OAuth 回调和 WebSocket 快捷命令日志均正常。阶段五下一步转入文档/多维表格内容的只读摘要评估。
+
 按优先级逐步接入消息卡片、文档、多维表格、表格、日历、任务、邮件、
 会议和知识库。每次只引入一个可验收的只读或低风险能力，再开放写操作。
 

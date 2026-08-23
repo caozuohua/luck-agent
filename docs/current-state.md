@@ -61,7 +61,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   `/lark wiki 关键词`，通过当前用户 User OAuth token 查询并仅返回标题/链接；已完成真实重启、重新授权和搜索验收，实测可返回多维表格等 Wiki 节点链接。
   已实现 `/lark wiki get <Wiki 链接或节点 token>` 的节点详情读取：优先使用 Wiki v2 SDK，兼容回退到 HTTP v2，
   仅返回标题、对象/节点类型、子节点标记、时间戳和规范链接，不返回内部 token。该能力额外允许
-  `wiki:node:retrieve` 只读 scope，但生产默认 scope 未扩大，尚待开发者后台加权、发布、重新授权和真实消息验收。
+  `wiki:node:retrieve` 只读 scope；该 scope 已在生产 `.env` 启用并完成重新授权，真实 Lark 消息已验收
+  `/lark wiki get`，成功读取“QPC个人知识库”
+  节点详情。当前阶段五继续评估文档/多维表格内容的只读摘要能力。
 - 生产 `EXECUTION_MODE` 使用 `graph`；本地 Web 直连 Agent、`legacy_inline` skill、旧
   `GoalManager` 和早期 `ExecutionEngine` 已明确登记为兼容路径，不是生产主链，边界见
   [`docs/legacy-runtime.md`](legacy-runtime.md)。

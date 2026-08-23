@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import lark_oapi as lark
 from lark_oapi.api.bitable.v1 import GetAppRequest, ListAppTableRequest
+from lark_oapi.api.docx.v1 import RawContentDocumentRequest
 from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from lark_oapi.core.model import RequestOption
@@ -97,6 +98,16 @@ class LarkBitableSummary:
     url: str = ""
     tables: tuple[str, ...] = ()
     has_more: bool = False
+
+
+@dataclass(frozen=True)
+class LarkDocxSummary:
+    """Safe, bounded plain-text preview for a Wiki node backed by a Docx document."""
+
+    title: str = ""
+    url: str = ""
+    preview: str = ""
+    truncated: bool = False
 
 
 class LarkPlatformClient:
@@ -339,6 +350,45 @@ class LarkPlatformClient:
             reference,
             user_access_token=user_access_token,
         )
+        return await self._summarize_bitable_node(
+            node,
+            user_access_token=user_access_token,
+            limit=limit,
+        )
+
+    async def summarize_wiki_content(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary | LarkDocxSummary:
+        """Dispatch a read-only summary according to the Wiki node object type."""
+        node = await self._fetch_wiki_node(
+            reference,
+            user_access_token=user_access_token,
+        )
+        obj_type = str(_node_value(node, "obj_type", "") or "").lower()
+        if obj_type in {"bitable", "11"}:
+            return await self._summarize_bitable_node(
+                node,
+                user_access_token=user_access_token,
+                limit=limit,
+            )
+        if obj_type in {"docx", "1"}:
+            return await self._summarize_docx_node(
+                node,
+                user_access_token=user_access_token,
+            )
+        raise ValueError("当前 Wiki 节点暂不支持内容摘要，仅支持 Docx 和多维表格")
+
+    async def _summarize_bitable_node(
+        self,
+        node: object,
+        *,
+        user_access_token: str,
+        limit: int,
+    ) -> LarkBitableSummary:
         obj_type = str(_node_value(node, "obj_type", "") or "").lower()
         if obj_type not in {"bitable", "11"}:
             raise ValueError("当前 Wiki 节点不是多维表格，暂只支持 Bitable 摘要")
@@ -390,6 +440,39 @@ class LarkPlatformClient:
                 if str(getattr(item, "name", "") or "").strip()
             ),
             has_more=bool(getattr(table_response.data, "has_more", False)),
+        )
+
+    async def _summarize_docx_node(
+        self,
+        node: object,
+        *,
+        user_access_token: str,
+    ) -> LarkDocxSummary:
+        document_id = str(_node_value(node, "obj_token", "") or "").strip()
+        if not document_id:
+            raise RuntimeError("Lark Docx 摘要失败：节点缺少 document token")
+        normalized_token = str(user_access_token or "").strip()
+        if not normalized_token:
+            raise ValueError("user_access_token is required")
+        endpoint = getattr(
+            getattr(getattr(self.client, "docx", None), "v1", None),
+            "document",
+            None,
+        )
+        if endpoint is None or not callable(getattr(endpoint, "raw_content", None)):
+            raise RuntimeError("Lark Docx 摘要失败：SDK 未提供只读接口")
+        request = RawContentDocumentRequest.builder().document_id(document_id).build()
+        option = RequestOption.builder().user_access_token(normalized_token).build()
+        response = await asyncio.to_thread(endpoint.raw_content, request, option)
+        if response.code != 0 or response.data is None:
+            raise RuntimeError(f"Lark Docx content query failed: {response.code} {response.msg}")
+        content = str(getattr(response.data, "content", "") or "").strip()
+        preview = _bounded_docx_preview(content)
+        return LarkDocxSummary(
+            title=str(_node_value(node, "title", "") or "")[:200],
+            url=str(_node_value(node, "url", "") or "")[:1000],
+            preview=preview,
+            truncated=len(content) > len(preview),
         )
 
     async def _fetch_wiki_node(
@@ -512,6 +595,12 @@ def _node_value(node: object, key: str, default: object = None) -> object:
     if isinstance(node, dict):
         return node.get(key, default)
     return getattr(node, key, default)
+
+
+def _bounded_docx_preview(content: str, *, limit: int = 3000) -> str:
+    lines = [" ".join(line.split()) for line in str(content or "").splitlines()]
+    normalized = "\n".join(line for line in lines if line)
+    return normalized[:limit]
 
 
 def _message_content(raw_content: str) -> str:

@@ -211,6 +211,19 @@ class FakeLarkPlatform:
             tables=("Roadmap", "运维记录"),
         )
 
+    async def summarize_wiki_content(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary:
+        return await self.summarize_wiki_bitable(
+            reference,
+            user_access_token=user_access_token,
+            limit=limit,
+        )
+
 
 class FakeLarkOAuth:
     configured = True

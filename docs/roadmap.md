@@ -197,10 +197,14 @@ User OAuth，不返回 node/object token。SDK 异常时保留同一 token 的 H
 
 已实现 `/lark wiki summary <Wiki 链接或节点 token>` 的第一版多维表格摘要：解析 Wiki 节点对应的
 Bitable app，只读取应用名称和前 10 张数据表名称，不读取记录、不返回 app/table ID。该能力额外支持
-`bitable:app:readonly`；已加入生产 scope，待重新授权后进行真实消息验收。
+`bitable:app:readonly`；已加入生产 scope 并完成真实授权验收。
 
 多维表格摘要已完成真实 Lark 消息验收：重新授权后成功读取“QPC个人知识库”，返回 1 张数据表
 “QPC个人知识库”；OAuth 回调和快捷命令日志正常。阶段五下一步评估 Docx 文档只读摘要。
+
+Docx 摘要已实现并纳入同一 `/lark wiki summary` 路由：根据节点类型调用 Docx `raw_content`，只返回最多
+3000 字符的归一化纯文本预览，不返回 document token，也不提供写操作。该能力使用已有只读 allowlist 中的
+`docx:document:readonly`，但尚未加入生产 scope，待后台发布、重新授权和真实消息验收。
 
 按优先级逐步接入消息卡片、文档、多维表格、表格、日历、任务、邮件、
 会议和知识库。每次只引入一个可验收的只读或低风险能力，再开放写操作。

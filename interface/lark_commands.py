@@ -33,6 +33,7 @@ from interface.lark_platform import (
     LarkChatMemberInfo,
     LarkMessageInfo,
     LarkBitableSummary,
+    LarkDocxSummary,
     LarkWikiNodeDetail,
     LarkWikiSearchResult,
 )
@@ -96,6 +97,14 @@ class LarkPlatformProvider(Protocol):
         user_access_token: str,
         limit: int = 10,
     ) -> LarkBitableSummary: ...
+
+    async def summarize_wiki_content(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary | LarkDocxSummary: ...
 
 
 class LarkOAuthProvider(Protocol):
@@ -205,7 +214,7 @@ class QuickCommandRouter:
                 "• `/lark auth complete <回调URL>` 浏览器超时后粘贴地址栏 URL 完成授权\n"
                 "• `/lark wiki 关键词` 搜索当前用户可访问的 Wiki（只读）\n"
                 "• `/lark wiki get <链接或 token>` 查看 Wiki 节点详情（只读）\n"
-                "• `/lark wiki summary <链接或 token>` 查看多维表格摘要（只读）\n"
+                "• `/lark wiki summary <链接或 token>` 查看文档/多维表格摘要（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -1009,7 +1018,7 @@ class QuickCommandRouter:
             text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
             return QuickCommandResult(text, build_sections_card([text], title=title))
         try:
-            result = await self.lark_platform.summarize_wiki_bitable(
+            result = await self.lark_platform.summarize_wiki_content(
                 reference,
                 user_access_token=token,
                 limit=10,
@@ -1023,15 +1032,24 @@ class QuickCommandRouter:
                 error=type(exc).__name__,
                 detail=str(exc)[:200],
             )
-            text = "📚 Lark Wiki：⚠️ 多维表格摘要失败，请确认已发布 bitable 只读权限"
+            text = "📚 Lark Wiki：⚠️ 内容摘要失败，请确认已发布对应的只读权限"
             return QuickCommandResult(text, build_sections_card([text], title=title))
-        lines = [f"📚 Lark Wiki：✅ {result.title or '多维表格摘要'}"]
-        if result.tables:
-            lines.append(f"• 数据表（{len(result.tables)}）：" + "、".join(result.tables))
+        if isinstance(result, LarkBitableSummary):
+            lines = [f"📚 Lark Wiki：✅ {result.title or '多维表格摘要'}"]
+            if result.tables:
+                lines.append(f"• 数据表（{len(result.tables)}）：" + "、".join(result.tables))
+            else:
+                lines.append("• 数据表：暂无可见数据表")
+            if result.has_more:
+                lines.append("• 仅展示前 10 张数据表")
         else:
-            lines.append("• 数据表：暂无可见数据表")
-        if result.has_more:
-            lines.append("• 仅展示前 10 张数据表")
+            lines = [f"📚 Lark Wiki：✅ {result.title or '文档摘要'}"]
+            if result.preview:
+                lines.append("• 内容摘要：\n" + result.preview)
+            else:
+                lines.append("• 内容摘要：文档暂无可读取文本")
+            if result.truncated:
+                lines.append("• 内容已限制为前 3000 字符")
         if result.url:
             lines.append(f"• 链接：{result.url}")
         text = "\n".join(lines)

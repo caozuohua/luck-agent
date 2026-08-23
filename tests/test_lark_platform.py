@@ -49,6 +49,18 @@ class FakeBitableEndpoint:
         self.option = option
         return self.table_response
 
+
+class FakeDocxEndpoint:
+    def __init__(self, response) -> None:
+        self.response = response
+        self.request = None
+        self.option = None
+
+    def raw_content(self, request, option):
+        self.request = request
+        self.option = option
+        return self.response
+
 def _client(response):
     endpoint = FakeChatEndpoint(response)
     client = SimpleNamespace(
@@ -279,3 +291,43 @@ async def test_summarize_wiki_bitable_returns_table_names_without_ids() -> None:
     assert app_endpoint.app_request.app_token == "app-secret"
     assert app_endpoint.table_request.app_token == "app-secret"
     assert app_endpoint.option.user_access_token == "user-token"
+
+
+async def test_summarize_wiki_docx_returns_bounded_plain_text() -> None:
+    node_endpoint = FakeChatEndpoint(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                node=SimpleNamespace(
+                    title="部署手册",
+                    url="https://open.larksuite.com/wiki/doc",
+                    obj_type="docx",
+                    obj_token="doc-secret",
+                )
+            ),
+        )
+    )
+    docx_endpoint = FakeDocxEndpoint(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(content="# 部署手册\n\n第一段内容。" + (" 详细信息。" * 500)),
+        )
+    )
+    client = SimpleNamespace(
+        wiki=SimpleNamespace(v2=SimpleNamespace(space=node_endpoint)),
+        docx=SimpleNamespace(v1=SimpleNamespace(document=docx_endpoint)),
+    )
+
+    result = await LarkPlatformClient(client).summarize_wiki_content(
+        "https://open.larksuite.com/wiki/doc",
+        user_access_token="user-token",
+    )
+
+    assert result.title == "部署手册"
+    assert result.preview.startswith("# 部署手册\n第一段内容。")
+    assert len(result.preview) == 3000
+    assert result.truncated is True
+    assert docx_endpoint.request.document_id == "doc-secret"
+    assert docx_endpoint.option.user_access_token == "user-token"

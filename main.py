@@ -210,6 +210,7 @@ class Runtime:
                 scopes=settings.lark_oauth_scopes,
                 state_ttl_seconds=settings.lark_oauth_state_ttl_seconds,
                 token_skew_seconds=settings.lark_oauth_token_skew_seconds,
+                exchange_timeout_seconds=settings.lark_oauth_exchange_timeout_seconds,
             )
             self.quick_commands.lark_oauth = self.lark_oauth
             self.health.lark_oauth = self.lark_oauth

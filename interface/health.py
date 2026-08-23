@@ -8,8 +8,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from interface.lark_oauth import LarkOAuthManager
+from core.log import get_logger
 from memory.db import Database
 from memory.goal_store import GoalStatus, GoalStore
+
+log = get_logger("interface.health")
 
 
 class HealthService:
@@ -126,10 +129,25 @@ class HealthService:
             await self._send_response(writer, 503, "text/html; charset=utf-8", body)
             return
         query = parse_qs(urlsplit(request_target).query, keep_blank_values=True)
+        code = _first_query_value(query, "code")
+        state = _first_query_value(query, "state")
+        error = _first_query_value(query, "error")
+        started_at = time.monotonic()
+        log.info(
+            "lark_oauth_callback_received",
+            has_code=bool(code),
+            has_state=bool(state),
+            has_error=bool(error),
+        )
         result = await self.lark_oauth.handle_callback(
-            code=_first_query_value(query, "code"),
-            state=_first_query_value(query, "state"),
-            error=_first_query_value(query, "error"),
+            code=code,
+            state=state,
+            error=error,
+        )
+        log.info(
+            "lark_oauth_callback_completed",
+            ok=result.ok,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
         )
         status = 200 if result.ok else 400
         await self._send_response(

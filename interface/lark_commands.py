@@ -1050,6 +1050,13 @@ class QuickCommandRouter:
                 lines.append("• 内容摘要：文档暂无可读取文本")
             if result.truncated:
                 lines.append("• 内容已限制为前 3000 字符")
+            if result.block_types:
+                structure = "、".join(
+                    f"{block_type}×{count}" for block_type, count in result.block_types
+                )
+                lines.append(f"• 文档结构（{result.block_count} 块）：{structure}")
+            if result.blocks_truncated:
+                lines.append("• 结构仅统计前 50 个文档块")
         if result.url:
             lines.append(f"• 链接：{result.url}")
         text = "\n".join(lines)

@@ -51,15 +51,22 @@ class FakeBitableEndpoint:
 
 
 class FakeDocxEndpoint:
-    def __init__(self, response) -> None:
+    def __init__(self, response, block_response=None) -> None:
         self.response = response
+        self.block_response = block_response
         self.request = None
+        self.block_request = None
         self.option = None
 
     def raw_content(self, request, option):
         self.request = request
         self.option = option
         return self.response
+
+    def list(self, request, option):
+        self.block_request = request
+        self.option = option
+        return self.block_response
 
 def _client(response):
     endpoint = FakeChatEndpoint(response)
@@ -313,11 +320,28 @@ async def test_summarize_wiki_docx_returns_bounded_plain_text() -> None:
             code=0,
             msg="success",
             data=SimpleNamespace(content="# 部署手册\n\n第一段内容。" + (" 详细信息。" * 500)),
-        )
+        ),
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                items=[
+                    SimpleNamespace(heading1=SimpleNamespace()),
+                    SimpleNamespace(text=SimpleNamespace()),
+                    SimpleNamespace(table=SimpleNamespace()),
+                ],
+                has_more=True,
+            ),
+        ),
     )
     client = SimpleNamespace(
         wiki=SimpleNamespace(v2=SimpleNamespace(space=node_endpoint)),
-        docx=SimpleNamespace(v1=SimpleNamespace(document=docx_endpoint)),
+        docx=SimpleNamespace(
+            v1=SimpleNamespace(
+                document=docx_endpoint,
+                document_block=docx_endpoint,
+            )
+        ),
     )
 
     result = await LarkPlatformClient(client).summarize_wiki_content(
@@ -329,5 +353,9 @@ async def test_summarize_wiki_docx_returns_bounded_plain_text() -> None:
     assert result.preview.startswith("# 部署手册\n第一段内容。")
     assert len(result.preview) == 3000
     assert result.truncated is True
+    assert result.block_count == 3
+    assert result.block_types == (("heading1", 1), ("table", 1), ("text", 1))
+    assert result.blocks_truncated is True
     assert docx_endpoint.request.document_id == "doc-secret"
+    assert docx_endpoint.block_request.document_id == "doc-secret"
     assert docx_endpoint.option.user_access_token == "user-token"

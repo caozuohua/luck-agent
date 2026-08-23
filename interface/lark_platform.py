@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import lark_oapi as lark
 from lark_oapi.api.bitable.v1 import GetAppRequest, ListAppTableRequest
-from lark_oapi.api.docx.v1 import RawContentDocumentRequest
+from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, RawContentDocumentRequest
 from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from lark_oapi.core.model import RequestOption
@@ -108,6 +108,9 @@ class LarkDocxSummary:
     url: str = ""
     preview: str = ""
     truncated: bool = False
+    block_count: int = 0
+    block_types: tuple[tuple[str, int], ...] = ()
+    blocks_truncated: bool = False
 
 
 class LarkPlatformClient:
@@ -468,11 +471,54 @@ class LarkPlatformClient:
             raise RuntimeError(f"Lark Docx content query failed: {response.code} {response.msg}")
         content = str(getattr(response.data, "content", "") or "").strip()
         preview = _bounded_docx_preview(content)
+        block_count, block_types, blocks_truncated = await self._list_docx_structure(
+            document_id,
+            user_access_token=normalized_token,
+        )
         return LarkDocxSummary(
             title=str(_node_value(node, "title", "") or "")[:200],
             url=str(_node_value(node, "url", "") or "")[:1000],
             preview=preview,
             truncated=len(content) > len(preview),
+            block_count=block_count,
+            block_types=block_types,
+            blocks_truncated=blocks_truncated,
+        )
+
+    async def _list_docx_structure(
+        self,
+        document_id: str,
+        *,
+        user_access_token: str,
+    ) -> tuple[int, tuple[tuple[str, int], ...], bool]:
+        endpoint = getattr(
+            getattr(getattr(self.client, "docx", None), "v1", None),
+            "document_block",
+            None,
+        )
+        if endpoint is None or not callable(getattr(endpoint, "list", None)):
+            return 0, (), False
+        request = (
+            ListDocumentBlockRequest.builder()
+            .document_id(document_id)
+            .page_size(50)
+            .build()
+        )
+        option = RequestOption.builder().user_access_token(user_access_token).build()
+        try:
+            response = await asyncio.to_thread(endpoint.list, request, option)
+        except Exception:
+            return 0, (), False
+        if response.code != 0 or response.data is None:
+            return 0, (), False
+        counts: dict[str, int] = {}
+        for block in response.data.items or ():
+            block_type = _docx_block_type(block)
+            counts[block_type] = counts.get(block_type, 0) + 1
+        return (
+            sum(counts.values()),
+            tuple(sorted(counts.items())),
+            bool(getattr(response.data, "has_more", False)),
         )
 
     async def _fetch_wiki_node(
@@ -601,6 +647,28 @@ def _bounded_docx_preview(content: str, *, limit: int = 3000) -> str:
     lines = [" ".join(line.split()) for line in str(content or "").splitlines()]
     normalized = "\n".join(line for line in lines if line)
     return normalized[:limit]
+
+
+def _docx_block_type(block: object) -> str:
+    fields = (
+        "page",
+        "text",
+        *(f"heading{index}" for index in range(1, 10)),
+        "bullet",
+        "ordered",
+        "code",
+        "quote",
+        "todo",
+        "table",
+        "bitable",
+        "image",
+        "file",
+        "divider",
+    )
+    for field in fields:
+        if _node_value(block, field, None) is not None:
+            return field
+    return "other"
 
 
 def _message_content(raw_content: str) -> str:

@@ -32,6 +32,7 @@ from interface.lark_platform import (
     LarkChatInfo,
     LarkChatMemberInfo,
     LarkMessageInfo,
+    LarkWikiSearchResult,
 )
 from interface.lark_oauth import LarkOAuthError
 from memory.scope_store import MemoryScopeStore
@@ -71,6 +72,14 @@ class LarkPlatformProvider(Protocol):
 
     async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None: ...
 
+    async def search_wiki(
+        self,
+        query: str,
+        *,
+        user_access_token: str,
+        limit: int = 5,
+    ) -> LarkWikiSearchResult: ...
+
 
 class LarkOAuthProvider(Protocol):
     @property
@@ -79,6 +88,8 @@ class LarkOAuthProvider(Protocol):
     def authorization_url(self, *, user_id: str, chat_id: str) -> str: ...
 
     def has_access(self, user_id: str) -> bool: ...
+
+    async def access_token_for(self, user_id: str) -> str | None: ...
 
     async def handle_callback_url(
         self,
@@ -175,6 +186,7 @@ class QuickCommandRouter:
                 "• `/lark chat announcement` 查看当前会话公告（只读）\n"
                 "• `/lark auth` 发起 Wiki/文档只读授权\n"
                 "• `/lark auth complete <回调URL>` 浏览器超时后粘贴地址栏 URL 完成授权\n"
+                "• `/lark wiki 关键词` 搜索当前用户可访问的 Wiki（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -246,6 +258,14 @@ class QuickCommandRouter:
         ):
             if command.startswith(prefix):
                 return await self._lark_auth_complete(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
+        if command in {"/lark wiki", "lark wiki", "/lark wiki search", "lark wiki search"}:
+            return "用法：/lark wiki 关键词"
+        for prefix in ("/lark wiki search ", "lark wiki search ", "/lark wiki ", "lark wiki "):
+            if command.startswith(prefix):
+                return await self._lark_wiki_search(
                     raw_command[len(prefix) :].strip(),
                     user_id=user_id,
                 )
@@ -828,6 +848,50 @@ class QuickCommandRouter:
         )
         mark = "✅" if result.ok else "⚠️"
         text = f"🔐 Lark User OAuth：{mark} {result.detail}"
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_wiki_search(
+        self,
+        query: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark Wiki"
+        if not query:
+            text = "用法：/lark wiki 关键词"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_platform is None:
+            text = "📚 Lark Wiki：⚠️ 当前未接入平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "📚 Lark Wiki：⚠️ 请先发送 /lark auth 完成只读授权"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        token = await self.lark_oauth.access_token_for(user_id)
+        if not token:
+            text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            result = await self.lark_platform.search_wiki(
+                query,
+                user_access_token=token,
+                limit=5,
+            )
+        except Exception as exc:
+            log.error("quick_lark_wiki_search_failed", error=type(exc).__name__)
+            text = "📚 Lark Wiki：⚠️ 查询失败，请稍后重试"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if not result.items:
+            text = f"📚 Lark Wiki：未找到与「{query[:80]}」匹配的结果"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        lines = [f"📚 Lark Wiki：✅ 找到 {len(result.items)} 条结果"]
+        for index, item in enumerate(result.items, start=1):
+            label = item.title or "（无标题）"
+            lines.append(f"{index}. {label}")
+            if item.url:
+                lines.append(f"   {item.url}")
+        if result.has_more:
+            lines.append("• 仅展示前 5 条结果")
+        text = "\n".join(lines)
         return QuickCommandResult(text, build_sections_card([text], title=title))
 
     async def _new_api_status(self) -> str | QuickCommandResult:

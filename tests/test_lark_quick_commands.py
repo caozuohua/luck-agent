@@ -11,6 +11,8 @@ from interface.lark_platform import (
     LarkChatInfo,
     LarkChatMemberInfo,
     LarkMessageInfo,
+    LarkWikiNode,
+    LarkWikiSearchResult,
 )
 from interface.lark_ws import LarkWebSocketInterface
 from memory.db import Database
@@ -162,6 +164,31 @@ class FakeLarkPlatform:
 
     async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None:
         return LarkChatAnnouncement(content="测试公告", revision="1")
+
+    async def search_wiki(
+        self,
+        query: str,
+        *,
+        user_access_token: str,
+        limit: int = 5,
+    ) -> LarkWikiSearchResult:
+        assert user_access_token == "user-token"
+        return LarkWikiSearchResult(
+            items=(LarkWikiNode(title=f"Wiki: {query}", url="https://wiki.test/result"),),
+        )
+
+
+class FakeLarkOAuth:
+    configured = True
+
+    def authorization_url(self, *, user_id: str, chat_id: str) -> str:
+        return "https://auth.test"
+
+    def has_access(self, user_id: str) -> bool:
+        return user_id == "alice"
+
+    async def access_token_for(self, user_id: str) -> str | None:
+        return "user-token" if user_id == "alice" else None
 
 
 class FakeMem0:
@@ -508,6 +535,33 @@ async def test_lark_chat_announcement_is_read_only() -> None:
     )
 
     assert "测试公告" in _text(result)
+
+
+async def test_lark_wiki_search_uses_user_oauth_token() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+        lark_oauth=FakeLarkOAuth(),
+    )
+
+    result = await router.handle("/lark wiki 部署", user_id="alice")
+
+    assert "Wiki: 部署" in _text(result)
+    assert "https://wiki.test/result" in _text(result)
+
+
+async def test_lark_wiki_search_requires_user_oauth() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+        lark_oauth=FakeLarkOAuth(),
+    )
+
+    result = await router.handle("/lark wiki 部署", user_id="bob")
+
+    assert "未授权" in _text(result)
 
 
 async def test_a2a_restart_rejects_aws_before_approval() -> None:

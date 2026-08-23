@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 
 import lark_oapi as lark
+from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
+from lark_oapi.core.model import RequestOption
 from lark_oapi.api.im.v1 import (
     GetChatAnnouncementRequest,
     GetChatMembersRequest,
@@ -53,6 +55,22 @@ class LarkChatAnnouncement:
     content: str = ""
     revision: str = ""
     update_time: str = ""
+
+
+@dataclass(frozen=True)
+class LarkWikiNode:
+    """Safe, user-visible Wiki search result without internal node IDs."""
+
+    title: str = ""
+    url: str = ""
+    domain: str = ""
+    obj_type: int | None = None
+
+
+@dataclass(frozen=True)
+class LarkWikiSearchResult:
+    items: tuple[LarkWikiNode, ...] = ()
+    has_more: bool = False
 
 
 class LarkPlatformClient:
@@ -158,6 +176,48 @@ class LarkPlatformClient:
             content=str(getattr(data, "content", "") or "")[:2000],
             revision=str(getattr(data, "revision", "") or ""),
             update_time=str(getattr(data, "update_time", "") or ""),
+        )
+
+    async def search_wiki(
+        self,
+        query: str,
+        *,
+        user_access_token: str,
+        limit: int = 5,
+    ) -> LarkWikiSearchResult:
+        normalized_query = str(query or "").strip()
+        normalized_token = str(user_access_token or "").strip()
+        if not normalized_query:
+            raise ValueError("query is required")
+        if not normalized_token:
+            raise ValueError("user_access_token is required")
+        page_size = max(1, min(int(limit), 10))
+        body = SearchNodeRequestBody.builder().query(normalized_query[:200]).build()
+        request = (
+            SearchNodeRequest.builder()
+            .page_size(page_size)
+            .request_body(body)
+            .build()
+        )
+        option = RequestOption.builder().user_access_token(normalized_token).build()
+        response = await asyncio.to_thread(
+            self.client.wiki.v1.node.search,
+            request,
+            option,
+        )
+        if response.code != 0 or response.data is None:
+            raise RuntimeError(f"Lark Wiki search failed: {response.code} {response.msg}")
+        return LarkWikiSearchResult(
+            items=tuple(
+                LarkWikiNode(
+                    title=str(getattr(item, "title", "") or "")[:200],
+                    url=str(getattr(item, "url", "") or "")[:1000],
+                    domain=str(getattr(item, "domain", "") or "")[:40],
+                    obj_type=getattr(item, "obj_type", None),
+                )
+                for item in (response.data.items or ())
+            ),
+            has_more=bool(getattr(response.data, "has_more", False)),
         )
 
 

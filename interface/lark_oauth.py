@@ -19,6 +19,7 @@ from lark_oapi.api.authen.v1 import (
 READ_ONLY_SCOPE_ALLOWLIST = {
     "docx:document:readonly",
     "drive:drive:readonly",
+    "bitable:app:readonly",
     "offline_access",
     "space:document:retrieve",
     "wiki:node:retrieve",

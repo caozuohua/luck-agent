@@ -189,11 +189,15 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 本轮继续扩展为 `/lark wiki get <Wiki 链接或节点 token>`：通过 Wiki v2
 `spaces/get_node` 读取节点标题、对象/节点类型、子节点标记、最近时间戳和规范链接，仍只使用当前用户
 User OAuth，不返回 node/object token。SDK 异常时保留同一 token 的 HTTP v2 兼容路径。节点详情额外支持
-`wiki:node:retrieve` 只读 scope，但不改变默认 `LARK_OAUTH_SCOPES`；需在开发者后台加权、发布后，再以
-`LARK_OAUTH_SCOPES="wiki:wiki:readonly wiki:node:retrieve"` 重新授权并做真实验收。
+`wiki:node:retrieve` 只读 scope；生产已配置
+`LARK_OAUTH_SCOPES="wiki:wiki:readonly wiki:node:retrieve"` 并完成真实授权验收。
 
 节点详情已完成真实 Lark 消息验收：实测读取“QPC个人知识库”节点，返回 `bitable`、`origin`、无子节点及
-最近时间戳；OAuth 回调和 WebSocket 快捷命令日志均正常。阶段五下一步转入文档/多维表格内容的只读摘要评估。
+最近时间戳；OAuth 回调和 WebSocket 快捷命令日志均正常。
+
+已实现 `/lark wiki summary <Wiki 链接或节点 token>` 的第一版多维表格摘要：解析 Wiki 节点对应的
+Bitable app，只读取应用名称和前 10 张数据表名称，不读取记录、不返回 app/table ID。该能力额外支持
+`bitable:app:readonly`，但尚未加入生产默认 scope，待后台发布后进行真实消息验收。
 
 按优先级逐步接入消息卡片、文档、多维表格、表格、日历、任务、邮件、
 会议和知识库。每次只引入一个可验收的只读或低风险能力，再开放写操作。

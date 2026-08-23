@@ -7,6 +7,7 @@ from core.targets import VpsTarget, VpsTargetRegistry
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
 from interface.lark_platform import (
+    LarkBitableSummary,
     LarkChatAnnouncement,
     LarkChatInfo,
     LarkChatMemberInfo,
@@ -192,6 +193,22 @@ class FakeLarkPlatform:
             obj_type="bitable",
             node_type="origin",
             has_child=True,
+        )
+
+    async def summarize_wiki_bitable(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary:
+        assert reference == "https://wiki.test/wiki/node-1"
+        assert user_access_token == "user-token"
+        assert limit == 10
+        return LarkBitableSummary(
+            title="QPC个人知识库",
+            url=reference,
+            tables=("Roadmap", "运维记录"),
         )
 
 
@@ -610,6 +627,24 @@ async def test_lark_wiki_get_shows_usage_without_reference() -> None:
     result = await router.handle("/lark wiki get", user_id="alice")
 
     assert "Wiki 链接或节点 token" in _text(result)
+
+
+async def test_lark_wiki_summary_uses_user_oauth_token() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        lark_platform=FakeLarkPlatform(),
+        lark_oauth=FakeLarkOAuth(),
+    )
+
+    result = await router.handle(
+        "/lark wiki summary https://wiki.test/wiki/node-1",
+        user_id="alice",
+    )
+
+    assert "QPC个人知识库" in _text(result)
+    assert "Roadmap" in _text(result)
+    assert "运维记录" in _text(result)
 
 
 async def test_a2a_restart_rejects_aws_before_approval() -> None:

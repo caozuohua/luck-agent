@@ -32,6 +32,7 @@ from interface.lark_platform import (
     LarkChatInfo,
     LarkChatMemberInfo,
     LarkMessageInfo,
+    LarkBitableSummary,
     LarkWikiNodeDetail,
     LarkWikiSearchResult,
 )
@@ -87,6 +88,14 @@ class LarkPlatformProvider(Protocol):
         *,
         user_access_token: str,
     ) -> LarkWikiNodeDetail: ...
+
+    async def summarize_wiki_bitable(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary: ...
 
 
 class LarkOAuthProvider(Protocol):
@@ -196,6 +205,7 @@ class QuickCommandRouter:
                 "• `/lark auth complete <回调URL>` 浏览器超时后粘贴地址栏 URL 完成授权\n"
                 "• `/lark wiki 关键词` 搜索当前用户可访问的 Wiki（只读）\n"
                 "• `/lark wiki get <链接或 token>` 查看 Wiki 节点详情（只读）\n"
+                "• `/lark wiki summary <链接或 token>` 查看多维表格摘要（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -279,9 +289,17 @@ class QuickCommandRouter:
             return "用法：/lark wiki 关键词"
         if command in {"/lark wiki get", "lark wiki get"}:
             return "用法：/lark wiki get <Wiki 链接或节点 token>"
+        if command in {"/lark wiki summary", "lark wiki summary"}:
+            return "用法：/lark wiki summary <Wiki 链接或节点 token>"
         for prefix in ("/lark wiki get ", "lark wiki get "):
             if command.startswith(prefix):
                 return await self._lark_wiki_get(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
+        for prefix in ("/lark wiki summary ", "lark wiki summary "):
+            if command.startswith(prefix):
+                return await self._lark_wiki_summary(
                     raw_command[len(prefix) :].strip(),
                     user_id=user_id,
                 )
@@ -965,6 +983,55 @@ class QuickCommandRouter:
             lines.append(f"• 包含子节点：{'是' if result.has_child else '否'}")
         if result.edited_at:
             lines.append(f"• 最近时间戳：`{result.edited_at}`")
+        if result.url:
+            lines.append(f"• 链接：{result.url}")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_wiki_summary(
+        self,
+        reference: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark Wiki"
+        if not reference:
+            text = "用法：/lark wiki summary <Wiki 链接或节点 token>"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_platform is None:
+            text = "📚 Lark Wiki：⚠️ 当前未接入平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "📚 Lark Wiki：⚠️ 请先发送 /lark auth 完成只读授权"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        token = await self.lark_oauth.access_token_for(user_id)
+        if not token:
+            text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            result = await self.lark_platform.summarize_wiki_bitable(
+                reference,
+                user_access_token=token,
+                limit=10,
+            )
+        except ValueError as exc:
+            text = f"📚 Lark Wiki：⚠️ {exc}"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        except Exception as exc:
+            log.error(
+                "quick_lark_wiki_summary_failed",
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+            )
+            text = "📚 Lark Wiki：⚠️ 多维表格摘要失败，请确认已发布 bitable 只读权限"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        lines = [f"📚 Lark Wiki：✅ {result.title or '多维表格摘要'}"]
+        if result.tables:
+            lines.append(f"• 数据表（{len(result.tables)}）：" + "、".join(result.tables))
+        else:
+            lines.append("• 数据表：暂无可见数据表")
+        if result.has_more:
+            lines.append("• 仅展示前 10 张数据表")
         if result.url:
             lines.append(f"• 链接：{result.url}")
         text = "\n".join(lines)

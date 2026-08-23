@@ -31,6 +31,24 @@ class FakeChatEndpoint:
         return self.response
 
 
+class FakeBitableEndpoint:
+    def __init__(self, app_response, table_response) -> None:
+        self.app_response = app_response
+        self.table_response = table_response
+        self.app_request = None
+        self.table_request = None
+        self.option = None
+
+    def get(self, request, option):
+        self.app_request = request
+        self.option = option
+        return self.app_response
+
+    def list(self, request, option):
+        self.table_request = request
+        self.option = option
+        return self.table_response
+
 def _client(response):
     endpoint = FakeChatEndpoint(response)
     client = SimpleNamespace(
@@ -208,3 +226,56 @@ async def test_get_wiki_node_rejects_malformed_url() -> None:
             "https://open.larksuite.com/docs/abc",
             user_access_token="user-token",
         )
+
+
+async def test_summarize_wiki_bitable_returns_table_names_without_ids() -> None:
+    node_endpoint = FakeChatEndpoint(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                node=SimpleNamespace(
+                    title="QPC个人知识库",
+                    url="https://open.larksuite.com/wiki/abc",
+                    obj_type="bitable",
+                    obj_token="app-secret",
+                )
+            ),
+        )
+    )
+    app_endpoint = FakeBitableEndpoint(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(app=SimpleNamespace(name="QPC个人知识库")),
+        ),
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                items=[
+                    SimpleNamespace(name="Roadmap", table_id="tbl-secret"),
+                    SimpleNamespace(name="运维记录", table_id="tbl-secret-2"),
+                ],
+                has_more=False,
+            ),
+        ),
+    )
+    client = SimpleNamespace(
+        wiki=SimpleNamespace(v2=SimpleNamespace(space=node_endpoint)),
+        bitable=SimpleNamespace(
+            v1=SimpleNamespace(app=app_endpoint, app_table=app_endpoint)
+        ),
+    )
+
+    result = await LarkPlatformClient(client).summarize_wiki_bitable(
+        "https://open.larksuite.com/wiki/abc",
+        user_access_token="user-token",
+    )
+
+    assert result.title == "QPC个人知识库"
+    assert result.tables == ("Roadmap", "运维记录")
+    assert "tbl-secret" not in str(result)
+    assert app_endpoint.app_request.app_token == "app-secret"
+    assert app_endpoint.table_request.app_token == "app-secret"
+    assert app_endpoint.option.user_access_token == "user-token"

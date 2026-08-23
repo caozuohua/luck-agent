@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import lark_oapi as lark
+from lark_oapi.api.bitable.v1 import GetAppRequest, ListAppTableRequest
 from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from lark_oapi.core.model import RequestOption
@@ -86,6 +87,16 @@ class LarkWikiNodeDetail:
     node_type: str = ""
     has_child: bool | None = None
     edited_at: int = 0
+
+
+@dataclass(frozen=True)
+class LarkBitableSummary:
+    """Safe metadata for a Wiki node backed by a Bitable app."""
+
+    title: str = ""
+    url: str = ""
+    tables: tuple[str, ...] = ()
+    has_more: bool = False
 
 
 class LarkPlatformClient:
@@ -310,6 +321,83 @@ class LarkPlatformClient:
         user_access_token: str,
     ) -> LarkWikiNodeDetail:
         """Read Wiki node metadata from a URL or node token using User OAuth."""
+        node = await self._fetch_wiki_node(
+            reference,
+            user_access_token=user_access_token,
+        )
+        return _wiki_node_detail(node)
+
+    async def summarize_wiki_bitable(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary:
+        """Read a Wiki Bitable app name and table names without returning IDs or records."""
+        node = await self._fetch_wiki_node(
+            reference,
+            user_access_token=user_access_token,
+        )
+        obj_type = str(_node_value(node, "obj_type", "") or "").lower()
+        if obj_type not in {"bitable", "11"}:
+            raise ValueError("当前 Wiki 节点不是多维表格，暂只支持 Bitable 摘要")
+        app_token = str(_node_value(node, "obj_token", "") or "").strip()
+        if not app_token:
+            raise RuntimeError("Lark Bitable 摘要失败：节点缺少 app token")
+        normalized_token = str(user_access_token or "").strip()
+        if not normalized_token:
+            raise ValueError("user_access_token is required")
+        page_size = max(1, min(int(limit), 20))
+        app_endpoint = getattr(
+            getattr(getattr(self.client, "bitable", None), "v1", None),
+            "app",
+            None,
+        )
+        table_endpoint = getattr(
+            getattr(getattr(self.client, "bitable", None), "v1", None),
+            "app_table",
+            None,
+        )
+        if app_endpoint is None or table_endpoint is None:
+            raise RuntimeError("Lark Bitable 摘要失败：SDK 未提供只读接口")
+        option = RequestOption.builder().user_access_token(normalized_token).build()
+        app_request = GetAppRequest.builder().app_token(app_token).build()
+        table_request = (
+            ListAppTableRequest.builder()
+            .app_token(app_token)
+            .page_size(page_size)
+            .build()
+        )
+        app_response = await asyncio.to_thread(app_endpoint.get, app_request, option)
+        if app_response.code != 0 or app_response.data is None or app_response.data.app is None:
+            raise RuntimeError(f"Lark Bitable app query failed: {app_response.code} {app_response.msg}")
+        table_response = await asyncio.to_thread(table_endpoint.list, table_request, option)
+        if table_response.code != 0 or table_response.data is None:
+            raise RuntimeError(
+                f"Lark Bitable table query failed: {table_response.code} {table_response.msg}"
+            )
+        return LarkBitableSummary(
+            title=str(
+                getattr(app_response.data.app, "name", "")
+                or _node_value(node, "title", "")
+                or ""
+            )[:200],
+            url=str(_node_value(node, "url", "") or "")[:1000],
+            tables=tuple(
+                str(getattr(item, "name", "") or "")[:160]
+                for item in (table_response.data.items or ())
+                if str(getattr(item, "name", "") or "").strip()
+            ),
+            has_more=bool(getattr(table_response.data, "has_more", False)),
+        )
+
+    async def _fetch_wiki_node(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+    ) -> object:
         token, obj_type = _parse_wiki_reference(reference)
         normalized_token = str(user_access_token or "").strip()
         if not normalized_token:
@@ -340,7 +428,7 @@ class LarkPlatformClient:
             )
         if response.code != 0 or response.data is None or response.data.node is None:
             raise RuntimeError(f"Lark Wiki node query failed: {response.code} {response.msg}")
-        return _wiki_node_detail(response.data.node)
+        return response.data.node
 
     async def _get_wiki_node_http(
         self,
@@ -348,7 +436,7 @@ class LarkPlatformClient:
         *,
         obj_type: str,
         user_access_token: str,
-    ) -> LarkWikiNodeDetail:
+    ) -> object:
         config = getattr(self.client, "config", None)
         domain = str(getattr(config, "domain", "") or "").rstrip("/")
         if not domain:
@@ -380,7 +468,7 @@ class LarkPlatformClient:
         node = (payload.get("data") or {}).get("node")
         if not isinstance(node, dict):
             raise RuntimeError("Lark Wiki node query failed: node is missing")
-        return _wiki_node_detail(node)
+        return node
 
 
 def _parse_wiki_reference(reference: str) -> tuple[str, str]:
@@ -405,20 +493,25 @@ def _parse_wiki_reference(reference: str) -> tuple[str, str]:
 
 
 def _wiki_node_detail(node: object) -> LarkWikiNodeDetail:
-    getter = node.get if isinstance(node, dict) else lambda key, default=None: getattr(node, key, default)
-    edited_at = getter("obj_edit_time", 0) or getter("node_create_time", 0) or 0
+    edited_at = _node_value(node, "obj_edit_time", 0) or _node_value(node, "node_create_time", 0) or 0
     try:
         edited_at = int(edited_at)
     except (TypeError, ValueError):
         edited_at = 0
     return LarkWikiNodeDetail(
-        title=str(getter("title", "") or "")[:200],
-        url=str(getter("url", "") or "")[:1000],
-        obj_type=str(getter("obj_type", "") or "")[:40],
-        node_type=str(getter("node_type", "") or "")[:40],
-        has_child=getter("has_child", None),
+        title=str(_node_value(node, "title", "") or "")[:200],
+        url=str(_node_value(node, "url", "") or "")[:1000],
+        obj_type=str(_node_value(node, "obj_type", "") or "")[:40],
+        node_type=str(_node_value(node, "node_type", "") or "")[:40],
+        has_child=_node_value(node, "has_child", None),
         edited_at=edited_at,
     )
+
+
+def _node_value(node: object, key: str, default: object = None) -> object:
+    if isinstance(node, dict):
+        return node.get(key, default)
+    return getattr(node, key, default)
 
 
 def _message_content(raw_content: str) -> str:

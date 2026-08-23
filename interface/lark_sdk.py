@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import http
+import inspect
 import json
+import re
 import threading
 from typing import Any, Awaitable, Callable
 
@@ -13,6 +17,94 @@ log = get_logger("interface.lark_sdk")
 MessageHandler = Callable[[dict[str, Any]], Awaitable[bool]]
 CardActionHandler = Callable[[dict[str, Any]], dict[str, Any]]
 StateCallback = Callable[[], None]
+
+
+def _install_card_frame_compatibility(ws_module: Any) -> bool:
+    """Bridge Card 2.0 frames dropped by affected lark-oapi WebSocket clients.
+
+    Some lark-oapi releases register ``card.action.trigger`` successfully but
+    return from ``Client._handle_data_frame`` when the transport frame type is
+    ``CARD``. The callback therefore never reaches the application's event
+    dispatcher. Keep the workaround local to the runner and only install it
+    when that exact broken branch is present, so a fixed SDK remains untouched.
+    """
+
+    client_cls = getattr(ws_module, "Client", None)
+    original = getattr(client_cls, "_handle_data_frame", None)
+    if client_cls is None or original is None:
+        return False
+    try:
+        source = inspect.getsource(original)
+    except (OSError, TypeError):
+        return False
+    if not re.search(
+        r"elif\s+message_type\s*==\s*MessageType\.CARD\s*:\s*return",
+        source,
+    ):
+        return False
+
+    async def _handle_data_frame(self: Any, frame: Any) -> None:
+        hs = frame.headers
+        msg_id = ws_module._get_by_key(hs, ws_module.HEADER_MESSAGE_ID)
+        trace_id = ws_module._get_by_key(hs, ws_module.HEADER_TRACE_ID)
+        sum_ = ws_module._get_by_key(hs, ws_module.HEADER_SUM)
+        seq = ws_module._get_by_key(hs, ws_module.HEADER_SEQ)
+        type_ = ws_module._get_by_key(hs, ws_module.HEADER_TYPE)
+
+        payload = frame.payload
+        if int(sum_) > 1:
+            payload = self._combine(msg_id, int(sum_), int(seq), payload)
+            if payload is None:
+                return
+
+        message_type = ws_module.MessageType(type_)
+        ws_module.logger.debug(
+            self._fmt_log(
+                "receive message, message_type: {}, message_id: {}, trace_id: {}, payload: {}",
+                message_type.value,
+                msg_id,
+                trace_id,
+                payload.decode(ws_module.UTF_8),
+            )
+        )
+
+        response = ws_module.Response(code=http.HTTPStatus.OK)
+        try:
+            start = int(round(ws_module.time.time() * 1000))
+            if message_type in {
+                ws_module.MessageType.EVENT,
+                ws_module.MessageType.CARD,
+            }:
+                result = self._event_handler._do_without_validation(payload)
+            else:
+                return
+            end = int(round(ws_module.time.time() * 1000))
+            header = hs.add()
+            header.key = ws_module.HEADER_BIZ_RT
+            header.value = str(end - start)
+            if result is not None:
+                response.data = base64.b64encode(
+                    ws_module.JSON.marshal(result).encode(ws_module.UTF_8)
+                )
+        except Exception as error:
+            ws_module.logger.error(
+                self._fmt_log(
+                    "handle message failed, message_type: {}, message_id: {}, trace_id: {}, err: {}",
+                    message_type.value,
+                    msg_id,
+                    trace_id,
+                    error,
+                )
+            )
+            response = ws_module.Response(
+                code=http.HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+
+        frame.payload = ws_module.JSON.marshal(response).encode(ws_module.UTF_8)
+        await self._write_message(frame.SerializeToString())
+
+    client_cls._handle_data_frame = _handle_data_frame
+    return True
 
 
 def normalize_message_event(data: Any) -> dict[str, Any] | None:
@@ -182,6 +274,11 @@ class LarkSdkRunner:
             import lark_oapi.ws.client as ws_module
 
             ws_module.loop = sdk_loop
+            if _install_card_frame_compatibility(ws_module):
+                log.warning(
+                    "lark_websocket_card_compatibility_enabled",
+                    reason="sdk_drops_card_frames",
+                )
             builder = lark.EventDispatcherHandler.builder("", "")
             builder.register_p2_im_message_receive_v1(self._handle_sdk_event)
             if self.on_card_action is not None:

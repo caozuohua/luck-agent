@@ -199,6 +199,7 @@ class Runtime:
                 .app_id(settings.lark_app_id)
                 .app_secret(settings.lark_app_secret)
                 .domain(settings.lark_domain)
+                .enable_set_token(True)
                 .build()
             )
             self.quick_commands.lark_platform = LarkPlatformClient(self.lark_api_client)

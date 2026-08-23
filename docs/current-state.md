@@ -57,8 +57,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与 Lark 平台助手。
   Bot 测试会话的 Lark REST 只读调用已验证成功，公告未设置时明确返回空状态，失败时降级为提示。Wiki 搜索探测
   确认需要 `user_access_token`；已引入独立的只读 User OAuth 边界：`/lark auth` 生成 10 分钟一次性 state
   授权链接，公网 `/oauth/lark/callback` 通过独立回调监听端口（默认 8090）完成授权码交换，默认只允许
-  `wiki:wiki:readonly` 等只读 scope。令牌仅驻留内存，不写日志/SQLite，重启后需要重新授权；真实 Wiki 搜索接入
-  仍待完成首次授权验收。
+  `wiki:wiki:readonly` 等只读 scope。令牌仅驻留内存，不写日志/SQLite，重启后需要重新授权。已接入只读命令
+  `/lark wiki 关键词`，通过当前用户 User OAuth token 查询并仅返回标题/链接；首次真实搜索验收待完成。
 - 生产 `EXECUTION_MODE` 使用 `graph`；本地 Web 直连 Agent、`legacy_inline` skill、旧
   `GoalManager` 和早期 `ExecutionEngine` 已明确登记为兼容路径，不是生产主链，边界见
   [`docs/legacy-runtime.md`](legacy-runtime.md)。

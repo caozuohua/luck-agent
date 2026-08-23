@@ -20,6 +20,11 @@ class FakeChatEndpoint:
         self.request = request
         return self.response
 
+    def search(self, request, option):
+        self.request = request
+        self.option = option
+        return self.response
+
 
 def _client(response):
     endpoint = FakeChatEndpoint(response)
@@ -32,6 +37,14 @@ def _client(response):
                 chat_announcement=endpoint,
             ),
         ),
+    )
+    return client, endpoint
+
+
+def _wiki_client(response):
+    endpoint = FakeChatEndpoint(response)
+    client = SimpleNamespace(
+        wiki=SimpleNamespace(v1=SimpleNamespace(node=endpoint)),
     )
     return client, endpoint
 
@@ -117,3 +130,31 @@ async def test_get_chat_announcement_returns_none_when_unset() -> None:
     client, _ = _client(SimpleNamespace(code=232003, msg="not found", data=None))
 
     assert await LarkPlatformClient(client).get_chat_announcement("oc_test") is None
+
+
+async def test_search_wiki_uses_user_token_and_hides_node_ids() -> None:
+    item = SimpleNamespace(
+        node_id="node-secret",
+        title="部署手册",
+        url="https://open.larksuite.com/wiki/abc",
+        domain="bitable",
+        obj_type=11,
+    )
+    client, endpoint = _wiki_client(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(items=[item], has_more=False),
+        )
+    )
+
+    result = await LarkPlatformClient(client).search_wiki(
+        "部署",
+        user_access_token="user-token",
+    )
+
+    assert result.items[0].title == "部署手册"
+    assert result.items[0].url.endswith("/abc")
+    assert not hasattr(result.items[0], "node_id")
+    assert endpoint.request.body.query == "部署"
+    assert endpoint.option.user_access_token == "user-token"

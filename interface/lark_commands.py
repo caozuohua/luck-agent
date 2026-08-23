@@ -877,7 +877,11 @@ class QuickCommandRouter:
                 limit=5,
             )
         except Exception as exc:
-            log.error("quick_lark_wiki_search_failed", error=type(exc).__name__)
+            log.error(
+                "quick_lark_wiki_search_failed",
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+            )
             text = "📚 Lark Wiki：⚠️ 查询失败，请稍后重试"
             return QuickCommandResult(text, build_sections_card([text], title=title))
         if not result.items:

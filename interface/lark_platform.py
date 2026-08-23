@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+import httpx
 import lark_oapi as lark
 from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
 from lark_oapi.core.model import RequestOption
@@ -200,11 +201,23 @@ class LarkPlatformClient:
             .build()
         )
         option = RequestOption.builder().user_access_token(normalized_token).build()
-        response = await asyncio.to_thread(
-            self.client.wiki.v1.node.search,
-            request,
-            option,
-        )
+        try:
+            response = await asyncio.to_thread(
+                self.client.wiki.v1.node.search,
+                request,
+                option,
+            )
+        except json.JSONDecodeError:
+            # lark-oapi 1.7.x attempts to deserialize every JSON content-type
+            # response before returning it. Some Lark Wiki gateways return an
+            # empty/non-JSON body on an otherwise useful response; use the
+            # same user token through the documented HTTP endpoint as a
+            # compatibility fallback.
+            return await self._search_wiki_http(
+                normalized_query,
+                user_access_token=normalized_token,
+                limit=page_size,
+            )
         if response.code != 0 or response.data is None:
             raise RuntimeError(f"Lark Wiki search failed: {response.code} {response.msg}")
         return LarkWikiSearchResult(
@@ -218,6 +231,61 @@ class LarkPlatformClient:
                 for item in (response.data.items or ())
             ),
             has_more=bool(getattr(response.data, "has_more", False)),
+        )
+
+    async def _search_wiki_http(
+        self,
+        query: str,
+        *,
+        user_access_token: str,
+        limit: int,
+    ) -> LarkWikiSearchResult:
+        config = getattr(self.client, "config", None)
+        domain = str(getattr(config, "domain", "") or "").rstrip("/")
+        if not domain:
+            raise RuntimeError("Lark Wiki search failed: API domain is unavailable")
+        url = f"{domain}/open-apis/wiki/v1/nodes/search"
+        headers = {
+            "Authorization": f"Bearer {user_access_token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        async with httpx.AsyncClient(timeout=15.0) as transport:
+            response = await transport.post(
+                url,
+                params={"page_size": limit},
+                headers=headers,
+                json={"query": query},
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Lark Wiki search failed: HTTP {response.status_code}, invalid response"
+            ) from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            raise RuntimeError(
+                f"Lark Wiki search failed: HTTP {response.status_code} "
+                f"{str(payload.get('msg') or '')[:160]}"
+            )
+        if int(payload.get("code", -1) or -1) != 0:
+            raise RuntimeError(
+                f"Lark Wiki search failed: {payload.get('code')} "
+                f"{str(payload.get('msg') or '')[:160]}"
+            )
+        data = payload.get("data") or {}
+        items = data.get("items") or []
+        return LarkWikiSearchResult(
+            items=tuple(
+                LarkWikiNode(
+                    title=str(item.get("title") or "")[:200],
+                    url=str(item.get("url") or "")[:1000],
+                    domain=str(item.get("domain") or "")[:40],
+                    obj_type=item.get("obj_type") if isinstance(item.get("obj_type"), int) else None,
+                )
+                for item in items
+                if isinstance(item, dict)
+            ),
+            has_more=bool(data.get("has_more", False)),
         )
 
 

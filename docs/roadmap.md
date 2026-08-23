@@ -186,6 +186,12 @@ Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops
 8090），默认 scope 为 `wiki:wiki:readonly`，令牌只保存在内存中。已实现 `/lark wiki 关键词` 只读搜索，
 仅返回标题和链接；已完成真实重启、重新授权和搜索验收，实测可返回多维表格等 Wiki 节点链接。
 
+本轮继续扩展为 `/lark wiki get <Wiki 链接或节点 token>`：通过 Wiki v2
+`spaces/get_node` 读取节点标题、对象/节点类型、子节点标记、最近时间戳和规范链接，仍只使用当前用户
+User OAuth，不返回 node/object token。SDK 异常时保留同一 token 的 HTTP v2 兼容路径。节点详情额外支持
+`wiki:node:retrieve` 只读 scope，但不改变默认 `LARK_OAUTH_SCOPES`；需在开发者后台加权、发布后，再以
+`LARK_OAUTH_SCOPES="wiki:wiki:readonly wiki:node:retrieve"` 重新授权并做真实验收。
+
 按优先级逐步接入消息卡片、文档、多维表格、表格、日历、任务、邮件、
 会议和知识库。每次只引入一个可验收的只读或低风险能力，再开放写操作。
 

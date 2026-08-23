@@ -21,6 +21,7 @@ READ_ONLY_SCOPE_ALLOWLIST = {
     "drive:drive:readonly",
     "offline_access",
     "space:document:retrieve",
+    "wiki:node:retrieve",
     "wiki:wiki:readonly",
 }
 

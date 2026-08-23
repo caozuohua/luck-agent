@@ -25,6 +25,11 @@ class FakeChatEndpoint:
         self.option = option
         return self.response
 
+    def get_node(self, request, option):
+        self.request = request
+        self.option = option
+        return self.response
+
 
 def _client(response):
     endpoint = FakeChatEndpoint(response)
@@ -44,7 +49,10 @@ def _client(response):
 def _wiki_client(response):
     endpoint = FakeChatEndpoint(response)
     client = SimpleNamespace(
-        wiki=SimpleNamespace(v1=SimpleNamespace(node=endpoint)),
+        wiki=SimpleNamespace(
+            v1=SimpleNamespace(node=endpoint),
+            v2=SimpleNamespace(space=endpoint),
+        ),
     )
     return client, endpoint
 
@@ -158,3 +166,45 @@ async def test_search_wiki_uses_user_token_and_hides_node_ids() -> None:
     assert not hasattr(result.items[0], "node_id")
     assert endpoint.request.body.query == "部署"
     assert endpoint.option.user_access_token == "user-token"
+
+
+async def test_get_wiki_node_accepts_url_and_returns_safe_metadata() -> None:
+    node = SimpleNamespace(
+        node_token="node-secret",
+        obj_token="obj-secret",
+        title="部署手册",
+        url="https://open.larksuite.com/wiki/abc",
+        obj_type="bitable",
+        node_type="origin",
+        has_child=True,
+        obj_edit_time=1720000000000,
+    )
+    client, endpoint = _wiki_client(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(node=node),
+        )
+    )
+
+    result = await LarkPlatformClient(client).get_wiki_node(
+        "https://open.larksuite.com/wiki/abc?from=search",
+        user_access_token="user-token",
+    )
+
+    assert result.title == "部署手册"
+    assert result.obj_type == "bitable"
+    assert result.has_child is True
+    assert not hasattr(result, "node_token")
+    assert endpoint.request.token == "abc"
+    assert endpoint.option.user_access_token == "user-token"
+
+
+async def test_get_wiki_node_rejects_malformed_url() -> None:
+    client, _ = _wiki_client(SimpleNamespace(code=0, msg="success", data=None))
+
+    with pytest.raises(ValueError, match="Wiki"):
+        await LarkPlatformClient(client).get_wiki_node(
+            "https://open.larksuite.com/docs/abc",
+            user_access_token="user-token",
+        )

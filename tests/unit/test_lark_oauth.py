@@ -86,6 +86,12 @@ def test_write_scope_is_rejected() -> None:
         make_manager(scopes="wiki:wiki")
 
 
+def test_wiki_node_read_scope_is_allowed() -> None:
+    manager = make_manager(scopes="wiki:wiki:readonly wiki:node:retrieve")
+
+    assert manager.scope_text == "wiki:wiki:readonly wiki:node:retrieve"
+
+
 @pytest.mark.asyncio
 async def test_callback_exchanges_code_once_and_keeps_token_in_memory() -> None:
     client = FakeClient()

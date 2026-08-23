@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import lark_oapi as lark
 from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
+from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
 from lark_oapi.core.model import RequestOption
 from lark_oapi.api.im.v1 import (
     GetChatAnnouncementRequest,
@@ -72,6 +74,18 @@ class LarkWikiNode:
 class LarkWikiSearchResult:
     items: tuple[LarkWikiNode, ...] = ()
     has_more: bool = False
+
+
+@dataclass(frozen=True)
+class LarkWikiNodeDetail:
+    """Safe metadata for a Wiki node; internal tokens are intentionally omitted."""
+
+    title: str = ""
+    url: str = ""
+    obj_type: str = ""
+    node_type: str = ""
+    has_child: bool | None = None
+    edited_at: int = 0
 
 
 class LarkPlatformClient:
@@ -288,6 +302,123 @@ class LarkPlatformClient:
             ),
             has_more=bool(data.get("has_more", False)),
         )
+
+    async def get_wiki_node(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+    ) -> LarkWikiNodeDetail:
+        """Read Wiki node metadata from a URL or node token using User OAuth."""
+        token, obj_type = _parse_wiki_reference(reference)
+        normalized_token = str(user_access_token or "").strip()
+        if not normalized_token:
+            raise ValueError("user_access_token is required")
+        request_builder = GetNodeSpaceRequest.builder().token(token)
+        if obj_type:
+            request_builder.obj_type(obj_type)
+        request = request_builder.build()
+        option = RequestOption.builder().user_access_token(normalized_token).build()
+        endpoint = getattr(
+            getattr(getattr(self.client, "wiki", None), "v2", None),
+            "space",
+            None,
+        )
+        try:
+            if endpoint is None or not callable(getattr(endpoint, "get_node", None)):
+                return await self._get_wiki_node_http(
+                    token,
+                    obj_type=obj_type,
+                    user_access_token=normalized_token,
+                )
+            response = await asyncio.to_thread(endpoint.get_node, request, option)
+        except json.JSONDecodeError:
+            return await self._get_wiki_node_http(
+                token,
+                obj_type=obj_type,
+                user_access_token=normalized_token,
+            )
+        if response.code != 0 or response.data is None or response.data.node is None:
+            raise RuntimeError(f"Lark Wiki node query failed: {response.code} {response.msg}")
+        return _wiki_node_detail(response.data.node)
+
+    async def _get_wiki_node_http(
+        self,
+        token: str,
+        *,
+        obj_type: str,
+        user_access_token: str,
+    ) -> LarkWikiNodeDetail:
+        config = getattr(self.client, "config", None)
+        domain = str(getattr(config, "domain", "") or "").rstrip("/")
+        if not domain:
+            raise RuntimeError("Lark Wiki node query failed: API domain is unavailable")
+        url = f"{domain}/open-apis/wiki/v2/spaces/get_node"
+        params = {"token": token}
+        if obj_type:
+            params["obj_type"] = obj_type
+        headers = {"Authorization": f"Bearer {user_access_token}"}
+        async with httpx.AsyncClient(timeout=15.0) as transport:
+            response = await transport.get(url, params=params, headers=headers)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Lark Wiki node query failed: HTTP {response.status_code}, invalid response"
+            ) from exc
+        if response.status_code < 200 or response.status_code >= 300:
+            raise RuntimeError(
+                f"Lark Wiki node query failed: HTTP {response.status_code} "
+                f"{str(payload.get('msg') or '')[:160]}"
+            )
+        response_code = payload.get("code")
+        if response_code is None or int(response_code) != 0:
+            raise RuntimeError(
+                f"Lark Wiki node query failed: {response_code} "
+                f"{str(payload.get('msg') or '')[:160]}"
+            )
+        node = (payload.get("data") or {}).get("node")
+        if not isinstance(node, dict):
+            raise RuntimeError("Lark Wiki node query failed: node is missing")
+        return _wiki_node_detail(node)
+
+
+def _parse_wiki_reference(reference: str) -> tuple[str, str]:
+    raw = str(reference or "").strip()
+    if not raw:
+        raise ValueError("wiki reference is required")
+    if raw.startswith(("http://", "https://")):
+        parsed = urlsplit(raw)
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        try:
+            token = segments[segments.index("wiki") + 1]
+        except (ValueError, IndexError) as exc:
+            raise ValueError("请粘贴包含 /wiki/<token> 的 Wiki 链接或节点 token") from exc
+        query = parse_qs(parsed.query)
+        obj_type = str((query.get("obj_type") or [""])[0]).strip()
+    else:
+        token = raw
+        obj_type = ""
+    if len(token) > 200 or any(char.isspace() for char in token):
+        raise ValueError("Wiki 节点 token 格式无效")
+    return token, obj_type[:40]
+
+
+def _wiki_node_detail(node: object) -> LarkWikiNodeDetail:
+    getter = node.get if isinstance(node, dict) else lambda key, default=None: getattr(node, key, default)
+    edited_at = getter("obj_edit_time", 0) or getter("node_create_time", 0) or 0
+    try:
+        edited_at = int(edited_at)
+    except (TypeError, ValueError):
+        edited_at = 0
+    return LarkWikiNodeDetail(
+        title=str(getter("title", "") or "")[:200],
+        url=str(getter("url", "") or "")[:1000],
+        obj_type=str(getter("obj_type", "") or "")[:40],
+        node_type=str(getter("node_type", "") or "")[:40],
+        has_child=getter("has_child", None),
+        edited_at=edited_at,
+    )
 
 
 def _message_content(raw_content: str) -> str:

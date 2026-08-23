@@ -267,9 +267,10 @@ class LarkPlatformClient:
                 f"Lark Wiki search failed: HTTP {response.status_code} "
                 f"{str(payload.get('msg') or '')[:160]}"
             )
-        if int(payload.get("code", -1) or -1) != 0:
+        response_code = payload.get("code")
+        if response_code is None or int(response_code) != 0:
             raise RuntimeError(
-                f"Lark Wiki search failed: {payload.get('code')} "
+                f"Lark Wiki search failed: {response_code} "
                 f"{str(payload.get('msg') or '')[:160]}"
             )
         data = payload.get("data") or {}

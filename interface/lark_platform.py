@@ -244,7 +244,7 @@ class LarkPlatformClient:
         domain = str(getattr(config, "domain", "") or "").rstrip("/")
         if not domain:
             raise RuntimeError("Lark Wiki search failed: API domain is unavailable")
-        url = f"{domain}/open-apis/wiki/v1/nodes/search"
+        url = f"{domain}/open-apis/wiki/v2/nodes/search"
         headers = {
             "Authorization": f"Bearer {user_access_token}",
             "Content-Type": "application/json; charset=utf-8",

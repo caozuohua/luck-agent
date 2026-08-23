@@ -50,6 +50,18 @@ class FakeBitableEndpoint:
         return self.table_response
 
 
+class FakeRecordEndpoint:
+    def __init__(self, response) -> None:
+        self.response = response
+        self.request = None
+        self.option = None
+
+    def list(self, request, option):
+        self.request = request
+        self.option = option
+        return self.response
+
+
 class FakeDocxEndpoint:
     def __init__(self, response, block_response=None) -> None:
         self.response = response
@@ -359,3 +371,73 @@ async def test_summarize_wiki_docx_returns_bounded_plain_text() -> None:
     assert docx_endpoint.request.document_id == "doc-secret"
     assert docx_endpoint.block_request.document_id == "doc-secret"
     assert docx_endpoint.option.user_access_token == "user-token"
+
+
+async def test_summarize_wiki_records_selects_table_and_redacts_sensitive_fields() -> None:
+    node_endpoint = FakeChatEndpoint(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                node=SimpleNamespace(
+                    title="QPC个人知识库",
+                    url="https://open.larksuite.com/wiki/abc",
+                    obj_type="bitable",
+                    obj_token="app-secret",
+                )
+            ),
+        )
+    )
+    table_endpoint = FakeBitableEndpoint(
+        SimpleNamespace(code=0, msg="success", data=SimpleNamespace()),
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                items=[SimpleNamespace(name="QPC个人知识库", table_id="tbl-secret")],
+                has_more=False,
+            ),
+        ),
+    )
+    record_endpoint = FakeRecordEndpoint(
+        SimpleNamespace(
+            code=0,
+            msg="success",
+            data=SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        record_id="rec-secret",
+                        fields={
+                            "标题": "测试记录",
+                            "邮箱": "private@example.com",
+                            "access_token": "should-hide",
+                        },
+                    )
+                ],
+                has_more=False,
+            ),
+        )
+    )
+    client = SimpleNamespace(
+        wiki=SimpleNamespace(v2=SimpleNamespace(space=node_endpoint)),
+        bitable=SimpleNamespace(
+            v1=SimpleNamespace(
+                app_table=table_endpoint,
+                app_table_record=record_endpoint,
+            )
+        ),
+    )
+
+    result = await LarkPlatformClient(client).summarize_wiki_records(
+        "https://open.larksuite.com/wiki/abc",
+        user_access_token="user-token",
+    )
+
+    assert result.table_name == "QPC个人知识库"
+    assert "标题=\"测试记录\"" in result.records[0]
+    assert "（已脱敏）" in result.records[0]
+    assert "private@example.com" not in result.records[0]
+    assert "should-hide" not in result.records[0]
+    assert "rec-secret" not in str(result)
+    assert record_endpoint.request.table_id == "tbl-secret"
+    assert record_endpoint.option.user_access_token == "user-token"

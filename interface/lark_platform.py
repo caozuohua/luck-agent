@@ -7,7 +7,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import lark_oapi as lark
-from lark_oapi.api.bitable.v1 import GetAppRequest, ListAppTableRequest
+from lark_oapi.api.bitable.v1 import (
+    GetAppRequest,
+    ListAppTableRecordRequest,
+    ListAppTableRequest,
+)
 from lark_oapi.api.docx.v1 import ListDocumentBlockRequest, RawContentDocumentRequest
 from lark_oapi.api.wiki.v1 import SearchNodeRequest, SearchNodeRequestBody
 from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
@@ -97,6 +101,17 @@ class LarkBitableSummary:
     title: str = ""
     url: str = ""
     tables: tuple[str, ...] = ()
+    has_more: bool = False
+
+
+@dataclass(frozen=True)
+class LarkBitableRecordsSummary:
+    """Bounded, privacy-filtered record summaries without internal IDs."""
+
+    title: str = ""
+    url: str = ""
+    table_name: str = ""
+    records: tuple[str, ...] = ()
     has_more: bool = False
 
 
@@ -385,6 +400,102 @@ class LarkPlatformClient:
             )
         raise ValueError("当前 Wiki 节点暂不支持内容摘要，仅支持 Docx 和多维表格")
 
+    async def summarize_wiki_records(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        table_name: str = "",
+        limit: int = 5,
+    ) -> LarkBitableRecordsSummary:
+        """Read a few Bitable records by human table name, with sensitive fields redacted."""
+        node = await self._fetch_wiki_node(
+            reference,
+            user_access_token=user_access_token,
+        )
+        obj_type = str(_node_value(node, "obj_type", "") or "").lower()
+        if obj_type not in {"bitable", "11"}:
+            raise ValueError("当前 Wiki 节点不是多维表格，暂只支持 Bitable 记录摘要")
+        app_token = str(_node_value(node, "obj_token", "") or "").strip()
+        normalized_token = str(user_access_token or "").strip()
+        if not app_token:
+            raise RuntimeError("Lark Bitable 记录摘要失败：节点缺少 app token")
+        if not normalized_token:
+            raise ValueError("user_access_token is required")
+        bitable_v1 = getattr(getattr(self.client, "bitable", None), "v1", None)
+        table_endpoint = getattr(bitable_v1, "app_table", None)
+        record_endpoint = getattr(bitable_v1, "app_table_record", None)
+        if table_endpoint is None or record_endpoint is None:
+            raise RuntimeError("Lark Bitable 记录摘要失败：SDK 未提供只读接口")
+        page_size = max(1, min(int(limit), 5))
+        option = RequestOption.builder().user_access_token(normalized_token).build()
+        table_request = (
+            ListAppTableRequest.builder()
+            .app_token(app_token)
+            .page_size(20)
+            .build()
+        )
+        table_response = await asyncio.to_thread(table_endpoint.list, table_request, option)
+        if table_response.code != 0 or table_response.data is None:
+            raise RuntimeError(
+                f"Lark Bitable table query failed: {table_response.code} {table_response.msg}"
+            )
+        tables = tuple(table_response.data.items or ())
+        normalized_name = str(table_name or "").strip().casefold()
+        if normalized_name:
+            selected = next(
+                (
+                    item
+                    for item in tables
+                    if str(getattr(item, "name", "") or "").strip().casefold()
+                    == normalized_name
+                ),
+                None,
+            )
+            if selected is None:
+                available = "、".join(
+                    str(getattr(item, "name", "") or "")[:80]
+                    for item in tables
+                    if str(getattr(item, "name", "") or "").strip()
+                )
+                raise ValueError(f"未找到数据表「{table_name[:80]}」，可选：{available or '无'}")
+        elif len(tables) == 1:
+            selected = tables[0]
+        else:
+            available = "、".join(
+                str(getattr(item, "name", "") or "")[:80]
+                for item in tables
+                if str(getattr(item, "name", "") or "").strip()
+            )
+            raise ValueError(f"请在链接后补充表名，可选：{available or '无'}")
+        selected_table_id = str(getattr(selected, "table_id", "") or "").strip()
+        selected_table_name = str(getattr(selected, "name", "") or "")[:160]
+        if not selected_table_id:
+            raise RuntimeError("Lark Bitable 记录摘要失败：数据表缺少内部 ID")
+        record_request = (
+            ListAppTableRecordRequest.builder()
+            .app_token(app_token)
+            .table_id(selected_table_id)
+            .page_size(page_size)
+            .build()
+        )
+        record_response = await asyncio.to_thread(record_endpoint.list, record_request, option)
+        if record_response.code != 0 or record_response.data is None:
+            raise RuntimeError(
+                f"Lark Bitable record query failed: {record_response.code} {record_response.msg}"
+            )
+        records = tuple(
+            _safe_record_summary(getattr(item, "fields", {}) or {})
+            for item in (record_response.data.items or ())
+        )
+        return LarkBitableRecordsSummary(
+            title=str(_node_value(node, "title", "") or "")[:200],
+            url=str(_node_value(node, "url", "") or "")[:1000],
+            table_name=selected_table_name,
+            records=records,
+            has_more=bool(getattr(record_response.data, "has_more", False)),
+        )
+
     async def _summarize_bitable_node(
         self,
         node: object,
@@ -669,6 +780,25 @@ def _docx_block_type(block: object) -> str:
         if _node_value(block, field, None) is not None:
             return field
     return "other"
+
+
+def _safe_record_summary(fields: object) -> str:
+    if not isinstance(fields, dict):
+        return "（无可展示字段）"
+    pairs: list[str] = []
+    for key, value in list(fields.items())[:8]:
+        field_name = str(key or "字段")[:80]
+        lowered = field_name.casefold()
+        if any(marker in lowered for marker in ("token", "secret", "password", "邮箱", "email", "手机号", "手机")):
+            rendered = "（已脱敏）"
+        else:
+            try:
+                rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                rendered = str(value)
+            rendered = rendered[:180]
+        pairs.append(f"{field_name}={rendered}")
+    return "；".join(pairs) or "（无可展示字段）"
 
 
 def _message_content(raw_content: str) -> str:

@@ -74,6 +74,7 @@ class AgentSettings:
     lark_oauth_scopes: str = "wiki:wiki:readonly"
     lark_oauth_state_ttl_seconds: float = 600.0
     lark_oauth_token_skew_seconds: float = 60.0
+    lark_oauth_callback_port: int = 8090
     ops_allowed_user_ids: str = ""
     ops_allowed_targets: str = ""
     ops_allowed_services: str = ""
@@ -153,6 +154,9 @@ def load_settings() -> AgentSettings:
         ),
         lark_oauth_token_skew_seconds=float(
             os.environ.get("LARK_OAUTH_TOKEN_SKEW_SECONDS", "60")
+        ),
+        lark_oauth_callback_port=int(
+            os.environ.get("LARK_OAUTH_CALLBACK_PORT", "8090")
         ),
         ops_allowed_user_ids=os.environ.get("OPS_ALLOWED_USER_IDS", ""),
         ops_allowed_targets=os.environ.get("OPS_ALLOWED_TARGETS", ""),

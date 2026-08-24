@@ -48,6 +48,27 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与手机端个人工作/
 摘要和整理为主；基础设施变更、代码/部署写操作、日程写入和个人资料写入分别需要匹配的权限与确认，
 不能用一套泛化确认替代。
 
+### 三台 VPS 业务服务实际盘点
+
+2026-08-24 通过三台主机的 systemd、用户级 systemd、Docker、监听端口和健康端点做了只读核验。下面列出
+业务服务和与其直接相关的运行组件；chrony、SSH、systemd、DNS 等通用 OS 守护进程不单独作为业务资产。
+
+| 目标 | 已发现的业务/平台服务 | 运行方式与关键边界 | 当前状态 |
+| --- | --- | --- | --- |
+| GCP `gcp-free-vps-oregon` | Hermes Gateway、Hermes A2A Bridge、A2A MCP companion、new-api、x-ui、Xray、Nginx | Hermes/A2A 为 systemd；A2A 监听 Tailscale `:8765`；new-api Docker 仅回环 `127.0.0.1:3000`；x-ui `:50404`、Xray 回环 `:44301`，由 Nginx `80/443` 分流 | Hermes Gateway、A2A、new-api、x-ui、Xray、Nginx 均运行；A2A `/healthz` 返回 200；new-api 未带认证访问 `/v1/models` 返回 401，符合边界；根路径访问 x-ui 返回 404，符合隐藏路径预期 |
+| Azure `az-free-vm` | Hermes Gateway、Hermes A2A Bridge | 用户级 systemd；无 Docker、Nginx、new-api、x-ui；A2A 仅监听 Tailscale `:8765`，无公网入站 | Hermes Gateway、A2A 均 active；A2A `/healthz` 返回 200 |
+| AWS `aws-codex-vps` | Luck Agent、Mem0 API、Mem0 Dashboard、Mem0 PostgreSQL/pgvector | Luck Agent 为 systemd；Mem0 为 `/opt/mem0/server` Compose 三容器；API `100.112.88.72:8888`、Dashboard `:3000` 仅走 Tailscale；PostgreSQL 不发布主机端口 | Luck Agent `/health` 返回 200；Dashboard 与 PostgreSQL healthy；API 容器运行，健康探针采用 `/docs`/认证 smoke，不以 `/health` 作为判断 |
+
+三台主机还运行各自的 Tailscale、fail2ban、Docker（GCP/AWS）、监控 timer；AWS 另有 Mem0 PostgreSQL
+每日备份 timer。GCP 的 `a2a_mcp.py` 不是漏记的独立服务，而是由 `hermes-gateway.service` 拉起的 companion
+进程。Azure 上的 `transparent-agent`、多个工作目录和 GCP/Azure 上的代码仓库属于项目资产，当前没有发现
+对应的 active 业务 systemd 服务，不能仅凭目录把它们列为在线服务。
+
+目前 Luck Agent 的 `/vps service list` 仍是“受控操作目录”，不是三台 VPS 的完整资产目录：已覆盖 Luck Agent、
+new-api、A2A、Hermes Gateway、Mem0 等关键入口，但尚未完整呈现 GCP 的 Nginx/Xray/x-ui、三台的监控/备份
+timer、Docker/Compose 组件和服务依赖关系。后续应先补齐只读资产发现，再逐项决定是否开放操作，不应直接为
+每个发现的服务增加 restart 权限。
+
 当前测试目标 Bot：`cli_aaba382935b8de18`。
 
 ## 架构事实
@@ -206,16 +227,17 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 
 ## 当前待办与阻塞项
 
-1. P0 场景工作纪要和 Idea 快速捕获尚未实现为一等意图；需要先定义消息输入、结构化结果、确认保存和回顾体验，同时抽象可复用的统一入口路由。
-2. P1 场景日程/提醒、英语学习和 Agent 学习尚未形成完整闭环；优先复用 SQLite、现有记忆和 Lark 卡片，避免过早扩大平台权限。
-3. P2 个人博客草稿/预览/发布链路尚未实现；外部发布必须保持独立确认和可追踪结果。
-4. `/lark wiki records` 已完成代码和脱敏边界，但尚待用户方便操作浏览器时完成真实 Lark 消息验收。
-5. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前已开放 `luck-agent`、
+1. 三台 VPS 的只读服务资产目录尚未完整接入 `/vps service list`；优先补齐服务、运行方式、端口、健康检查、依赖和备份信息，再决定变更入口。
+2. P0 场景工作纪要和 Idea 快速捕获尚未实现为一等意图；需要先定义消息输入、结构化结果、确认保存和回顾体验，同时抽象可复用的统一入口路由。
+3. P1 场景日程/提醒、英语学习和 Agent 学习尚未形成完整闭环；优先复用 SQLite、现有记忆和 Lark 卡片，避免过早扩大平台权限。
+4. P2 个人博客草稿/预览/发布链路尚未实现；外部发布必须保持独立确认和可追踪结果。
+5. `/lark wiki records` 已完成代码和脱敏边界，但尚待用户方便操作浏览器时完成真实 Lark 消息验收。
+6. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前已开放 `luck-agent`、
    `new-api` restart/backup、`a2a` 和 Azure-only `hermes-gateway`；new-api restore/upgrade 仍未开放。
-6. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
+7. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
    后立即落库，消除“选择后尚未发送下一条消息时进程重启”的极小窗口。
-7. 统一入口的意图注册、场景路由和可扩展能力边界尚未固化；需要避免每增加一个场景就新增一套交互协议。
-8. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
+8. 统一入口的意图注册、场景路由和可扩展能力边界尚未固化；需要避免每增加一个场景就新增一套交互协议。
+9. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
 
 ## 实施顺序
 
@@ -226,6 +248,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 3. 核验并启用生产用户级运维白名单（已完成）；
 4. 增加并验收一个固定入口、可回滚的低风险服务变更（已完成）；
 5. 清理或隔离 legacy runtime 与历史文档（已完成隔离，进入观察期）；
-6. 实现 P0 工作纪要和 Idea 快速捕获闭环；
-7. 依次实现提醒/英语学习、Agent 学习和个人博客场景，再按场景补齐平台写入能力；
-8. 基于真实使用反馈持续扩展个人工作、生活意图，保持统一入口和一致的低复杂度交互。
+6. 补齐三台 VPS 只读服务资产目录和依赖关系；
+7. 实现 P0 工作纪要和 Idea 快速捕获闭环；
+8. 依次实现提醒/英语学习、Agent 学习和个人博客场景，再按场景补齐平台写入能力；
+9. 基于真实使用反馈持续扩展个人工作、生活意图，保持统一入口和一致的低复杂度交互。

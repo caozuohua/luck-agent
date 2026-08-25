@@ -3,6 +3,9 @@ runtime/runtime_manager.py - Goal Runtime entrypoint.
 
 RuntimeManager routes messages to Skills, persists accepted Goals, and submits
 their IDs to RuntimeTaskQueue. Background workers own execution.
+
+The ``legacy_inline`` branch is a compatibility boundary for old skills and
+is not part of the production Lark path. New work belongs in Goal Runtime.
 """
 from __future__ import annotations
 

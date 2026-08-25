@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import http
+import inspect
 import json
+import re
 import threading
 from typing import Any, Awaitable, Callable
 
@@ -11,7 +15,96 @@ from core.log import get_logger
 log = get_logger("interface.lark_sdk")
 
 MessageHandler = Callable[[dict[str, Any]], Awaitable[bool]]
+CardActionHandler = Callable[[dict[str, Any]], dict[str, Any]]
 StateCallback = Callable[[], None]
+
+
+def _install_card_frame_compatibility(ws_module: Any) -> bool:
+    """Bridge Card 2.0 frames dropped by affected lark-oapi WebSocket clients.
+
+    Some lark-oapi releases register ``card.action.trigger`` successfully but
+    return from ``Client._handle_data_frame`` when the transport frame type is
+    ``CARD``. The callback therefore never reaches the application's event
+    dispatcher. Keep the workaround local to the runner and only install it
+    when that exact broken branch is present, so a fixed SDK remains untouched.
+    """
+
+    client_cls = getattr(ws_module, "Client", None)
+    original = getattr(client_cls, "_handle_data_frame", None)
+    if client_cls is None or original is None:
+        return False
+    try:
+        source = inspect.getsource(original)
+    except (OSError, TypeError):
+        return False
+    if not re.search(
+        r"elif\s+message_type\s*==\s*MessageType\.CARD\s*:\s*return",
+        source,
+    ):
+        return False
+
+    async def _handle_data_frame(self: Any, frame: Any) -> None:
+        hs = frame.headers
+        msg_id = ws_module._get_by_key(hs, ws_module.HEADER_MESSAGE_ID)
+        trace_id = ws_module._get_by_key(hs, ws_module.HEADER_TRACE_ID)
+        sum_ = ws_module._get_by_key(hs, ws_module.HEADER_SUM)
+        seq = ws_module._get_by_key(hs, ws_module.HEADER_SEQ)
+        type_ = ws_module._get_by_key(hs, ws_module.HEADER_TYPE)
+
+        payload = frame.payload
+        if int(sum_) > 1:
+            payload = self._combine(msg_id, int(sum_), int(seq), payload)
+            if payload is None:
+                return
+
+        message_type = ws_module.MessageType(type_)
+        ws_module.logger.debug(
+            self._fmt_log(
+                "receive message, message_type: {}, message_id: {}, trace_id: {}, payload: {}",
+                message_type.value,
+                msg_id,
+                trace_id,
+                payload.decode(ws_module.UTF_8),
+            )
+        )
+
+        response = ws_module.Response(code=http.HTTPStatus.OK)
+        try:
+            start = int(round(ws_module.time.time() * 1000))
+            if message_type in {
+                ws_module.MessageType.EVENT,
+                ws_module.MessageType.CARD,
+            }:
+                result = self._event_handler._do_without_validation(payload)
+            else:
+                return
+            end = int(round(ws_module.time.time() * 1000))
+            header = hs.add()
+            header.key = ws_module.HEADER_BIZ_RT
+            header.value = str(end - start)
+            if result is not None:
+                response.data = base64.b64encode(
+                    ws_module.JSON.marshal(result).encode(ws_module.UTF_8)
+                )
+        except Exception as error:
+            ws_module.logger.error(
+                self._fmt_log(
+                    "handle message failed, message_type: {}, message_id: {}, trace_id: {}, err: {}",
+                    message_type.value,
+                    msg_id,
+                    trace_id,
+                    error,
+                )
+            )
+            response = ws_module.Response(
+                code=http.HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+
+        frame.payload = ws_module.JSON.marshal(response).encode(ws_module.UTF_8)
+        await self._write_message(frame.SerializeToString())
+
+    client_cls._handle_data_frame = _handle_data_frame
+    return True
 
 
 def normalize_message_event(data: Any) -> dict[str, Any] | None:
@@ -61,6 +154,31 @@ def normalize_message_event(data: Any) -> dict[str, Any] | None:
     }
 
 
+def normalize_card_action_event(data: Any) -> dict[str, Any] | None:
+    """Convert a Card 2.0 callback object to a small internal event shape."""
+    event = getattr(data, "event", None)
+    action = getattr(event, "action", None)
+    context = getattr(event, "context", None)
+    operator = getattr(event, "operator", None)
+    if event is None or action is None:
+        return None
+    return {
+        "message_id": str(getattr(context, "open_message_id", "") or ""),
+        "chat_id": str(getattr(context, "open_chat_id", "") or ""),
+        "user_id": str(
+            getattr(operator, "open_id", None)
+            or getattr(operator, "user_id", None)
+            or "default"
+        ),
+        "action": {
+            "tag": str(getattr(action, "tag", "") or ""),
+            "value": getattr(action, "value", None),
+            "option": str(getattr(action, "option", "") or ""),
+            "name": str(getattr(action, "name", "") or ""),
+        },
+    }
+
+
 class LarkSdkRunner:
     """Run lark-oapi's blocking WebSocket client on its own event loop.
 
@@ -79,6 +197,7 @@ class LarkSdkRunner:
         domain: str,
         application_loop: asyncio.AbstractEventLoop,
         on_message: MessageHandler,
+        on_card_action: CardActionHandler | None = None,
         on_connected: StateCallback | None = None,
         on_disconnected: StateCallback | None = None,
         stop_timeout: float = 10.0,
@@ -88,6 +207,7 @@ class LarkSdkRunner:
         self.domain = domain
         self.application_loop = application_loop
         self.on_message = on_message
+        self.on_card_action = on_card_action
         self.on_connected = on_connected
         self.on_disconnected = on_disconnected
         self.stop_timeout = stop_timeout
@@ -154,11 +274,16 @@ class LarkSdkRunner:
             import lark_oapi.ws.client as ws_module
 
             ws_module.loop = sdk_loop
-            event_handler = (
-                lark.EventDispatcherHandler.builder("", "")
-                .register_p2_im_message_receive_v1(self._handle_sdk_event)
-                .build()
-            )
+            if _install_card_frame_compatibility(ws_module):
+                log.warning(
+                    "lark_websocket_card_compatibility_enabled",
+                    reason="sdk_drops_card_frames",
+                )
+            builder = lark.EventDispatcherHandler.builder("", "")
+            builder.register_p2_im_message_receive_v1(self._handle_sdk_event)
+            if self.on_card_action is not None:
+                builder.register_p2_card_action_trigger(self._handle_sdk_card_action)
+            event_handler = builder.build()
             client = lark.ws.Client(
                 self.app_id,
                 self.app_secret,
@@ -223,6 +348,32 @@ class LarkSdkRunner:
             self.application_loop,
         )
         future.add_done_callback(self._report_message_result)
+
+    def _handle_sdk_card_action(self, data: Any) -> Any:
+        event = normalize_card_action_event(data)
+        if event is None or self.on_card_action is None:
+            return self._card_action_response({})
+        try:
+            result = self.on_card_action(event)
+            log.info(
+                "lark_card_action_received",
+                message_id=event["message_id"],
+                chat_id=event["chat_id"],
+            )
+            return self._card_action_response(result)
+        except Exception as error:  # pragma: no cover - SDK callback guard
+            log.error("lark_card_action_failed", error_type=type(error).__name__, message=str(error))
+            return self._card_action_response(
+                {"toast": {"type": "error", "content": "卡片操作失败"}}
+            )
+
+    @staticmethod
+    def _card_action_response(payload: dict[str, Any]) -> Any:
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            P2CardActionTriggerResponse,
+        )
+
+        return P2CardActionTriggerResponse(payload)
 
     @staticmethod
     def _report_message_result(future: Any) -> None:

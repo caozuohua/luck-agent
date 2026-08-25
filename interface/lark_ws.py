@@ -8,6 +8,15 @@ from typing import Any, Protocol
 from core.log import get_logger
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager, PendingApproval
+from interface.lark_cards import (
+    build_assistant_result_card,
+    build_approval_card,
+    build_goal_result_card,
+    build_memory_proposal_card,
+)
+from interface.lark_commands import QuickCommandResult
+from memory.proposal import MemoryProposalDetector
+from runtime.contracts import RuntimeHandleResult
 
 log = get_logger("interface.lark_ws")
 
@@ -27,7 +36,25 @@ class CardSenderProtocol(Protocol):
 
 
 class QuickCommandProtocol(Protocol):
-    async def handle(self, text: str, *, user_id: str = "default") -> str | None: ...
+    async def handle(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+        approval_token: str | None = None,
+    ) -> str | QuickCommandResult | None: ...
+
+
+class RuntimeProtocol(Protocol):
+    async def handle_message(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        text: str,
+        message_id: str = "",
+        approval_token: str | None = None,
+    ) -> RuntimeHandleResult: ...
 
 
 class LarkMessageDeduper:
@@ -57,6 +84,21 @@ class LarkMessageDeduper:
             self._seen.pop(message_id, None)
 
 
+def _safe_command_for_log(text: str) -> str:
+    """Keep OAuth callback URLs and their one-time code out of logs."""
+    normalized = " ".join(str(text or "").strip().split())
+    lowered = normalized.lower()
+    for prefix in (
+        "/lark auth complete ",
+        "lark auth complete ",
+        "/lark oauth complete ",
+        "lark oauth complete ",
+    ):
+        if lowered.startswith(prefix):
+            return prefix.rstrip() + " <redacted>"
+    return lowered
+
+
 class LarkWebSocketInterface:
     """Message handling core for Lark WebSocket + Card 2.0 replies."""
 
@@ -66,8 +108,10 @@ class LarkWebSocketInterface:
         agent: AgentProtocol,
         sender: CardSenderProtocol,
         quick_commands: QuickCommandProtocol | None = None,
+        runtime: RuntimeProtocol | None = None,
         access_policy: LarkAccessPolicy | None = None,
         approval_manager: LarkApprovalManager | None = None,
+        memory_proposer: MemoryProposalDetector | None = None,
         deduper: LarkMessageDeduper | None = None,
         reconnect_delay_seconds: float = 3.0,
         heartbeat_timeout_seconds: float = 60.0,
@@ -75,8 +119,10 @@ class LarkWebSocketInterface:
         self.agent = agent
         self.sender = sender
         self.quick_commands = quick_commands
+        self.runtime = runtime
         self.access_policy = access_policy
         self.approval_manager = approval_manager
+        self.memory_proposer = memory_proposer
         self.deduper = deduper or LarkMessageDeduper(ttl_seconds=60)
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
@@ -85,6 +131,7 @@ class LarkWebSocketInterface:
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._active_handlers: set[asyncio.Task[Any]] = set()
+        self._application_loop: asyncio.AbstractEventLoop | None = None
 
     async def handle_message(self, event: dict[str, Any]) -> bool:
         current_task = asyncio.current_task()
@@ -115,8 +162,10 @@ class LarkWebSocketInterface:
             log.warning("lark_access_denied", user_id=user_id, chat_id=chat_id)
             return False
 
+        internal_approval_token = str(event.get("_approval_token") or "").strip()
         approved: PendingApproval | None = None
-        if self.approval_manager is not None:
+        approval_token = internal_approval_token or None
+        if self.approval_manager is not None and not internal_approval_token:
             approval_result = self._consume_approval_command(text, user_id=user_id)
             if approval_result == "__CANCELLED__":
                 response = "✅ 已取消待确认操作"
@@ -130,27 +179,59 @@ class LarkWebSocketInterface:
                 approved = approval_result
             if approval_result is None and self.approval_manager.requires_confirmation(text):
                 pending = self.approval_manager.issue(user_id=user_id, request=text)
-                response = (
-                    "⚠️ 该请求可能修改系统或数据，暂未执行。\n"
-                    f"• 请求：{text.strip()}\n"
-                    f"• 确认：`/confirm {pending.token}`\n"
-                    "• 取消：`/cancel`\n"
-                    f"• 有效期：{int(self.approval_manager.ttl_seconds // 60)} 分钟"
+                response_card = build_approval_card(
+                    text,
+                    token=pending.token,
+                    ttl_seconds=self.approval_manager.ttl_seconds,
+                    target=self._current_target_label(user_id),
                 )
-                await self.sender.send_card(chat_id, self.build_card(response))
+                await self.sender.send_card(chat_id, response_card)
                 log.info("lark_approval_requested", user_id=user_id, chat_id=chat_id)
                 return True
 
-        approval_token = approved.token if approved is not None else None
+        approval_token = approved.token if approved is not None else approval_token
         if approved is not None:
             text = approved.request
+        if approved is None and self.memory_proposer is not None:
+            proposal = self.memory_proposer.detect(text)
+            if proposal is not None:
+                await self.sender.send_card(
+                    chat_id,
+                    build_memory_proposal_card(proposal.content, reason=proposal.reason),
+                )
+                log.info("lark_memory_proposal_presented", user_id=user_id, chat_id=chat_id)
+                return True
         response = None
+        response_card: dict[str, Any] | None = None
         if self.quick_commands is not None:
-            response = await self.quick_commands.handle(text, user_id=user_id)
+            response = await self.quick_commands.handle(
+                text,
+                user_id=user_id,
+                chat_id=chat_id,
+                approval_token=approval_token,
+            )
             if response is not None:
-                log.info("lark_quick_command_handled", command=text.strip().lower())
+                if isinstance(response, QuickCommandResult):
+                    response_card = response.card
+                    response = response.text
+                log.info(
+                    "lark_quick_command_handled",
+                    command=_safe_command_for_log(text),
+                )
         if response is None:
-            if approval_token is None:
+            if self.runtime is not None:
+                runtime_result = await self.runtime.handle_message(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    text=text,
+                    message_id=message_id,
+                    approval_token=approval_token,
+                )
+                if runtime_result.handled:
+                    response = runtime_result.summary
+                else:
+                    response = await self.agent.run_turn(text, user_id=user_id)
+            elif approval_token is None:
                 response = await self.agent.run_turn(text, user_id=user_id)
             else:
                 response = await self.agent.run_turn(
@@ -158,7 +239,7 @@ class LarkWebSocketInterface:
                     user_id=user_id,
                     approval_token=approval_token,
                 )
-        card = self.build_card(response)
+        card = response_card or self.build_card(response)
         await self.sender.send_card(chat_id, card)
         log.info(
             "lark_message_processed",
@@ -167,6 +248,144 @@ class LarkWebSocketInterface:
             message_id=message_id,
         )
         return True
+
+
+    async def send_goal_result(self, goal: dict[str, Any]) -> None:
+        """Send a background Goal's terminal result to its owning chat."""
+        chat_id = str(goal.get("chat_id") or "")
+        if not chat_id:
+            return
+        status = str(goal.get("status") or "").upper()
+        goal_id = str(goal.get("goal_id") or "")[:8]
+        result = str(goal.get("result") or "").strip()
+        error = str(goal.get("error") or "").strip()
+        await self.sender.send_card(
+            chat_id,
+            build_goal_result_card(
+                goal_id=goal_id,
+                status=status,
+                result=result,
+                error=error,
+            ),
+        )
+
+    def handle_card_action(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Handle a Card 2.0 action synchronously on the SDK callback thread."""
+        user_id = str(event.get("user_id") or "default")
+        chat_id = str(event.get("chat_id") or "")
+        if self.access_policy is not None and not self.access_policy.is_allowed(
+            user_id=user_id,
+            chat_id=chat_id,
+        ):
+            log.warning("lark_card_access_denied", user_id=user_id, chat_id=chat_id)
+            return {"toast": {"type": "error", "content": "无权操作此卡片"}}
+        action = event.get("action") or {}
+        action_tag = str(action.get("tag") or "")
+        if action_tag == "button":
+            raw_value = action.get("value")
+            if isinstance(raw_value, dict) and raw_value.get("action") in {
+                "approval_confirm",
+                "approval_cancel",
+            }:
+                if self.approval_manager is None:
+                    return {"toast": {"type": "error", "content": "当前未启用操作确认"}}
+                action_name = str(raw_value.get("action"))
+                if action_name == "approval_cancel":
+                    self.approval_manager.cancel(user_id=user_id)
+                    return {"toast": {"type": "success", "content": "已取消待确认操作"}}
+                token = str(raw_value.get("token") or "").strip()
+                pending = self.approval_manager.confirm(user_id=user_id, token=token)
+                if pending is None:
+                    return {"toast": {"type": "error", "content": "确认已失效或不属于当前用户"}}
+                loop = self._application_loop
+                if loop is None or loop.is_closed():
+                    return {"toast": {"type": "error", "content": "执行通道未就绪，请使用文字确认"}}
+                loop.call_soon_threadsafe(
+                    self._schedule_approved_card_action,
+                    pending,
+                    chat_id,
+                )
+                return {"toast": {"type": "success", "content": "已确认，正在执行"}}
+            if isinstance(raw_value, dict) and raw_value.get("action") == "memory_save_proposal":
+                if self.approval_manager is None:
+                    return {"toast": {"type": "error", "content": "当前未启用记忆确认"}}
+                content = " ".join(str(raw_value.get("content") or "").strip().split())
+                if not content or len(content) > 4000:
+                    return {"toast": {"type": "error", "content": "记忆内容无效或过长"}}
+                pending = self.approval_manager.issue(
+                    user_id=user_id,
+                    request=f"/mem0 save {content}",
+                )
+                response = build_approval_card(
+                    f"/mem0 save {content}",
+                    token=pending.token,
+                    ttl_seconds=self.approval_manager.ttl_seconds,
+                )
+                return {
+                    "toast": {"type": "success", "content": "已生成保存确认，可直接点击按钮"},
+                    "card": {"type": "raw", "data": response},
+                }
+            page_actions = {"vps_logs_page", "vps_output_page"}
+            if isinstance(raw_value, dict) and raw_value.get("action") in page_actions:
+                action_name = str(raw_value.get("action"))
+                renderer_name = (
+                    "render_log_page" if action_name == "vps_logs_page" else "render_output_page"
+                )
+                renderer = getattr(self.quick_commands, renderer_name, None)
+                if not callable(renderer) and action_name == "vps_output_page":
+                    renderer = getattr(self.quick_commands, "render_log_page", None)
+                if callable(renderer):
+                    try:
+                        page = int(str(raw_value.get("page") or ""))
+                    except ValueError:
+                        page = 0
+                    result = renderer(
+                        str(raw_value.get("token") or ""),
+                        page,
+                        user_id=user_id,
+                    )
+                    if isinstance(result, QuickCommandResult) and result.card is not None:
+                        log.info(
+                            "lark_log_page_selected",
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            page=page,
+                        )
+                        return {
+                            "toast": {"type": "success", "content": f"已切换到第 {page} 页"},
+                            "card": {"type": "raw", "data": result.card},
+                        }
+                    message = (
+                        result.text
+                        if isinstance(result, QuickCommandResult)
+                        else str(result or "日志分页无结果")
+                    )
+                    return {"toast": {"type": "warning", "content": message[:100]}}
+            return {"toast": {"type": "warning", "content": "日志分页操作无效"}}
+        if action_tag != "select_static":
+            return {"toast": {"type": "warning", "content": "暂不支持此卡片操作"}}
+        raw_value = action.get("value")
+        if isinstance(raw_value, dict):
+            target_id = str(raw_value.get("target_id") or raw_value.get("target") or "")
+        else:
+            target_id = str(raw_value or action.get("option") or "")
+        target_id = target_id.strip()
+        selector = getattr(self.quick_commands, "select_target", None)
+        if not target_id or selector is None:
+            return {"toast": {"type": "error", "content": "目标选择无效"}}
+        try:
+            result = selector(target_id, user_id, chat_id=chat_id)
+        except TypeError as exc:
+            if "chat_id" not in str(exc):
+                raise
+            result = selector(target_id, user_id)
+        if isinstance(result, QuickCommandResult):
+            text = result.text
+        else:
+            text = str(result or "目标已更新")
+        self._schedule_target_persistence(user_id=user_id, chat_id=chat_id)
+        log.info("lark_target_selected", user_id=user_id, chat_id=chat_id, target_id=target_id)
+        return {"toast": {"type": "success", "content": text[:100]}}
 
     def _consume_approval_command(
         self,
@@ -188,21 +407,67 @@ class LarkWebSocketInterface:
                     token=token,
                 )
                 return request if request is not None else "__INVALID__"
+        if self.approval_manager.has_pending(user_id=user_id, token=normalized):
+            return self.approval_manager.confirm(user_id=user_id, token=normalized)
         return None
 
     def build_card(self, text: str) -> dict[str, Any]:
-        return {
-            "schema": "2.0",
-            "config": {"update_multi": True},
-            "body": {
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": text,
-                    }
-                ]
-            },
-        }
+        return build_assistant_result_card(text)
+
+    def _current_target_label(self, user_id: str) -> str:
+        getter = getattr(self.quick_commands, "current_target_label", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter(user_id) or "")
+        except Exception:
+            return ""
+
+    def _schedule_target_persistence(self, *, user_id: str, chat_id: str) -> None:
+        persist = getattr(self.quick_commands, "persist_target_selection", None)
+        if not callable(persist):
+            return
+        try:
+            loop = self._application_loop or asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("lark_target_persistence_skipped", reason="event_loop_unavailable")
+            return
+        if loop.is_closed():
+            log.warning("lark_target_persistence_skipped", reason="event_loop_closed")
+            return
+
+        def create_task() -> None:
+            task = asyncio.create_task(
+                persist(user_id=user_id, chat_id=chat_id),
+                name="lark-target-selection-persistence",
+            )
+            self._active_handlers.add(task)
+            task.add_done_callback(self._active_handlers.discard)
+
+        if loop is self._application_loop:
+            loop.call_soon_threadsafe(create_task)
+        else:
+            create_task()
+
+    def _schedule_approved_card_action(
+        self,
+        pending: PendingApproval,
+        chat_id: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self.handle_message(
+                {
+                    "message_id": f"card-confirm-{pending.token}",
+                    "chat_id": chat_id,
+                    "user_id": pending.user_id,
+                    "text": pending.request,
+                    "_approval_token": pending.token,
+                }
+            ),
+            name="lark-card-approved-operation",
+        )
+        self._active_handlers.add(task)
+        task.add_done_callback(self._active_handlers.discard)
 
     def mark_heartbeat(self) -> None:
         self.last_heartbeat_at = time.time()
@@ -246,6 +511,7 @@ class LarkWebSocketInterface:
     def start(self, connect_once=None) -> asyncio.Task[None] | None:
         if connect_once is None:
             self._running = True
+            self._application_loop = asyncio.get_running_loop()
             self.connected = False
             log.info("lark_websocket_interface_started")
             return None

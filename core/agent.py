@@ -5,6 +5,7 @@ import json
 from enum import Enum
 from typing import Any
 
+from core.graph.executor import GraphExecutionRequest, GraphGoalExecutor
 from core.intent_classifier import IntentClassifier
 from core.output_parser import IntentType, OutputParser, ParseError, ParsedOutput
 from core.prompt_builder import PromptBuilder
@@ -30,7 +31,11 @@ class AgentState(Enum):
 
 
 class MinimalAgent:
-    """Minimal reliable agent loop with Phase 2 state persistence."""
+    """Minimal agent loop; production execution is the LangGraph path.
+
+    The ``legacy`` mode and ``_run_turn_legacy`` are retained only for local
+    compatibility and migration tests. New features must use the graph path.
+    """
 
     def __init__(
         self,
@@ -59,6 +64,7 @@ class MinimalAgent:
         max_steps: int = 12,
         max_retry: int = 2,
         graph_db_path: str = "graph_state.db",
+        graph_max_active: int = 1,
     ) -> None:
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -95,27 +101,55 @@ class MinimalAgent:
         self.max_steps = max_steps
         self.max_retry = max_retry
         self.graph_db_path = graph_db_path
+        self.graph_max_active = max(1, int(graph_max_active))
         self.state = AgentState.IDLE
         self.conversation_history: list[dict[str, str]] = []
         self.completed_goal_count = 0
         self._background_tasks: list[asyncio.Task[Any]] = []
+        self._graph_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._graph_executor = GraphGoalExecutor(
+            llm_client=llm_client,
+            tool_registry=tool_registry,
+            tool_executor=self.tool_executor,
+            supervisor=self._build_supervisor(),
+            prompt_builder=self.prompt_builder,
+            output_parser=self.output_parser,
+            intent_classifier=self.intent_classifier,
+            router=self.router,
+            graph_db_path=self.graph_db_path,
+            max_steps=self.max_steps,
+            max_retry=self.max_retry,
+        )
+
+    def _build_supervisor(self):
+        from core.supervisor import Supervisor
+
+        return Supervisor(memory=self.pattern_store)
+
+    @property
+    def graph_executor(self) -> GraphGoalExecutor:
+        """Expose the shared graph executor to the Goal Runtime Worker."""
+        return self._graph_executor
 
     async def run_turn(
         self,
         user_input: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str:
         if self.execution_mode == "legacy":
             return await self._run_turn_legacy(
                 user_input,
                 user_id=user_id,
+                chat_id=chat_id,
                 approval_token=approval_token,
             )
         return await self._run_turn_graph(
             user_input,
             user_id=user_id,
+            chat_id=chat_id,
             approval_token=approval_token,
         )
 
@@ -124,6 +158,7 @@ class MinimalAgent:
         user_input: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str:
         """ReAct loop via LangGraph: multi-step Think->Act->Observe->Supervise.
@@ -131,10 +166,26 @@ class MinimalAgent:
         Non-breaking: same signature as legacy. Reuses PromptBuilder,
         OutputParser, ToolExecutor and core.Supervisor inside the graph.
         """
-        from core.graph.engine import build_graph, run_graph
-        from core.graph.state import AgentState as GraphState
-        from core.supervisor import Supervisor
+        semaphore = self._graph_semaphores.setdefault(
+            user_id,
+            asyncio.Semaphore(self.graph_max_active),
+        )
+        async with semaphore:
+            return await self._run_turn_graph_limited(
+                user_input,
+                user_id=user_id,
+                chat_id=chat_id,
+                approval_token=approval_token,
+            )
 
+    async def _run_turn_graph_limited(
+        self,
+        user_input: str,
+        *,
+        user_id: str,
+        chat_id: str,
+        approval_token: str | None,
+    ) -> str:
         self.state = AgentState.IDLE
         goal = await self._create_goal(user_id, user_input)
         if goal is not None:
@@ -142,43 +193,21 @@ class MinimalAgent:
             self._transition(goal, AgentState.PLANNING)
         history = self._build_history_summary()
         await self._maybe_compress_context(
-            user_id, user_input, self.prompt_builder.build_system_prompt()
+            user_id,
+            user_input,
+            self.prompt_builder.build_system_prompt(),
+            chat_id=chat_id,
         )
 
-        seed: GraphState = {
-            "goal": user_input,
-            "user_id": user_id,
-            "approval_token": approval_token,
-            "messages": [],
-            "scratchpad": [],
-            "step_count": 0,
-            "last_tool_result": None,
-            "last_parsed": None,
-            "decision": None,
-            "final_answer": "",
-            "is_goal_complete": False,
-        }
-        thread_key = goal.id if goal is not None else user_input
-        config = {"configurable": {"thread_id": f"{user_id}:{thread_key}"}}
+        request = GraphExecutionRequest(
+            goal_id=goal.id if goal is not None else user_input,
+            user_id=user_id,
+            text=user_input,
+            approval_token=approval_token,
+            history=history,
+        )
         try:
-            out = await run_graph(
-                seed,
-                graph=None,
-                config=config,
-                max_steps=self.max_steps,
-                db_path=self.graph_db_path,
-                llm=self.llm_client,
-                tools=self.tool_registry,
-                executor=self.tool_executor,
-                supervisor=Supervisor(memory=self.pattern_store),
-                history=history,
-                prompt_builder=self.prompt_builder,
-                parser=self.output_parser,
-                intent_classifier=self.intent_classifier,
-                router=self.router,
-                max_retry=self.max_retry,
-                hitl=False,
-            )
+            out = await self._graph_executor.execute(request, hitl=False)
             answer = out.get("final_answer") or "（任务未能完成，请换一种说法或提供更多上下文。）"
             decision = out.get("decision")
             if goal is not None:
@@ -200,6 +229,7 @@ class MinimalAgent:
         user_input: str,
         *,
         user_id: str = "default",
+        chat_id: str = "",
         approval_token: str | None = None,
     ) -> str:
         self.state = AgentState.IDLE
@@ -210,7 +240,12 @@ class MinimalAgent:
         self._transition(goal, AgentState.PLANNING)
         system_prompt = self.prompt_builder.build_system_prompt()
         history_summary = self._build_history_summary()
-        await self._maybe_compress_context(user_id, user_input, system_prompt)
+        await self._maybe_compress_context(
+            user_id,
+            user_input,
+            system_prompt,
+            chat_id=chat_id,
+        )
         task_prompt = await self.prompt_builder.build_task_prompt_with_experience_search(
             intent,
             tools,
@@ -368,6 +403,8 @@ class MinimalAgent:
         user_id: str,
         user_input: str,
         system_prompt: str,
+        *,
+        chat_id: str = "",
     ) -> None:
         if self.context_store is None or len(self.conversation_history) <= 3:
             return
@@ -392,6 +429,7 @@ class MinimalAgent:
         task = asyncio.create_task(
             self.context_store.save_summary(
                 user_id=user_id,
+                chat_id=chat_id,
                 summary=self.history_summary,
                 turn_range=turn_range,
             )

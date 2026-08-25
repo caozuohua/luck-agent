@@ -30,6 +30,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS goals (
                 id          TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,
+                chat_id     TEXT NOT NULL DEFAULT '',
                 status      TEXT NOT NULL,
                 intent_type TEXT,
                 raw_input   TEXT,
@@ -72,10 +73,56 @@ class Database:
             CREATE TABLE IF NOT EXISTS context_summaries (
                 id          TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,
+                chat_id     TEXT NOT NULL DEFAULT '',
                 summary     TEXT NOT NULL,
                 turn_range  TEXT,
                 created_at  INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS memory_scopes (
+                user_id    TEXT NOT NULL,
+                chat_id    TEXT NOT NULL DEFAULT '',
+                project_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, chat_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_scopes_updated
+                ON memory_scopes(updated_at);
+
+            CREATE TABLE IF NOT EXISTS target_selections (
+                user_id    TEXT NOT NULL,
+                chat_id    TEXT NOT NULL DEFAULT '',
+                target_id  TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, chat_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_target_selections_updated
+                ON target_selections(updated_at);
+            """
+        )
+        # Existing V2 databases predate chat_id. Keep the migration local and
+        # idempotent so a rolling deployment does not require data recreation.
+        try:
+            await conn.execute(
+                "ALTER TABLE goals ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
+        try:
+            await conn.execute(
+                "ALTER TABLE context_summaries ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
+        # Create this only after the legacy-table migration above. SQLite
+        # validates indexed columns immediately, so creating it in the first
+        # script would break startup on databases from before chat scoping.
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_context_summaries_scope
+                ON context_summaries(user_id, chat_id, created_at)
             """
         )
         await conn.commit()

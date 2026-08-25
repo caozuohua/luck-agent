@@ -15,6 +15,12 @@ from tools.base import Tool, ToolResult
 from tools.registry import ToolRegistry
 
 
+def test_new_api_backup_command_requires_confirmation() -> None:
+    manager = LarkApprovalManager()
+
+    assert manager.requires_confirmation("/vps service new-api backup")
+
+
 class RestartTool(Tool):
     name = "service_restart"
     description = "restart a named service"
@@ -132,6 +138,38 @@ def test_operation_permission_policy_matches_target_service_and_operation() -> N
     )
 
 
+def test_operation_permission_policy_applies_target_allowlist_to_read_commands() -> None:
+    policy = OperationPermissionPolicy.from_csv(targets="gcp-01, azure-01")
+
+    assert policy.allows_target("gcp-01") is True
+    assert policy.allows_target("AWS-01") is False
+    assert policy.allows("vps_resources", {"target": "aws-01"}) is False
+
+
+def test_operation_permission_policy_applies_service_allowlist() -> None:
+    policy = OperationPermissionPolicy.from_csv(services="mem0,a2a")
+
+    assert policy.allows_service("Mem0") is True
+    assert policy.allows_service("new-api") is False
+
+
+def test_operation_permission_policy_applies_operation_allowlist() -> None:
+    policy = OperationPermissionPolicy.from_csv(operations="restart")
+
+    assert policy.allows_operation("restart") is True
+    assert policy.allows_operation("deploy") is False
+
+
+def test_operation_permission_policy_applies_user_allowlist_only_to_ops() -> None:
+    policy = OperationPermissionPolicy.from_csv(user_ids="ou_ops")
+
+    assert policy.allows_user("OU_OPS") is True
+    assert policy.allows_user("ou_viewer") is False
+    assert policy.allows("vps_resources", {"target": "aws-01"}, user_id="ou_ops")
+    assert not policy.allows("vps_resources", {"target": "aws-01"}, user_id="ou_viewer")
+    assert policy.allows("web_search", {"query": "systemd"}, user_id="ou_viewer")
+
+
 def test_lark_grant_is_consumed_once() -> None:
     manager = LarkApprovalManager()
     pending = manager.issue(user_id="ou_user", request="重启服务")
@@ -182,3 +220,36 @@ def test_confirmation_scope_omitted_fields_are_wildcards() -> None:
         {"target": "aws-prod", "service": "luck-agent"},
     )
     assert scope_from_tool("service_restart", {"service": "luck-agent"}).operation == "restart"
+
+
+def test_confirmation_scope_parses_vps_service_command() -> None:
+    scope = scope_from_request("/vps service luck-agent restart")
+
+    assert scope.operation == "restart"
+    assert scope.service == "luck-agent"
+
+
+def test_confirmation_scope_parses_explicit_mem0_write() -> None:
+    manager = LarkApprovalManager()
+    request = "/mem0 save 用户偏好"
+
+    assert manager.requires_confirmation(request)
+    pending = manager.issue(user_id="ou_user", request=request)
+    assert pending.scope == scope_from_request(request)
+    assert pending.scope.operation == "write"
+    assert pending.scope.service == "mem0"
+    manager.confirm(user_id="ou_user", token=pending.token)
+
+    assert manager.consume_grant(
+        "ou_user",
+        pending.token,
+        "memory_write",
+        {"service": "mem0", "operation": "write"},
+    )
+
+
+def test_natural_language_memory_request_is_not_an_operation_confirmation() -> None:
+    manager = LarkApprovalManager()
+
+    assert not manager.requires_confirmation("请记住我喜欢简洁回答")
+    assert manager.requires_confirmation("/mem0 save 我喜欢简洁回答")

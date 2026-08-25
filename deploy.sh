@@ -35,7 +35,8 @@ upload_code() {
     done
     # 运行时数据目录（持久化 SQLite）
     mkdir -p /opt/luck-agent/data /opt/luck-agent/workspace
-    chown -R agent:agent /opt/luck-agent 2>/dev/null || true
+    id luck-agent >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin luck-agent
+    chown -R luck-agent:luck-agent /opt/luck-agent 2>/dev/null || true
 REMOTE
   info "代码上传完成"
 }
@@ -55,9 +56,9 @@ install_and_start() {
     /opt/luck-agent/venv/bin/pip install -q --upgrade pip
     /opt/luck-agent/venv/bin/pip install -q -r /opt/luck-agent/requirements.txt
     # 系统用户（如不存在）
-    id agent >/dev/null 2>&1 || sudo useradd -r -s /bin/false agent
+    id luck-agent >/dev/null 2>&1 || sudo useradd -r -s /usr/sbin/nologin luck-agent
     sudo mkdir -p /opt/luck-agent/data /opt/luck-agent/workspace
-    sudo chown -R agent:agent /opt/luck-agent
+    sudo chown -R luck-agent:luck-agent /opt/luck-agent
     sudo cp /opt/luck-agent/luck-agent.service /etc/systemd/system/
     sudo systemctl daemon-reload
     sudo systemctl enable luck-agent
@@ -71,7 +72,7 @@ REMOTE
 # ── 主流程 ────────────────────────────────────────────────────────
 if [[ "$UPDATE_ONLY" == "--update" ]]; then
   gcloud compute ssh "$INSTANCE" --zone="$ZONE" -- \
-    "sudo systemctl restart luck-agent && sleep 1 && sudo systemctl status luck-agent --no-pager"
+    "sudo systemctl daemon-reload && sudo systemctl restart luck-agent && sleep 1 && sudo systemctl status luck-agent --no-pager"
   info "热更新完成 ✅"
 else
   upload_code

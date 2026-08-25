@@ -1,13 +1,51 @@
 from __future__ import annotations
 
+import json
+import re
+import secrets
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from core.log import get_logger
+from core.operation_policy import OperationPermissionPolicy
+from core.services import (
+    SERVICE_CATALOG,
+    format_service_catalog,
+    get_service,
+    get_service_operation,
+)
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
+from core.targets import VpsTargetRegistry
+from interface.lark_cards import (
+    build_log_page_card,
+    build_output_page_card,
+    build_sections_card,
+    build_service_catalog_card,
+    build_target_selection_card,
+)
+from interface.lark_platform import (
+    LarkChatAnnouncement,
+    LarkChatInfo,
+    LarkChatMemberInfo,
+    LarkMessageInfo,
+    LarkBitableSummary,
+    LarkBitableRecordsSummary,
+    LarkDocxSummary,
+    LarkWikiNodeDetail,
+    LarkWikiSearchResult,
+)
+from interface.lark_oauth import LarkOAuthError
+from memory.scope_store import MemoryScopeStore
+from memory.target_store import TargetSelectionStore
 
 log = get_logger("interface.lark_commands")
+
+ApprovalChecker = Callable[[str, str, str, dict[str, Any]], bool]
+AuditWriter = Callable[..., Awaitable[Any]]
 
 
 class HealthProvider(Protocol):
@@ -15,7 +53,98 @@ class HealthProvider(Protocol):
 
 
 class VpsSysopsProvider(Protocol):
-    async def run(self, operation: str) -> Any: ...
+    async def run(self, operation: str, *, user_id: str = "default") -> Any: ...
+
+    async def probe_service(self, service: str, *, user_id: str = "default") -> Any: ...
+
+
+class ServiceHealthProvider(Protocol):
+    async def health(self) -> Any: ...
+
+
+class LarkPlatformProvider(Protocol):
+    async def get_chat_info(self, chat_id: str) -> LarkChatInfo: ...
+
+    async def list_messages(self, chat_id: str, *, limit: int = 5) -> tuple[LarkMessageInfo, ...]: ...
+
+    async def list_chat_members(
+        self,
+        chat_id: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[LarkChatMemberInfo, ...]: ...
+
+    async def get_chat_announcement(self, chat_id: str) -> LarkChatAnnouncement | None: ...
+
+    async def search_wiki(
+        self,
+        query: str,
+        *,
+        user_access_token: str,
+        limit: int = 5,
+    ) -> LarkWikiSearchResult: ...
+
+    async def get_wiki_node(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+    ) -> LarkWikiNodeDetail: ...
+
+    async def summarize_wiki_bitable(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary: ...
+
+    async def summarize_wiki_content(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        limit: int = 10,
+    ) -> LarkBitableSummary | LarkDocxSummary: ...
+
+    async def summarize_wiki_records(
+        self,
+        reference: str,
+        *,
+        user_access_token: str,
+        table_name: str = "",
+        limit: int = 5,
+    ) -> LarkBitableRecordsSummary: ...
+
+
+class LarkOAuthProvider(Protocol):
+    @property
+    def configured(self) -> bool: ...
+
+    def authorization_url(self, *, user_id: str, chat_id: str) -> str: ...
+
+    def has_access(self, user_id: str) -> bool: ...
+
+    async def access_token_for(self, user_id: str) -> str | None: ...
+
+    async def handle_callback_url(
+        self,
+        callback_url: str,
+        *,
+        expected_user_id: str = "",
+    ) -> Any: ...
+
+
+@dataclass(frozen=True)
+class QuickCommandResult:
+    text: str
+    card: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _LogPageSession:
+    result: Any
+    expires_at: float
 
 
 class QuickCommandRouter:
@@ -28,15 +157,51 @@ class QuickCommandRouter:
         vps: VpsStatusService,
         sysops: VpsSysopsProvider | None = None,
         mem0: Mem0Client | None = None,
+        scope_store: MemoryScopeStore | None = None,
+        targets: VpsTargetRegistry | None = None,
+        target_store: TargetSelectionStore | None = None,
+        permission_policy: OperationPermissionPolicy | None = None,
+        mem0_target_id: str = "",
+        new_api: ServiceHealthProvider | None = None,
+        agent_target_id: str = "",
+        new_api_target_id: str = "",
+        approval_checker: ApprovalChecker | None = None,
+        audit_writer: AuditWriter | None = None,
+        lark_platform: LarkPlatformProvider | None = None,
+        lark_oauth: LarkOAuthProvider | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
         self.sysops = sysops
         self.mem0 = mem0
+        self.scope_store = scope_store
+        self.targets = targets
+        self.target_store = target_store
+        self.permission_policy = permission_policy
+        self.mem0_target_id = mem0_target_id.strip().lower()
+        self.new_api = new_api
+        self.agent_target_id = agent_target_id.strip().lower()
+        self.new_api_target_id = new_api_target_id.strip().lower()
+        self.approval_checker = approval_checker
+        self.audit_writer = audit_writer
+        self.lark_platform = lark_platform
+        self.lark_oauth = lark_oauth
+        self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
+        self._pending_target_selections: dict[tuple[str, str], str] = {}
+        self._log_page_ttl_seconds = 10 * 60
+        self._log_page_max_sessions = 128
 
-    async def handle(self, text: str, *, user_id: str = "default") -> str | None:
+    async def handle(
+        self,
+        text: str,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+        approval_token: str | None = None,
+    ) -> str | QuickCommandResult | None:
         raw_command = " ".join(text.strip().split())
         command = raw_command.lower()
+        await self._restore_target_selection(user_id, chat_id)
         if command in {"/ping", "ping"}:
             return "🏓 pong"
         if command in {"/help", "help", "帮助", "/帮助"}:
@@ -45,29 +210,197 @@ class QuickCommandRouter:
                 "• `/ping` 连通性\n"
                 "• `/health` Bot 与数据库健康状态\n"
                 "• `/vps` 当前 VPS 资源状态\n"
-                "• `/vps status|resources|services|logs` 运维检查\n"
+                "• `/vps status|resources|services|logs` 运维检查（日志支持卡片翻页）\n"
+                "• `/vps service list` 服务目录\n"
+                "• `/vps service mem0 status|list|smoke|search 关键词` Mem0 服务操作\n"
+                "• `/vps service luck-agent restart` 重启 Agent（需确认）\n"
+                "• `/targets` 选择 VPS 目标\n"
+                "• `/target TARGET_ID` 切换目标（也可直接使用卡片下拉框）\n"
+                "• `/lark chat` 查询当前会话基础信息（只读）\n"
+                "• `/lark messages [数量]` 查看当前会话最近消息（只读，最多 10 条）\n"
+                "• `/lark chat members [数量]` 查看当前会话成员摘要（只读，最多 10 名）\n"
+                "• `/lark chat announcement` 查看当前会话公告（只读）\n"
+                "• `/lark auth` 发起 Wiki/文档只读授权\n"
+                "• `/lark auth complete <回调URL>` 浏览器超时后粘贴地址栏 URL 完成授权\n"
+                "• `/lark wiki 关键词` 搜索当前用户可访问的 Wiki（只读）\n"
+                "• `/lark wiki get <链接或 token>` 查看 Wiki 节点详情（只读）\n"
+                "• `/lark wiki summary <链接或 token>` 查看文档/多维表格摘要（只读）\n"
+                "• `/lark wiki records <链接> [表名]` 查看少量记录摘要（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
+                "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
+                "• `/mem0 list` 浏览当前 scope 的记忆\n"
                 "• `/mem0 smoke` Mem0 写入/搜索/清理测试\n"
-                "• `/mem0 search 关键词` 搜索记忆"
+                "• `/mem0 search 关键词` 搜索记忆\n"
+                "• `/mem0 save 内容` 保存记忆（需确认）\n"
+                "• `/mem0 delete MEMORY_ID` 删除记忆（需确认）"
             )
+        if command in {"/targets", "targets", "目标", "/目标", "/target", "target"}:
+            return self._targets(user_id)
+        for prefix in ("/target ", "target ", "/目标 ", "目标 "):
+            if command.startswith(prefix):
+                result = self._select_target(
+                    raw_command[len(prefix) :].strip(),
+                    user_id,
+                    chat_id=chat_id,
+                )
+                await self.persist_target_selection(user_id=user_id, chat_id=chat_id)
+                return result
         if command in {"/health", "health", "健康", "/健康"}:
             return await self._health()
+        if command in {"/lark chat", "lark chat", "/chat info", "chat info"}:
+            return await self._lark_chat(chat_id)
+        if command in {"/lark messages", "lark messages", "/chat messages", "chat messages"}:
+            return await self._lark_messages(chat_id, limit=5)
+        for prefix in ("/lark messages ", "lark messages ", "/chat messages ", "chat messages "):
+            if command.startswith(prefix):
+                raw_limit = raw_command[len(prefix) :].strip()
+                try:
+                    limit = int(raw_limit)
+                except ValueError:
+                    return "用法：`/lark messages [数量 1-10]`"
+                if not 1 <= limit <= 10:
+                    return "用法：`/lark messages [数量 1-10]`"
+                return await self._lark_messages(chat_id, limit=limit)
+        if command in {"/lark chat members", "lark chat members", "/chat members", "chat members"}:
+            return await self._lark_chat_members(chat_id, limit=10)
+        for prefix in ("/lark chat members ", "lark chat members ", "/chat members ", "chat members "):
+            if command.startswith(prefix):
+                raw_limit = raw_command[len(prefix) :].strip()
+                try:
+                    limit = int(raw_limit)
+                except ValueError:
+                    return "用法：`/lark chat members [数量 1-10]`"
+                if not 1 <= limit <= 10:
+                    return "用法：`/lark chat members [数量 1-10]`"
+                return await self._lark_chat_members(chat_id, limit=limit)
+        if command in {
+            "/lark chat announcement",
+            "lark chat announcement",
+            "/chat announcement",
+            "chat announcement",
+        }:
+            return await self._lark_chat_announcement(chat_id)
+        if command in {"/lark auth", "lark auth", "/lark oauth", "lark oauth"}:
+            return self._lark_auth(user_id=user_id, chat_id=chat_id)
+        if command in {
+            "/lark auth status",
+            "lark auth status",
+            "/lark oauth status",
+            "lark oauth status",
+        }:
+            return self._lark_auth_status(user_id=user_id)
+        for prefix in (
+            "/lark auth complete ",
+            "lark auth complete ",
+            "/lark oauth complete ",
+            "lark oauth complete ",
+        ):
+            if command.startswith(prefix):
+                return await self._lark_auth_complete(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
+        if command in {
+            "/lark wiki",
+            "lark wiki",
+            "/lark wiki search",
+            "lark wiki search",
+        }:
+            return "用法：/lark wiki 关键词"
+        if command in {"/lark wiki get", "lark wiki get"}:
+            return "用法：/lark wiki get <Wiki 链接或节点 token>"
+        if command in {"/lark wiki summary", "lark wiki summary"}:
+            return "用法：/lark wiki summary <Wiki 链接或节点 token>"
+        if command in {"/lark wiki records", "lark wiki records"}:
+            return "用法：/lark wiki records <Wiki 链接> [表名]"
+        for prefix in ("/lark wiki get ", "lark wiki get "):
+            if command.startswith(prefix):
+                return await self._lark_wiki_get(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
+        for prefix in ("/lark wiki summary ", "lark wiki summary "):
+            if command.startswith(prefix):
+                return await self._lark_wiki_summary(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
+        for prefix in ("/lark wiki records ", "lark wiki records "):
+            if command.startswith(prefix):
+                args = raw_command[len(prefix) :].strip()
+                reference, _, table_name = args.partition(" ")
+                return await self._lark_wiki_records(
+                    reference,
+                    table_name=table_name.strip(),
+                    user_id=user_id,
+                )
+        for prefix in ("/lark wiki search ", "lark wiki search ", "/lark wiki ", "lark wiki "):
+            if command.startswith(prefix):
+                return await self._lark_wiki_search(
+                    raw_command[len(prefix) :].strip(),
+                    user_id=user_id,
+                )
         if command in {"/vps", "vps", "/status", "status"}:
-            return await self._vps()
+            return await self._vps(user_id)
+        for prefix in ("/vps service ", "vps service ", "/service ", "service "):
+            if command.startswith(prefix):
+                return await self._service(
+                    raw_command[len(prefix) :].strip(),
+                    user_id,
+                    chat_id=chat_id,
+                    approval_token=approval_token,
+                )
+        if command in {"/vps service", "vps service", "/service", "service"}:
+            return self._service_catalog()
         for prefix in ("/vps ", "vps "):
             if command.startswith(prefix):
                 operation = command[len(prefix) :].strip()
                 if operation in {"status", "resources", "services", "logs"}:
-                    return await self._sysops(operation)
+                    return await self._sysops(operation, user_id)
                 return None
         if command in {"/mem0 status", "mem0 status"}:
-            return await self._mem0_status()
+            return await self._mem0_status(user_id=user_id, chat_id=chat_id)
+        if command in {"/mem0 scope", "mem0 scope", "/mem0 project", "mem0 project"}:
+            return await self._mem0_scope(user_id=user_id, chat_id=chat_id)
+        for prefix in ("/mem0 scope ", "mem0 scope ", "/mem0 project ", "mem0 project "):
+            if command.startswith(prefix):
+                project_id = raw_command[len(prefix) :].strip()
+                return await self._mem0_scope(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    project_id=project_id,
+                )
+        if command in {"/mem0 list", "mem0 list", "/mem0 memories", "mem0 memories"}:
+            return await self._mem0_list(user_id=user_id, chat_id=chat_id)
         if command in {"/mem0 smoke", "mem0 smoke"}:
-            return await self._mem0_smoke()
+            return await self._mem0_smoke(user_id=user_id, chat_id=chat_id)
         for prefix in ("/mem0 search ", "mem0 search "):
             if command.startswith(prefix):
                 query = raw_command[len(prefix) :].strip()
-                return await self._mem0_search(query)
+                return await self._mem0_search(query, user_id=user_id, chat_id=chat_id)
+        for prefix in (
+            "/mem0 save ",
+            "mem0 save ",
+            "/mem0 remember ",
+            "mem0 remember ",
+        ):
+            if command.startswith(prefix):
+                content = raw_command[len(prefix) :].strip()
+                return await self._mem0_save(
+                    content,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    approval_token=approval_token,
+                )
+        for prefix in ("/mem0 delete ", "mem0 delete "):
+            if command.startswith(prefix):
+                memory_id = raw_command[len(prefix) :].strip().strip("`")
+                return await self._mem0_delete(
+                    memory_id,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    approval_token=approval_token,
+                )
         return None
 
     async def _health(self) -> str:
@@ -80,71 +413,1036 @@ class QuickCommandRouter:
             failed = int(goals.get("failed", 0))
             sqlite_mark = "✅" if sqlite_ok else "❌"
             process_mark = "✅" if process_ok else "❌"
-            return (
-                f"🩺 Luck Agent 健康：{process_mark}\n"
-                f"• SQLite：{sqlite_mark}\n"
-                f"• 目标：完成 {done}，失败 {failed}"
-            )
+            lines = [
+                f"🩺 Luck Agent 健康：{process_mark}",
+                f"• SQLite：{sqlite_mark}",
+                f"• 目标：完成 {done}，失败 {failed}",
+            ]
+            llm = status.get("llm") or {}
+            providers = llm.get("providers") or []
+            active_provider = str(llm.get("active_provider") or "")
+            if providers and active_provider:
+                ready = sum(1 for item in providers if item.get("state") == "ready")
+                active = next(
+                    (item for item in providers if item.get("provider") == active_provider),
+                    {},
+                )
+                active_state = str(active.get("state") or "unknown")
+                active_mark = "✅" if active_state == "ready" else "⚠️"
+                detail = ""
+                if active_state == "cooldown":
+                    detail = (
+                        f"，冷却 {active.get('cooldown_remaining_seconds', 0)} 秒"
+                        f"（{active.get('cooldown_kind') or 'temporary'}）"
+                    )
+                lines.append(
+                    f"• LLM：{active_mark} {active_provider}"
+                    f"（可用 {ready}/{len(providers)}{detail}）"
+                )
+            return "\n".join(lines)
         except Exception as exc:
             log.error("quick_health_failed", error=str(exc))
             return "🩺 Luck Agent 健康：⚠️ 暂时无法读取状态"
 
-    async def _vps(self) -> str:
+    def _targets(self, user_id: str) -> QuickCommandResult:
+        if self.targets is None:
+            return QuickCommandResult("🎯 尚未配置 VPS 目标")
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return QuickCommandResult("⛔ 当前用户无权执行 VPS 运维操作")
+        current = self.targets.current(user_id)
+        allowed_targets = [
+            target
+            for target in self.targets.list()
+            if self._target_allowed(target.label, user_id)
+        ]
+        if not allowed_targets:
+            return QuickCommandResult("🎯 当前用户没有已授权的 VPS 目标")
+        current_for_card = current if self._target_allowed(current.label, user_id) else None
+        current_text = (
+            current_for_card.display if current_for_card is not None else "未选择已授权目标"
+        )
+        return QuickCommandResult(
+            f"🎯 当前目标：{current_text}",
+            build_target_selection_card(allowed_targets, current=current_for_card),
+        )
+
+    def _select_target(
+        self,
+        target_id: str,
+        user_id: str,
+        *,
+        chat_id: str = "",
+    ) -> QuickCommandResult:
+        if self.targets is None:
+            return QuickCommandResult("🎯 尚未配置 VPS 目标")
+        target = next(
+            (item for item in self.targets.list() if item.label.lower() == target_id.lower()),
+            None,
+        )
+        if target is None:
+            return QuickCommandResult(f"⚠️ 未找到目标：`{target_id}`，请发送 `/targets` 查看列表")
+        if not self._target_allowed(target.label, user_id):
+            return QuickCommandResult(f"⛔ 当前用户无权访问目标：`{target.label}`")
+        self.targets.select(user_id, target.label)
+        self._pending_target_selections[(str(user_id or "default"), str(chat_id or ""))] = target.label
+        return self._targets(user_id)
+
+    def select_target(
+        self,
+        target_id: str,
+        user_id: str = "default",
+        *,
+        chat_id: str = "",
+    ) -> QuickCommandResult:
+        return self._select_target(target_id, user_id, chat_id=chat_id)
+
+    def current_target_label(self, user_id: str = "default") -> str:
+        if self.targets is None:
+            return ""
+        return self.targets.current(user_id).label
+
+    async def persist_target_selection(self, *, user_id: str, chat_id: str = "") -> None:
+        """Persist a selection made by a text command or card callback."""
+        if self.target_store is None:
+            return
+        key = (str(user_id or "default"), str(chat_id or ""))
+        selected = self._pending_target_selections.pop(key, None)
+        if selected:
+            await self.target_store.set(key[0], key[1], selected)
+
+    async def _restore_target_selection(self, user_id: str, chat_id: str) -> None:
+        if self.targets is None or self.target_store is None:
+            return
+        key = (str(user_id or "default"), str(chat_id or ""))
+        await self.persist_target_selection(user_id=key[0], chat_id=key[1])
+        selected = await self.target_store.get(key[0], key[1])
+        if selected and self.targets.select(key[0], selected) is None:
+            log.warning("target_selection_restore_skipped", user_id=key[0], target_id=selected)
+
+    async def _vps(self, user_id: str) -> str:
         try:
-            return format_host_status(await self.vps.collect())
+            denied = self._target_denial(user_id)
+            if denied:
+                return denied
+            if self._is_remote_target(user_id):
+                return await self._sysops("resources", user_id)
+            try:
+                status = await self.vps.collect(user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                status = await self.vps.collect()
+            return format_host_status(status)
         except Exception as exc:
             log.error("quick_vps_status_failed", error=str(exc))
             return "🖥️ VPS 状态：⚠️ 暂时无法读取主机资源"
 
-    async def _sysops(self, operation: str) -> str:
+    def _is_remote_target(self, user_id: str) -> bool:
+        if self.targets is None:
+            return False
+        selected = self.targets.current(user_id)
+        local = getattr(self.vps, "target", None)
+        if selected.ssh_host and local is None:
+            return True
+        return local is not None and selected.label != local.label
+
+    async def _sysops(self, operation: str, user_id: str) -> str | QuickCommandResult:
         if self.sysops is None:
             return "🖥️ vps_sysops：⚠️ 尚未部署"
         try:
-            return format_vps_sysops_result(await self.sysops.run(operation))
+            denied = self._target_denial(user_id)
+            if denied:
+                return denied
+            try:
+                result = await self.sysops.run(operation, user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                result = await self.sysops.run(operation)
+            return self._start_output_pagination(result, user_id)
         except Exception as exc:
             log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
             return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"
 
-    async def _mem0_status(self) -> str:
-        if self.mem0 is None:
-            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+    def render_log_page(
+        self,
+        token: str,
+        page: int,
+        *,
+        user_id: str = "default",
+    ) -> QuickCommandResult:
+        """Render one cached log page for the owning Lark user."""
+        return self.render_output_page(token, page, user_id=user_id)
+
+    def render_output_page(
+        self,
+        token: str,
+        page: int,
+        *,
+        user_id: str = "default",
+    ) -> QuickCommandResult:
+        """Render one cached command-output page for its owning Lark user."""
+        self._purge_log_page_sessions()
+        key = (user_id, token.strip())
+        session = self._log_page_sessions.get(key)
+        if session is None:
+            return QuickCommandResult("⚠️ 日志分页已过期，请重新发送 `/vps logs`")
+        pages = tuple(getattr(session.result, "output_pages", ()) or ())
+        if not pages:
+            return QuickCommandResult(format_vps_sysops_result(session.result))
+        if page < 1 or page > len(pages):
+            return QuickCommandResult("⚠️ 输出页码无效，请重新发送原命令")
+        result = replace(session.result, output=pages[page - 1])
+        label = "日志" if result.operation == "logs" else "输出"
+        text = format_vps_sysops_result(result).replace(
+            f"📄 {label}第 1/{len(pages)} 页",
+            f"📄 {label}第 {page}/{len(pages)} 页",
+        )
+        if result.operation == "logs":
+            card = build_log_page_card(
+                text,
+                page=page,
+                total_pages=len(pages),
+                token=token,
+            )
+        else:
+            card = build_output_page_card(
+                text,
+                page=page,
+                total_pages=len(pages),
+                token=token,
+                heading="服务输出",
+            )
+        return QuickCommandResult(
+            text,
+            card,
+        )
+
+    def _start_output_pagination(self, result: Any, user_id: str) -> str | QuickCommandResult:
+        pages = tuple(getattr(result, "output_pages", ()) or ())
+        if len(pages) <= 1:
+            return format_vps_sysops_result(result)
+        self._purge_log_page_sessions()
+        token = secrets.token_urlsafe(9)
+        self._log_page_sessions[(user_id, token)] = _LogPageSession(
+            result=result,
+            expires_at=time.time() + self._log_page_ttl_seconds,
+        )
+        while len(self._log_page_sessions) > self._log_page_max_sessions:
+            oldest = next(iter(self._log_page_sessions))
+            self._log_page_sessions.pop(oldest, None)
+        first = self.render_log_page(token, 1, user_id=user_id)
+        return first
+
+    def _purge_log_page_sessions(self) -> None:
+        now = time.time()
+        for key, session in list(self._log_page_sessions.items()):
+            if session.expires_at <= now:
+                self._log_page_sessions.pop(key, None)
+
+    def _target_allowed(self, target_id: str, user_id: str = "") -> bool:
+        return self.permission_policy is None or (
+            self.permission_policy.allows_user(user_id)
+            and self.permission_policy.allows_target(target_id)
+        )
+
+    def _target_denial(self, user_id: str) -> str | None:
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return "⛔ 当前用户无权执行 VPS 运维操作"
+        if self.targets is None:
+            return None
+        target = self.targets.current(user_id)
+        if self._target_allowed(target.label, user_id):
+            return None
+        return f"⛔ 当前用户无权访问目标：`{target.label}`"
+
+    def _service_catalog(self) -> QuickCommandResult:
+        allowed = None
+        if self.permission_policy is not None and self.permission_policy.allowed_services:
+            allowed = self.permission_policy.allowed_services
+        specs = [
+            spec
+            for spec in SERVICE_CATALOG
+            if allowed is None or spec.service_id in allowed
+        ]
+        return QuickCommandResult(
+            format_service_catalog(allowed=allowed),
+            build_service_catalog_card(specs),
+        )
+
+    async def _service(
+        self,
+        request: str,
+        user_id: str,
+        *,
+        chat_id: str = "",
+        approval_token: str | None = None,
+    ) -> str | QuickCommandResult:
+        parts = request.split(maxsplit=2)
+        service_id = parts[0].lower() if parts else ""
+        if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
+            return "⛔ 当前用户无权执行 VPS 运维操作"
+        if service_id in {"list", "catalog", "help"}:
+            return self._service_catalog()
+        spec = get_service(service_id)
+        if spec is None:
+            return f"🧩 未登记服务：`{service_id or '(empty)'}`\n{self._service_catalog()}"
+        if self.permission_policy is not None and not self.permission_policy.allows_service(spec.service_id):
+            return f"⛔ 当前用户无权访问服务：`{spec.service_id}`"
+        denied = self._target_denial(user_id)
+        if denied:
+            return denied
+        if spec.target_providers and self.targets is not None:
+            target = self.targets.current(user_id)
+            if target.provider not in spec.target_providers:
+                return (
+                    f"⚠️ 服务 `{spec.service_id}` 不支持当前目标 provider："
+                    f"`{target.provider}`；仅支持：{', '.join(spec.target_providers)}"
+                )
+
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        argument = parts[2].strip() if len(parts) > 2 else ""
+        operation_spec = get_service_operation(spec.service_id, action)
+        if operation_spec is not None:
+            if action == "restart" and not spec.restartable:
+                return f"⚠️ 服务 `{spec.service_id}` 当前不开放重启操作"
+            if self.targets is not None:
+                target = self.targets.current(user_id)
+                if not operation_spec.supports_target(target.label, target.provider):
+                    allowed_targets = ", ".join(operation_spec.target_ids)
+                    allowed_providers = ", ".join(operation_spec.target_providers)
+                    if allowed_targets:
+                        return (
+                            f"⚠️ 服务 `{spec.service_id}` 的 `{action}` 仅允许目标："
+                            f"`{allowed_targets}`；当前为 `{target.label}`"
+                        )
+                    return (
+                        f"⚠️ 服务 `{spec.service_id}` 不支持当前目标 provider："
+                        f"`{target.provider}`；仅支持：{allowed_providers}"
+                    )
+            if (
+                spec.service_id == "new-api"
+                and self.new_api_target_id
+                and self.targets is not None
+                and self.targets.current(user_id).label.lower() != self.new_api_target_id
+            ):
+                return (
+                    f"🧩 new-api 当前绑定目标为 `{self.new_api_target_id}`；"
+                    f"当前选择为 `{self.targets.current(user_id).label}`，请先切换目标"
+                )
+            if self.permission_policy is not None and not self.permission_policy.allows_operation(
+                action
+            ):
+                return f"⛔ 当前用户无权执行操作：`{action}`"
+            return await self._service_operation(
+                spec.service_id,
+                action,
+                user_id,
+                approval_token=approval_token,
+            )
+        if spec.backend == "mem0":
+            if self.mem0_target_id and self.targets is not None:
+                target = self.targets.current(user_id)
+                if target.label.lower() != self.mem0_target_id:
+                    return (
+                        f"🧩 {spec.label} 当前绑定目标为 `{self.mem0_target_id}`；"
+                        f"当前选择为 `{target.label}`，请先切换目标"
+                    )
+            if action in {"status", "health"}:
+                return await self._mem0_status(user_id=user_id, chat_id=chat_id)
+            if action == "smoke":
+                return await self._mem0_smoke(user_id=user_id, chat_id=chat_id)
+            if action == "list":
+                return await self._mem0_list(user_id=user_id, chat_id=chat_id)
+            if action == "search":
+                return await self._mem0_search(
+                    argument,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                )
+            return "用法：`/vps service mem0 status|list|smoke|search 关键词`"
+
+        if spec.backend == "http":
+            if action not in {"status", "health"}:
+                return f"用法：`/vps service {spec.service_id} status`"
+            return await self._new_api_status()
+
+        if spec.backend == "probe":
+            if action not in {"status", "health"}:
+                return f"用法：`/vps service {spec.service_id} status`"
+            return await self._service_probe(spec.service_id, user_id)
+
+        if action not in {"status", "health", "list"}:
+            return f"用法：`/vps service {spec.service_id} status`"
+        result = await self._sysops("services", user_id)
+        return _prefix_result(f"🧩 {spec.label} · 宿主机服务清单", result)
+
+    async def _lark_chat(self, chat_id: str) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "💬 Lark 会话信息：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "💬 Lark 会话信息：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
         try:
-            status = await self.mem0.health()
+            info = await self.lark_platform.get_chat_info(chat_id)
+        except Exception as exc:
+            log.error("quick_lark_chat_failed", error=str(exc))
+            text = "💬 Lark 会话信息：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        lines = [
+            "💬 Lark 当前会话：✅",
+            f"• Chat ID：`{info.chat_id}`",
+            f"• 模式：`{info.chat_mode or 'unknown'}`",
+        ]
+        if info.name:
+            lines.append(f"• 名称：{info.name}")
+        if info.chat_type:
+            lines.append(f"• 类型：`{info.chat_type}`")
+        if info.user_count:
+            lines.append(f"• 成员数：`{info.user_count}`")
+        if info.external is not None:
+            lines.append(f"• 外部会话：`{'是' if info.external else '否'}`")
+        if info.chat_status:
+            lines.append(f"• 状态：`{info.chat_status}`")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    async def _lark_messages(self, chat_id: str, *, limit: int) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "💬 Lark 消息：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "💬 Lark 消息：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        try:
+            messages = await self.lark_platform.list_messages(chat_id, limit=limit)
+        except Exception as exc:
+            log.error("quick_lark_messages_failed", error=str(exc))
+            text = "💬 Lark 消息：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        lines = [f"💬 当前会话最近消息：✅（{len(messages)} 条）"]
+        for message in messages:
+            sender = "Bot" if message.sender_type == "app" else "用户"
+            content = message.content or "（空消息）"
+            lines.append(f"• `{sender}` [{message.msg_type or 'unknown'}] {content}")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    async def _lark_chat_members(self, chat_id: str, *, limit: int) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "💬 Lark 会话成员：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "💬 Lark 会话成员：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        try:
+            members = await self.lark_platform.list_chat_members(chat_id, limit=limit)
+        except Exception as exc:
+            log.error("quick_lark_chat_members_failed", error=str(exc))
+            text = "💬 Lark 会话成员：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        lines = [f"💬 当前会话成员：✅（返回 {len(members)} 名，最多 {limit} 名）"]
+        for index, member in enumerate(members, start=1):
+            lines.append(f"• {index}. {member.name or '未命名成员'}")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    async def _lark_chat_announcement(self, chat_id: str) -> str | QuickCommandResult:
+        if self.lark_platform is None:
+            text = "📌 Lark 会话公告：⚠️ 当前未接入只读平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if not chat_id:
+            text = "📌 Lark 会话公告：⚠️ 缺少当前 chat_id"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        try:
+            announcement = await self.lark_platform.get_chat_announcement(chat_id)
+        except Exception as exc:
+            log.error("quick_lark_chat_announcement_failed", error=str(exc))
+            text = "📌 Lark 会话公告：⚠️ 暂时无法读取"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+        if announcement is None or not announcement.content:
+            text = "📌 Lark 会话公告：当前未设置"
+        else:
+            text = "📌 Lark 会话公告：✅\n" + announcement.content
+            if announcement.update_time:
+                text += f"\n• 更新时间：`{announcement.update_time}`"
+        return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Lark"))
+
+    def _lark_auth(self, *, user_id: str, chat_id: str) -> QuickCommandResult:
+        title = "Luck Agent · Lark User OAuth"
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = (
+                "🔐 Lark User OAuth：⚠️ 尚未配置回调地址\n"
+                "• 需要先配置 `LARK_OAUTH_REDIRECT_URI`，并在 Lark 开发者后台加入同一地址。"
+            )
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            url = self.lark_oauth.authorization_url(user_id=user_id, chat_id=chat_id)
+        except (LarkOAuthError, ValueError) as exc:
+            text = f"🔐 Lark User OAuth：⚠️ {exc}"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        text = (
+            "🔐 Lark Wiki/文档只读授权\n"
+            "请打开下面的授权链接，完成后返回 Lark：\n"
+            f"{url}\n"
+            "• 授权范围仅限只读 scope；授权状态有效期 10 分钟。"
+        )
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    def _lark_auth_status(self, *, user_id: str) -> QuickCommandResult:
+        title = "Luck Agent · Lark User OAuth"
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "🔐 Lark User OAuth：⚠️ 尚未配置"
+        elif self.lark_oauth.has_access(user_id):
+            text = "🔐 Lark User OAuth：✅ 当前用户已有有效只读授权"
+        else:
+            text = "🔐 Lark User OAuth：未授权或授权已过期"
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_auth_complete(
+        self,
+        callback_url: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark User OAuth"
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "🔐 Lark User OAuth：⚠️ 尚未配置"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if not callback_url.startswith(("https://", "http://")):
+            text = "🔐 Lark User OAuth：⚠️ 请粘贴浏览器地址栏中的完整回调 URL"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        result = await self.lark_oauth.handle_callback_url(
+            callback_url,
+            expected_user_id=user_id,
+        )
+        mark = "✅" if result.ok else "⚠️"
+        text = f"🔐 Lark User OAuth：{mark} {result.detail}"
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_wiki_search(
+        self,
+        query: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark Wiki"
+        if not query:
+            text = "用法：/lark wiki 关键词"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_platform is None:
+            text = "📚 Lark Wiki：⚠️ 当前未接入平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "📚 Lark Wiki：⚠️ 请先发送 /lark auth 完成只读授权"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        token = await self.lark_oauth.access_token_for(user_id)
+        if not token:
+            text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            result = await self.lark_platform.search_wiki(
+                query,
+                user_access_token=token,
+                limit=5,
+            )
+        except Exception as exc:
+            log.error(
+                "quick_lark_wiki_search_failed",
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+            )
+            text = "📚 Lark Wiki：⚠️ 查询失败，请稍后重试"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if not result.items:
+            text = f"📚 Lark Wiki：未找到与「{query[:80]}」匹配的结果"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        lines = [f"📚 Lark Wiki：✅ 找到 {len(result.items)} 条结果"]
+        for index, item in enumerate(result.items, start=1):
+            label = item.title or "（无标题）"
+            lines.append(f"{index}. {label}")
+            if item.url:
+                lines.append(f"   {item.url}")
+        if result.has_more:
+            lines.append("• 仅展示前 5 条结果")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_wiki_get(
+        self,
+        reference: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark Wiki"
+        if not reference:
+            text = "用法：/lark wiki get <Wiki 链接或节点 token>"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_platform is None:
+            text = "📚 Lark Wiki：⚠️ 当前未接入平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "📚 Lark Wiki：⚠️ 请先发送 /lark auth 完成只读授权"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        token = await self.lark_oauth.access_token_for(user_id)
+        if not token:
+            text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            result = await self.lark_platform.get_wiki_node(
+                reference,
+                user_access_token=token,
+            )
+        except ValueError as exc:
+            text = f"📚 Lark Wiki：⚠️ {exc}"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        except Exception as exc:
+            log.error(
+                "quick_lark_wiki_node_failed",
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+            )
+            text = "📚 Lark Wiki：⚠️ 节点查询失败，请确认已发布 Wiki 节点只读权限"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        lines = [f"📚 Lark Wiki：✅ {result.title or '节点详情'}"]
+        if result.obj_type:
+            lines.append(f"• 对象类型：`{result.obj_type}`")
+        if result.node_type:
+            lines.append(f"• 节点类型：`{result.node_type}`")
+        if result.has_child is not None:
+            lines.append(f"• 包含子节点：{'是' if result.has_child else '否'}")
+        if result.edited_at:
+            lines.append(f"• 最近时间戳：`{result.edited_at}`")
+        if result.url:
+            lines.append(f"• 链接：{result.url}")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_wiki_summary(
+        self,
+        reference: str,
+        *,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark Wiki"
+        if not reference:
+            text = "用法：/lark wiki summary <Wiki 链接或节点 token>"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_platform is None:
+            text = "📚 Lark Wiki：⚠️ 当前未接入平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "📚 Lark Wiki：⚠️ 请先发送 /lark auth 完成只读授权"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        token = await self.lark_oauth.access_token_for(user_id)
+        if not token:
+            text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            result = await self.lark_platform.summarize_wiki_content(
+                reference,
+                user_access_token=token,
+                limit=10,
+            )
+        except ValueError as exc:
+            text = f"📚 Lark Wiki：⚠️ {exc}"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        except Exception as exc:
+            log.error(
+                "quick_lark_wiki_summary_failed",
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+            )
+            text = "📚 Lark Wiki：⚠️ 内容摘要失败，请确认已发布对应的只读权限"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if isinstance(result, LarkBitableSummary):
+            lines = [f"📚 Lark Wiki：✅ {result.title or '多维表格摘要'}"]
+            if result.tables:
+                lines.append(f"• 数据表（{len(result.tables)}）：" + "、".join(result.tables))
+            else:
+                lines.append("• 数据表：暂无可见数据表")
+            if result.has_more:
+                lines.append("• 仅展示前 10 张数据表")
+        else:
+            lines = [f"📚 Lark Wiki：✅ {result.title or '文档摘要'}"]
+            if result.preview:
+                lines.append("• 内容摘要：\n" + result.preview)
+            else:
+                lines.append("• 内容摘要：文档暂无可读取文本")
+            if result.truncated:
+                lines.append("• 内容已限制为前 3000 字符")
+            if result.block_types:
+                structure = "、".join(
+                    f"{block_type}×{count}" for block_type, count in result.block_types
+                )
+                lines.append(f"• 文档结构（{result.block_count} 块）：{structure}")
+            if result.blocks_truncated:
+                lines.append("• 结构仅统计前 50 个文档块")
+        if result.url:
+            lines.append(f"• 链接：{result.url}")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _lark_wiki_records(
+        self,
+        reference: str,
+        *,
+        table_name: str,
+        user_id: str,
+    ) -> QuickCommandResult:
+        title = "Luck Agent · Lark Wiki"
+        if not reference:
+            text = "用法：/lark wiki records <Wiki 链接> [表名]"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_platform is None:
+            text = "📚 Lark Wiki：⚠️ 当前未接入平台 API"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        if self.lark_oauth is None or not self.lark_oauth.configured:
+            text = "📚 Lark Wiki：⚠️ 请先发送 /lark auth 完成只读授权"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        token = await self.lark_oauth.access_token_for(user_id)
+        if not token:
+            text = "📚 Lark Wiki：⚠️ 当前用户未授权或授权已过期，请重新发送 /lark auth"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        try:
+            result = await self.lark_platform.summarize_wiki_records(
+                reference,
+                user_access_token=token,
+                table_name=table_name,
+                limit=5,
+            )
+        except ValueError as exc:
+            text = f"📚 Lark Wiki：⚠️ {exc}"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        except Exception as exc:
+            log.error(
+                "quick_lark_wiki_records_failed",
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+            )
+            text = "📚 Lark Wiki：⚠️ 记录摘要失败，请确认已发布 Bitable 只读权限"
+            return QuickCommandResult(text, build_sections_card([text], title=title))
+        lines = [f"📚 Lark Wiki：✅ {result.title or '记录摘要'}", f"• 数据表：{result.table_name}"]
+        if result.records:
+            lines.extend(f"{index}. {record}" for index, record in enumerate(result.records, start=1))
+        else:
+            lines.append("• 记录：暂无可见记录")
+        if result.has_more:
+            lines.append("• 仅展示前 5 条记录")
+        if result.url:
+            lines.append(f"• 链接：{result.url}")
+        text = "\n".join(lines)
+        return QuickCommandResult(text, build_sections_card([text], title=title))
+
+    async def _new_api_status(self) -> str | QuickCommandResult:
+        if self.new_api is None:
+            text = "🤖 new-api：⚠️ 未配置 LLM_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · new-api"))
+        try:
+            status = await self.new_api.health()
             mark = "✅" if status.ok else "❌"
             detail = f"\n• 说明：{status.detail}" if status.detail else ""
-            return f"🧠 Mem0 API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            text = f"🤖 new-api API：{mark}\n• 延迟：{status.latency_ms} ms{detail}"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · new-api"),
+            )
+        except Exception as exc:
+            log.error("quick_new_api_status_failed", error=str(exc))
+            text = "🤖 new-api API：⚠️ 暂时无法读取状态"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · new-api"))
+
+    async def _service_probe(self, service: str, user_id: str) -> str | QuickCommandResult:
+        probe = getattr(self.sysops, "probe_service", None)
+        if not callable(probe):
+            result = await self._sysops("services", user_id)
+            return _prefix_result(f"🧩 {service} · 宿主机服务清单", result)
+        try:
+            try:
+                result = await probe(service, user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                result = await probe(service)
+            text = _format_service_probe(service, result)
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title=f"Luck Agent · {service} 探针"),
+            )
+        except Exception as exc:
+            log.error("quick_service_probe_failed", service=service, error=str(exc))
+            text = f"🧩 {service}：⚠️ 服务探针失败"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title=f"Luck Agent · {service} 探针"),
+            )
+
+    async def _restart_service(
+        self,
+        service: str,
+        user_id: str,
+        *,
+        approval_token: str | None,
+    ) -> str:
+        return await self._service_operation(
+            service,
+            "restart",
+            user_id,
+            approval_token=approval_token,
+        )
+
+    async def _service_operation(
+        self,
+        service: str,
+        operation: str,
+        user_id: str,
+        *,
+        approval_token: str | None,
+    ) -> str:
+        execute = getattr(self.sysops, f"{operation}_service", None)
+        if not callable(execute):
+            return f"⚠️ 当前 vps_sysops 未提供固定 {operation} 入口"
+        operation_label = "重启" if operation == "restart" else "备份" if operation == "backup" else operation
+        if not approval_token or self.approval_checker is None:
+            return f"⚠️ {operation_label}操作必须先完成一次性确认"
+        target_id = self.targets.current(user_id).label if self.targets is not None else ""
+        if service == "luck-agent" and self.agent_target_id and target_id.lower() != self.agent_target_id:
+            return (
+                f"🧩 Luck Agent 当前绑定目标为 `{self.agent_target_id}`；"
+                f"当前选择为 `{target_id}`，请先切换目标"
+            )
+        args = {"target": target_id, "service": service, "operation": operation}
+        try:
+            approved = self.approval_checker(
+                user_id,
+                approval_token,
+                f"service_{operation}",
+                args,
+            )
+        except Exception:
+            approved = False
+        await self._audit_service_operation(
+            user_id=user_id,
+            service=service,
+            target=target_id,
+            operation=operation,
+            decision="approved" if approved else "denied",
+            details="approval_token_present=true",
+        )
+        if not approved:
+            return f"⛔ {operation_label}确认码无效、过期或与目标/服务不匹配"
+        try:
+            try:
+                result = await execute(service, user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                result = await execute(service)
+        except Exception as exc:
+            await self._audit_service_operation(
+                user_id=user_id,
+                service=service,
+                target=target_id,
+                operation=operation,
+                decision="executed",
+                details=f"status=error error={str(exc)[:240]}",
+            )
+            return f"⚠️ 服务{operation_label}执行失败"
+        await self._audit_service_operation(
+            user_id=user_id,
+            service=service,
+            target=target_id,
+            operation=operation,
+            decision="executed",
+            details=f"status={'ok' if getattr(result, 'ok', False) else 'error'}",
+        )
+        return self._start_output_pagination(result, user_id)
+
+    async def _audit_service_operation(
+        self,
+        *,
+        user_id: str,
+        service: str,
+        target: str,
+        decision: str,
+        details: str,
+        operation: str = "restart",
+    ) -> None:
+        if self.audit_writer is None:
+            return
+        try:
+            await self.audit_writer(
+                user_id=user_id,
+                tool_name=f"service_{operation}",
+                operation=f"{operation} service={service} target={target}",
+                decision=decision,
+                details=details,
+            )
+        except Exception:
+            log.warning("quick_service_audit_failed", service=service, target=target)
+
+    async def _mem0_scope(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        project_id: str = "",
+    ) -> str | QuickCommandResult:
+        if self.mem0 is None:
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
+        projects = tuple(getattr(self.mem0, "project_ids", ()) or ())
+        default_project = str(getattr(self.mem0, "agent_id", "luck-agent"))
+        if not projects:
+            projects = (default_project,)
+        current = await self._current_mem0_project(user_id, chat_id)
+        if project_id:
+            if project_id not in projects:
+                text = (
+                    f"🧠 Mem0 项目 scope：⚠️ 未授权项目 `{project_id}`\n"
+                    f"• 可选：{', '.join(f'`{item}`' for item in projects)}\n"
+                    f"• 当前：`{current}`"
+                )
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 Scope"),
+                )
+            if self.scope_store is None:
+                text = "🧠 Mem0 项目 scope：⚠️ 当前运行时未启用持久化选择"
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 Scope"),
+                )
+            await self.scope_store.set(user_id, chat_id, project_id)
+            current = project_id
+            text = f"🧠 Mem0 项目 scope 已切换：✅\n• 当前：`{current}`\n• 会话：按当前 Lark 会话保存"
+        else:
+            text = (
+                f"🧠 Mem0 项目 scope：`{current}`\n"
+                f"• 可选：{', '.join(f'`{item}`' for item in projects)}\n"
+                "• 切换：`/mem0 scope PROJECT_ID`\n"
+                "• 该选择按用户 + 会话保存；临时上下文不会写入 Mem0"
+            )
+        return QuickCommandResult(
+            text,
+            build_sections_card([text], title="Luck Agent · Mem0 Scope"),
+        )
+
+    async def _current_mem0_project(self, user_id: str, chat_id: str) -> str:
+        default_project = str(getattr(self.mem0, "agent_id", "luck-agent"))
+        if self.scope_store is None:
+            return default_project
+        selected = await self.scope_store.get(user_id, chat_id)
+        projects = set(getattr(self.mem0, "project_ids", ()) or ())
+        return selected if selected in projects else default_project
+
+    def _mem0_project_kwargs(self, project_id: str) -> dict[str, str]:
+        default_project = str(getattr(self.mem0, "agent_id", "luck-agent"))
+        return {} if project_id == default_project else {"project_id": project_id}
+
+    def _mem0_scope_label(self, user_id: str, project_id: str) -> str:
+        try:
+            return self.mem0.scope_label(user_id, project_id=project_id)
+        except TypeError:
+            # Keep lightweight test doubles and older senders compatible.
+            return self.mem0.scope_label(user_id)
+
+    async def _mem0_status(
+        self,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
+        if self.mem0 is None:
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
+        try:
+            status = await self.mem0.health()
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            mark = "✅" if status.ok else "❌"
+            detail = f"\n• 说明：{status.detail}" if status.detail else ""
+            text = (
+                f"🧠 Mem0 API：{mark}\n"
+                f"• 延迟：{status.latency_ms} ms\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}{detail}"
+            )
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0"),
+            )
         except Exception as exc:
             log.error("quick_mem0_status_failed", error=str(exc))
-            return "🧠 Mem0 API：⚠️ 暂时无法读取状态"
+            text = "🧠 Mem0 API：⚠️ 暂时无法读取状态"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
 
-    async def _mem0_smoke(self) -> str:
+    async def _mem0_smoke(
+        self,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
         if self.mem0 is None:
-            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
         try:
-            result: Mem0SmokeResult = await self.mem0.smoke()
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            result: Mem0SmokeResult = await self.mem0.smoke(
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
             mark = "✅" if result.ok and result.cleanup_confirmed else "⚠️"
             detail = f"\n• 说明：{result.detail}" if result.detail else ""
-            return (
+            text = (
                 f"🧠 Mem0 smoke：{mark}\n"
                 f"• 写入：{result.added}\n"
                 f"• 搜索命中：{result.found}\n"
                 f"• 清理：{result.deleted}\n"
-                f"• 临时标识：`{result.marker}`{detail}"
+                f"• 临时标识：`{result.marker}`\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}{detail}"
+            )
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 smoke"),
             )
         except Exception as exc:
             log.error("quick_mem0_smoke_failed", error=str(exc))
-            return "🧠 Mem0 smoke：⚠️ 测试失败"
+            text = "🧠 Mem0 smoke：⚠️ 测试失败"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0 smoke"))
 
-    async def _mem0_search(self, query: str) -> str:
+    async def _mem0_search(
+        self,
+        query: str,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
         if not query:
             return "用法：`/mem0 search 关键词`"
         if self.mem0 is None:
-            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
         try:
-            results = await self.mem0.search(query)
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            results = await self.mem0.search(
+                query,
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
             if not results:
-                return f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆"
-            lines = [f"🧠 Mem0 搜索：{len(results)} 条结果"]
+                text = (
+                    f"🧠 Mem0 搜索：未找到与“{query}”相关的记忆\n"
+                    f"• Scope：{self._mem0_scope_label(user_id, project_id)}"
+                )
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 搜索"),
+                )
+            lines = [
+                f"🧠 Mem0 搜索：{len(results)} 条结果",
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}",
+            ]
+            sections = list(lines)
             for index, item in enumerate(results[:5], start=1):
                 text = _memory_text(item) or "（无文本）"
                 memory_id = str(item.get("id", ""))
@@ -152,11 +1450,213 @@ class QuickCommandRouter:
                 suffix = f" · {memory_id[:12]}" if memory_id else ""
                 if isinstance(score, (int, float)):
                     suffix += f" · score {score:.3f}"
-                lines.append(f"{index}. {text[:180]}{suffix}")
-            return "\n".join(lines)
+                line = f"{index}. {text[:180]}{suffix}"
+                lines.append(line)
+                sections.append(line)
+            return QuickCommandResult(
+                "\n".join(lines),
+                build_sections_card(sections, title="Luck Agent · Mem0 搜索"),
+            )
         except Exception as exc:
             log.error("quick_mem0_search_failed", error=str(exc))
-            return "🧠 Mem0 搜索：⚠️ 查询失败"
+            text = "🧠 Mem0 搜索：⚠️ 查询失败"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 搜索"),
+            )
+
+    async def _mem0_list(
+        self,
+        *,
+        user_id: str = "default",
+        chat_id: str = "",
+    ) -> str | QuickCommandResult:
+        if self.mem0 is None:
+            text = "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+            return QuickCommandResult(text, build_sections_card([text], title="Luck Agent · Mem0"))
+        try:
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            results = await self.mem0.list_memories(
+                limit=10,
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
+            scope = self._mem0_scope_label(user_id, project_id)
+            if not results:
+                text = f"🧠 Mem0 记忆清单：当前没有记忆\n• Scope：{scope}"
+                return QuickCommandResult(
+                    text,
+                    build_sections_card([text], title="Luck Agent · Mem0 清单"),
+                )
+            lines = [f"🧠 Mem0 记忆清单：{len(results)} 条（最多显示 10 条）", f"• Scope：{scope}"]
+            sections = list(lines)
+            for index, item in enumerate(results[:10], start=1):
+                memory_id = str(item.get("id", ""))
+                memory = _memory_text(item) or "（无文本）"
+                line = f"{index}. {memory[:180]}"
+                if memory_id:
+                    line += f"\n   ID：`{memory_id[:160]}`"
+                lines.append(line)
+                sections.append(line)
+            text = "\n".join(lines)
+            return QuickCommandResult(
+                text,
+                build_sections_card(sections, title="Luck Agent · Mem0 清单"),
+            )
+        except Exception as exc:
+            log.error("quick_mem0_list_failed", error=type(exc).__name__)
+            text = "🧠 Mem0 记忆清单：⚠️ 查询失败"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 清单"),
+            )
+
+    async def _mem0_save(
+        self,
+        content: str,
+        *,
+        user_id: str,
+        chat_id: str,
+        approval_token: str | None,
+    ) -> str | QuickCommandResult:
+        if not content:
+            return "用法：`/mem0 save 要保存的内容`"
+        if len(content) > 4000:
+            return "⚠️ 记忆内容过长，请控制在 4000 字符以内"
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        denied = self._memory_write_denial(
+            user_id=user_id,
+            approval_token=approval_token,
+            operation="write",
+            tool_name="memory_write",
+        )
+        if denied:
+            return denied
+        try:
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            payload = await self.mem0.add(
+                content,
+                metadata={"source": "lark-explicit", "user_confirmed": True},
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
+            added = _memory_result_count(payload)
+            text = (
+                f"🧠 Mem0 记忆已保存：✅\n"
+                f"• 内容长度：{len(content)}\n• 写入条目：{added}\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}"
+            )
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 保存"),
+            )
+        except Exception as exc:
+            log.error("quick_mem0_save_failed", error=type(exc).__name__)
+            text = "🧠 Mem0 记忆保存：⚠️ 服务不可用，未阻塞其他任务"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 保存"),
+            )
+
+    async def _mem0_delete(
+        self,
+        memory_id: str,
+        *,
+        user_id: str,
+        chat_id: str,
+        approval_token: str | None,
+    ) -> str | QuickCommandResult:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", memory_id):
+            return "用法：`/mem0 delete MEMORY_ID`（只接受单个记忆 ID）"
+        if self.mem0 is None:
+            return "🧠 Mem0：⚠️ 未配置 MEM0_BASE_URL"
+        denied = self._memory_write_denial(
+            user_id=user_id,
+            approval_token=approval_token,
+            operation="delete",
+            tool_name="memory_delete",
+        )
+        if denied:
+            return denied
+        try:
+            project_id = await self._current_mem0_project(user_id, chat_id)
+            await self.mem0.delete(
+                memory_id,
+                actor_id=user_id,
+                **self._mem0_project_kwargs(project_id),
+            )
+            text = (
+                f"🧠 Mem0 记忆已删除：✅\n• ID：`{memory_id}`\n"
+                f"• Scope：{self._mem0_scope_label(user_id, project_id)}"
+            )
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 删除"),
+            )
+        except Exception as exc:
+            log.error("quick_mem0_delete_failed", error=type(exc).__name__)
+            text = "🧠 Mem0 记忆删除：⚠️ 服务不可用，未阻塞其他任务"
+            return QuickCommandResult(
+                text,
+                build_sections_card([text], title="Luck Agent · Mem0 删除"),
+            )
+
+    def _memory_write_denial(
+        self,
+        *,
+        user_id: str,
+        approval_token: str | None,
+        operation: str,
+        tool_name: str,
+    ) -> str | None:
+        if self.permission_policy is not None:
+            if not self.permission_policy.allows_user(user_id):
+                return "⛔ 当前用户无权修改 Mem0 记忆"
+            if not self.permission_policy.allows_service("mem0"):
+                return "⛔ 当前用户无权访问 Mem0 服务"
+            if not self.permission_policy.allows_operation(operation):
+                return f"⛔ 当前用户无权执行操作：`{operation}`"
+        if not approval_token or self.approval_checker is None:
+            return "⚠️ Mem0 记忆变更必须先完成一次性确认"
+        try:
+            approved = self.approval_checker(
+                user_id,
+                approval_token,
+                tool_name,
+                {"service": "mem0", "operation": operation},
+            )
+        except Exception:
+            approved = False
+        if not approved:
+            return "⛔ Mem0 记忆变更确认码无效、过期或范围不匹配"
+        return None
+
+
+def _format_service_probe(service: str, result: Any) -> str:
+    mark = "✅" if getattr(result, "ok", False) else "⚠️"
+    target = getattr(result, "target", None)
+    target_line = f"\n• 目标：`{target.display}`" if target is not None else ""
+    output = str(getattr(result, "output", "") or "").strip()
+    error = str(getattr(result, "error", "") or "").strip()
+    if service == "a2a" and output:
+        try:
+            card = json.loads(output)
+            name = str(card.get("name") or "unknown")
+            version = str(card.get("version") or "unknown")
+            return f"🛰️ A2A API：{mark}{target_line}\n• Agent：`{name}`\n• 版本：`{version}`"
+        except (TypeError, ValueError):
+            pass
+    body = output or error or "无返回内容"
+    if not getattr(result, "ok", False) and error and output:
+        body = f"{error}\n{output}"
+    return f"🧩 {service} API：{mark}{target_line}\n{body}"
+
+
+def _prefix_result(prefix: str, result: str | QuickCommandResult) -> str | QuickCommandResult:
+    if isinstance(result, QuickCommandResult):
+        return QuickCommandResult(f"{prefix}\n{result.text}", result.card)
+    return f"{prefix}\n{result}"
 
 
 def _memory_text(item: dict[str, Any]) -> str:
@@ -165,3 +1665,15 @@ def _memory_text(item: dict[str, Any]) -> str:
         if isinstance(value, str):
             return " ".join(value.split())
     return ""
+
+
+def _memory_result_count(payload: Any) -> int:
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        for key in ("memories", "results", "items", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+        return 1 if payload else 0
+    return 0

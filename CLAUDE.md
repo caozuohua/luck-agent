@@ -36,11 +36,11 @@ bash deploy.sh [--update]
 
 ### Entry Flow
 `main.py` → `Runtime` initializes SQLite, Goal Runtime, health endpoint and the
-Lark interface. Real Lark WebSocket acceptance is still pending; local runs
-without Lark credentials use the Web interface.
+Lark interface. Production Lark messages enter Goal Runtime + LangGraph; local
+runs without Lark credentials may use the Web interface for debugging only.
 
 ### Core Modules (`core/`)
-- **Provider Router** — planned multi-provider fallback, quota detection and circuit breaking for LLM limits. LLM is an enhancement layer, never the VPS control plane.
+- **Provider Router** — multi-provider fallback, quota detection and circuit breaking for LLM limits. LLM is an enhancement layer, never the VPS control plane.
 - **core/agent.py (V2)** — `MinimalAgent` loop: classify intent → route tools → generate → parse → execute → transition goal state. See `runtime/` for the Goal Runtime that drives it.
 - **router.py (V2)** — `ToolRouter`: zero-LLM rule-based tool routing from `config/routing_rules.yaml`, with a file-watchdog for hot reload.
 - **memory.py (V1)** — SQLite persistence (WAL mode) for conversation history, user profiles, task records, and success patterns. Thread-safe via `threading.local()`.
@@ -103,4 +103,4 @@ pwsh ./scripts/test-local.ps1 -All       # full suite
 - All tool functions are async and must preserve explicit user/target boundaries.
 - LLM calls are optional; no-LLM VPS operations must remain deterministic and testable.
 - Test suite exists: `pytest tests/` (see Testing above). Verify changes with `pwsh ./scripts/test-local.ps1 -All`
-- Real Lark WebSocket acceptance and multi-cloud provider integration are pending.
+- Real Lark WebSocket and multi-cloud provider acceptance are maintained as deployment checks; the local suite remains offline.

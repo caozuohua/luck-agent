@@ -13,13 +13,17 @@ class FakeLarkClient:
     def __init__(self, sdk_loop: asyncio.AbstractEventLoop) -> None:
         self.sdk_loop = sdk_loop
         self.started = threading.Event()
+        self.background_started = threading.Event()
+        self.background_task: asyncio.Task[None] | None = None
         self.background_cancelled = False
         self.disconnect_after_background_cancelled = False
         self.disconnected = False
 
     def start(self) -> None:
+        self.background_task = self.sdk_loop.create_task(self._background_loop())
+        # Signal readiness only after the task is queued.  Signalling before
+        # create_task() lets the test race shutdown against client startup.
         self.started.set()
-        self.sdk_loop.create_task(self._background_loop())
         # Use run_forever (not run_until_complete) so an external loop.stop()
         # — issued during shutdown — cleanly returns and lets the thread join.
         self.sdk_loop.run_forever()
@@ -28,6 +32,7 @@ class FakeLarkClient:
         await asyncio.Future()
 
     async def _background_loop(self) -> None:
+        self.background_started.set()
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
@@ -56,6 +61,8 @@ class LarkWebSocketRunnerTests(unittest.IsolatedAsyncioTestCase):
             log.info.assert_called_once_with("lark_websocket_started")
         started = await asyncio.to_thread(client.started.wait, 1.0)
         self.assertTrue(started)
+        background_started = await asyncio.to_thread(client.background_started.wait, 1.0)
+        self.assertTrue(background_started)
 
         await runner.stop()
         await runner.stop()

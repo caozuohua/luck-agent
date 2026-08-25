@@ -1,6 +1,6 @@
 # Luck Agent 开发基线
 
-更新时间：2026-08-20
+更新时间：2026-08-24
 
 本文是 `luck-agent` 当前开发的任务基线。除非明确调整产品定位，后续
 开发按本文顺序推进；历史 V1、Vertex、单 VPS 和 Arkclaw 方案不属于当前
@@ -17,6 +17,33 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 核心运维不依赖 LLM；
 - LLM 只负责理解、规划和编排，不能成为单点控制面；
 - 用户、群聊、目标主机和危险操作必须有明确权限边界。
+
+### 真实使用场景（当前收敛方向）
+
+产品主线收敛为“手机端个人工作与生活统一入口”，让用户可以随手利用 Lark App 完成记录、查询、整理、
+学习、提醒和轻量执行。开发以高频、低输入成本的意图闭环作为优先级，而不是以接入多少 Lark API
+作为目标。下面六类是首批高频样板，不是产品边界；后续应从真实使用中持续发现和扩展其他个人工作、生活意图：
+
+| 意图 | 手机端最小闭环 | 平台能力支撑 |
+| --- | --- | --- |
+| 工作纪要 | 发送零散记录 → 提取决定、行动项和待跟进事项 → 可确认保存 | 消息、文档、Bitable、记忆 |
+| 英语学习 | 翻译/纠错/例句 → 单词和错题复习 → 查看学习进展 | LLM、记忆、日程/提醒 |
+| Agent 学习 | 粘贴资料或问题 → 总结概念、问答、实验记录 → 可检索复盘 | Wiki、Docx、记忆 |
+| Idea 创意 | 一句话快速捕获 → 自动补全/归类 → 形成下一步行动 | 消息、记忆、Bitable |
+| 个人博客 | 想法/纪要 → 大纲 → 草稿 → 编辑预览 → 用户确认后发布 | Docx、文件/发布适配器 |
+| 日程/提醒 | 自然语言记录时间和事项 → 确认 → 到期提醒/回顾 | SQLite、Lark 卡片、日历/任务 |
+
+推荐顺序：先做工作纪要与 Idea 快速捕获，再做日程/提醒和英语学习，随后补齐 Agent 学习与个人博客。
+这只是第一批切入点，不代表只支持这六类。Lark 消息、卡片、Wiki、Docx、Bitable、日历和任务 API
+都是统一入口的支撑层；只有能形成真实场景闭环时才扩展对应平台能力。个人内容与 VPS 运维保持边界，
+纪要、Idea 或其他生活/工作内容不能隐式触发危险运维操作。
+
+统一入口的基本模型是：用户在 Lark 中自然表达意图，系统识别并路由到对应能力，必要时通过短卡片补充
+信息或请求确认，再把结果沉淀到合适的位置。能力可以覆盖临时问答、信息整理、个人资料、计划执行、
+生活记录以及未来发现的其他低风险个人场景，不要求用户先记住命令或平台 API。
+
+移动端交互约束：优先支持一条消息快速捕获，结构化处理异步完成；仅在写入持久记忆、外部文档、日历或
+发布渠道时请求确认；结果先给短摘要，需要时再展开，避免提议卡和多轮表单增加日常操作负担。
 
 ## 2. 项目边界
 
@@ -37,27 +64,92 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 `vps_sysops` 保持独立项目。Agent 通过受控适配器调用固定能力，不能把
 用户输入直接拼接为任意 Shell 命令，也不能把业务记忆写入运维项目。
 
+### 当前个人数字资产版图
+
+统一入口当前主要面向以下真实资产，不把它们割裂成互不相干的命令集合：
+
+- **云与主机**：GCP、Azure，以及承载 Agent 和相关服务的 AWS VPS；
+- **基础服务**：Hermes、A2A、x-ui、new-api、Mem0 等服务，按目标主机和服务目录管理健康检查、日志、备份及受控变更；
+- **代码与项目**：GitHub 上的 blog、portal 等项目，后续纳入仓库状态、Issue/PR、Actions、部署和博客内容工作流；
+- **个人信息资产**：Lark 日程，以及 QPC 个人知识碎片多维表格，作为计划、碎片记录和可检索资料的主要沉淀位置。
+
+后续能力设计优先回答“这个资产如何通过 Lark 手机入口被快速查看、整理或操作”，再决定是否新增 API。
+基础设施变更、GitHub 写操作、日程写入和个人资料写入分别遵循各自的权限与确认边界。
+
+三台 VPS 的服务资产必须以实际运行态为准进行盘点，至少覆盖 systemd/用户级 systemd、Docker Compose、
+监听端口、健康检查、依赖、日志和备份关系。当前已确认 GCP 包含 Hermes Gateway、Hermes A2A Bridge、
+new-api、x-ui、Xray、Nginx；Azure 主要包含用户级 Hermes Gateway/A2A；AWS 包含 Luck Agent 和 Mem0
+API、Dashboard、PostgreSQL 三容器栈。该清单仍需在只读资产发现能力中固化，不能把当前几个可变更服务误认为
+完整服务目录。
+
 ## 3. 已完成基线
 
 - V2（`main.py`）作为唯一正式架构；
-- Lark 国际版 Bot `cli_aaba382935b8de18` 已完成 WebSocket 收发和卡片发送；
-- AWS VPS 已部署当前 Agent，生产 commit 为 `01359f4`；
+- Lark 国际版 Bot `cli_aaba382935b8de18` 已完成真实 WebSocket 收发、卡片发送和重启恢复验收；
+- AWS VPS 已部署当前 Agent；受控服务重启能力已通过固定入口、权限、审计和真实执行验收；
 - 已有免 LLM 命令：`/ping`、`/health`、`/vps`；
 - 已接入独立 vps_sysops 的只读适配器：
   `/vps status|resources|services|logs`；
-- 已接入 Mem0：`/mem0 status`、`/mem0 smoke`、`/mem0 search 关键词`；
+- 适配器结果已统一为 `ok/partial/error` 三态；AWS、GCP、Azure 的资源路由已完成线上验证，
+  日志权限不足时仍返回可读内容并标注为 `partial`；
+- 已接入 Mem0：`/mem0 status`、`/mem0 list`、`/mem0 smoke`、`/mem0 search 关键词`；
+- 已增加固定服务目录：`/vps service list`、`/vps service mem0 status|list|smoke|search`，以及
+  A2A、new-api、Luck Agent 的宿主机服务清单入口；服务名和服务 allowlist 均固定校验；
+- 已增加 A2A Agent Card 和 new-api `/models` 独立只读健康检查；A2A 探针通过目标 SSH 执行固定
+  命令，不开放任意远程 Shell；GCP/Azure A2A 与 AWS new-api 已完成线上验证；
 - Mem0 API Key、API health 和写入/搜索/清理 smoke 已验证；
 - 本地新增适配器测试已通过；
-- Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 49 passed；
+- Graph 多步基线和 GoalStore 关闭竞态已修复，当前离线全套测试为 56 passed；
 - Lark 已增加用户/群聊 allowlist 和一次性高风险请求确认；AWS 当前限制到已验证测试群；
 - 危险工具已接入执行层二次审批：未带有效确认码不会执行，确认码一次性消费；
 - 审批拒绝、放行和实际执行结果写入 SQLite `operation_audit`，Shell 审计不记录完整命令；
 - 可选 `OPS_ALLOWED_TARGETS/SERVICES/OPERATIONS` 已接入工具执行层，越界操作在审批前拒绝；
+- `OPS_ALLOWED_TARGETS` 同时限制 `/targets`、`/vps` 和 vps_sysops 只读入口，避免只读路径绕过目标授权；
+- 可选 `OPS_ALLOWED_USER_IDS` 已接入运维权限层，生产已启用并按可靠 Lark `open_id` 限制 VPS/服务操作，普通 LLM 工具不受影响；
 - `vps_sysops` 继续作为独立项目维护，不并入 Agent 仓库。
+- 已开放受控的 `/vps service luck-agent restart`：一次性确认码、目标/服务/操作 allowlist、
+  SQLite 审计和固定 sudo wrapper 均已接入；确认结果先发送，再由 systemd 延迟重启。
+- 已开放受控的 `/vps service new-api restart`：固定 `new-api.service` 入口、目标/服务/操作
+  allowlist、一次性确认和回滚说明均已登记；GCP 目标真实重启后 `active`，认证 `/v1/models`
+  检查成功。
+- 已开放受控的 `/vps service a2a restart`：GCP 使用固定 `hermes-a2a-bridge.service` 系统级入口，
+  Azure 使用固定用户级 systemd 入口，AWS 目标在执行前拒绝；GCP 真实重启后 Agent Card probe
+  返回 `gcp-hermeslite` `0.3.0`。
+- 已开放 Azure-only `/vps service hermes-gateway restart`：使用固定用户级
+  `hermes-gateway.service` 入口，真实重启后 `systemctl --user is-active` 返回 `active`；
+  GCP/AWS 目标在执行前拒绝。
+- 已开放受控的 `/vps service new-api backup` 契约：仅允许 `gcp-free-vps-oregon`，执行独立
+  `vps_sysops` scoped backup 脚本；脚本生成 0600 的 `.env` 与 SQLite 在线快照归档，并在返回成功前
+  完成 SHA-256、tar 可读性和 SQLite `integrity_check`。GCP 真实链路已验证成功；整机 profile backup
+  因动态 Hermes 文件变化未采用。new-api restore/upgrade 仍保持关闭。
+- 服务目录现在从固定操作契约动态展示可用动作和目标限制；新增受控操作不会再出现“已实现但目录不可发现”的状态。
+- 变更契约现在强制包含固定入口、目标约束、前置条件、幂等性、回滚策略和验收标准；缺少任一
+  核心字段的 backup/upgrade/rollback 操作不能登记。
+- `/vps logs` 及其他 vps_sysops 长输出已支持短期、按用户隔离的 Card 2.0 分页；最多缓存 12 页，
+  过期或越权令牌不会返回内容，原有日志回调保持兼容。
+- `/vps service list`、Mem0 状态/smoke/search、new-api 和 A2A 探针已统一返回分段 Markdown
+  Card 2.0，并保留文本摘要兼容旧发送器。
+- Goal 后台任务终态回推已使用独立结果卡片，完成/失败分别采用绿色/红色状态和分段结果展示，
+  不改变现有状态机、通知时机或执行语义。
+- 普通自然语言/LLM 回复已统一使用分段 Markdown Card 2.0，超长正文按段拆分并保留完整内容。
+- 正式 Lark 自然语言入口已接入 Goal Runtime + LangGraph：SQLite Goal、内存有界队列、启动恢复、
+  `EXECUTING → AWAITING_RESULT → EVALUATING → DONE/FAILED` 状态闭环和终态回推均已有自动化测试；
+  快捷命令继续保持独立的无 LLM 控制面。
+- Goal Runtime 已补齐跨进程会话上下文恢复：按 Lark chat 读取历史 Goal/摘要并注入 LangGraph，
+  服务重启后不再把连续对话当作新会话。
+- 已统一 V2 运行时配置契约：systemd、Docker、部署脚本、数据库维护 wrapper 和 `.env.example`
+  使用同一服务用户、入口、数据目录和工作目录，并增加脚本契约回归测试。
+- 已接入多 Provider LLM Router：兼容原有 `LLM_*` primary 配置，支持按顺序配置备用
+  `LLM_PROVIDER_<NAME>_*`；每个 Provider 独立维护重试、普通故障熔断和配额长冷却，
+  fallback 只发生在 LLM 生成/修复阶段，不重复执行工具副作用。
+- 已在 AWS 生产机真实验证 GCP new-api 的 `step-3.7-flash → gemini-2.5-flash` fallback；
+  Hermes 的 OpenRouter key 读取 `/models` 成功但 completion 返回 402，已按配额故障排除。
+- `/health` 已报告 active Provider、各 Provider 状态、失败次数和 cooldown 原因，且不暴露
+  endpoint 或密钥；快捷 `/health` 同步显示当前可用 Provider 数量。
 
 ## 4. 当前执行顺序
 
-### 阶段一：稳定性和真实验收（当前最高优先级）
+### 阶段一：稳定性和真实验收（主体完成，持续线上观察）
 
 1. 已修复 Graph 多步集成测试失败，并处理异步状态写入关闭竞态；
 2. 完成 LLM 429、限额耗尽、超时、5xx、空响应和上下文过长的降级；
@@ -72,8 +164,8 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 核心快捷命令不调用 LLM；
 - LLM 不可用时，健康检查和只读运维仍可用。
 
-当前阶段状态：Graph 基线和 LLM 客户端基础容错已完成；AWS 重启恢复、运行时配置一致性、
-多 Provider 路由和配额级熔断仍待完成。
+当前阶段状态：已完成。Graph 基线、Goal Runtime 首条生产执行链、LLM 客户端基础容错、多 Provider 路由与配额级熔断、
+AWS 重启恢复、三目标只读路由、真实 Lark 基础链路和运行时配置一致性均已完成；后续只保留线上观察和故障回归。
 
 ### 阶段二：权限和无 LLM 运维控制面
 
@@ -83,10 +175,14 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 高风险请求的一次性确认码和过期机制；
 - 未授权消息不进入 Agent，也不发送回复。
 
-仍需完成：
+剩余收尾：
 
-1. 为目标主机、服务和操作建立细粒度权限检查；
-2. 将命令结果统一为适合手机查看的卡片结构。
+1. 核心命令结果已统一为结构化卡片，后续只做细分模板优化；
+2. Luck Agent、new-api、A2A 和 Azure Hermes Gateway 已有受控变更入口；其他服务变更仍需逐项定义固定入口、回滚策略和验收测试，不能复用任意 Shell；
+3. 生产运维用户白名单已启用；重启确认卡已支持一键确认并完成真实 Lark 验收，备用验证码已
+   支持独立展示和只粘贴验证码确认，并完成真实 Lark 验收；
+4. 确认卡已显示实际目标；`new-api` 已绑定 GCP 目标并在执行前拒绝错误目标；用户目标选择
+   已按 `user_id + chat_id` 持久化，重启恢复和真实 Lark 一键重启均已验收。
 
 已完成：
 
@@ -94,6 +190,14 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 - 操作者、操作摘要、审批决策、执行状态和时间写入审计表。
 - 可选目标、服务和操作白名单已接入，未配置时不影响现有运行。
 - 确认码已绑定请求中明确的操作、目标和服务；未明确字段按通配处理，工具不匹配时拒绝并消费确认码。
+- Lark Card 2.0 已增加移动端标题和状态模板，保留 Markdown 正文兼容现有消息发送链路；
+- `VpsTarget` 已统一 provider/account/region/target/role 元数据，并传入本机状态与 vps_sysops 适配器。
+- `VPS_TARGETS` 已支持注册多个目标；`/targets` 返回 Card 2.0 下拉框，按 Lark 用户保存选择，
+  同时保留 `/target TARGET_ID` 文本后备命令；Lark `select_static` 回调已接入。
+- `VpsTarget` 已支持可选 `ssh_host/ssh_user/ssh_port/sysops_root`；vps_sysops 适配器可按固定 allowlist
+  构造 SSH 远程脚本调用，未配置通道的远程目标会安全拒绝，不再误执行本机检查。
+- AWS、GCP、Azure 三个目标的 `resources` 已通过 Agent 适配器真实执行验证；`logs` 的非零退出
+  已按可读报告与权限不足场景归类为 `partial`，不再只显示原始退出码。
 
 ### 阶段三：多云目标模型
 
@@ -103,8 +207,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 Provider → Account → Region → Target → Service → Operation
 ```
 
-先支持 AWS 本机目标，再扩展 GCP 和 Azure。Agent 不直接实现各云厂商的
-主机运维细节，而是调用 vps_sysops profile 和适配器。
+AWS、GCP、Azure 的只读目标路由、固定服务目录和独立健康检查已完成；Luck Agent、GCP
+new-api 的 restart/backup、A2A 与 Azure Hermes Gateway 的受控变更路径已完成。下一步继续扩展其他服务的健康检查/变更审批，并保持每项能力独立验收。
+Agent 不直接实现各云厂商的主机运维细节，而是调用 vps_sysops profile 和适配器。
 
 ### 阶段四：Mem0 和任务记忆策略
 
@@ -113,20 +218,71 @@ Provider → Account → Region → Target → Service → Operation
 3. 避免每条消息都触发 LLM 或 Mem0 写入；
 4. 记忆服务不可用时，不阻塞普通运维任务。
 
+当前进展：阶段四核心能力已完成。已完成显式命令边界、第一版浏览体验、可配置 scope 和自动记忆提议：`/mem0 save|remember`、`/mem0 delete MEMORY_ID` 仅在一次性确认后执行；`/mem0 list`、`/mem0 search` 和普通消息保持只读。明确的“请记住/个人偏好”只展示提议卡，不自动调用 LLM/Mem0；提议卡可一键发起确认，用户只需再确认一次。`MEM0_SCOPE_MODE=configured` 保持现有固定 user，`lark_user` 可按 Lark open_id 隔离读写，并要求删除目标先在当前 scope 被观察到。保存、删除和浏览失败会降级为提示，不阻塞其他任务。
+
+临时上下文边界已补强：`context_summaries` 与 Goal 历史均按 `user_id + chat_id` 隔离，不跨群聊复用。Mem0 项目 scope 已支持 `/mem0 scope` 查看、`/mem0 scope PROJECT_ID` 切换，允许项目由 `MEM0_PROJECTS` 配置，选择按 `user_id + chat_id` 持久化并显示在操作结果中；临时上下文仍不会写入 Mem0。测试环境已配置 `luck-agent,hermes-test` 两个项目，真实 Lark scope 切换和重启恢复已验收。
+
 ### 阶段五：Lark 平台能力
 
-按优先级逐步接入消息卡片、文档、多维表格、表格、日历、任务、邮件、
-会议和知识库。每次只引入一个可验收的只读或低风险能力，再开放写操作。
+当前进展：已完成 `/lark chat`、`/lark messages [数量]`、`/lark chat members [数量]` 和
+`/lark chat announcement` 四个只读能力；仅读取当前事件会话，消息/成员最多返回 10 条摘要，不暴露原始 ID，
+并已通过 Bot 测试会话的 REST 探测。Wiki 搜索确认需要 `user_access_token`，现已引入独立的只读 User OAuth
+边界：`/lark auth` 生成一次性授权链接，公网 `/oauth/lark/callback` 经 Funnel 转发到独立回调端口（默认
+8090），默认 scope 为 `wiki:wiki:readonly`，令牌只保存在内存中。已实现 `/lark wiki 关键词` 只读搜索，
+仅返回标题和链接；已完成真实重启、重新授权和搜索验收，实测可返回多维表格等 Wiki 节点链接。
+
+本轮继续扩展为 `/lark wiki get <Wiki 链接或节点 token>`：通过 Wiki v2
+`spaces/get_node` 读取节点标题、对象/节点类型、子节点标记、最近时间戳和规范链接，仍只使用当前用户
+User OAuth，不返回 node/object token。SDK 异常时保留同一 token 的 HTTP v2 兼容路径。节点详情额外支持
+`wiki:node:retrieve` 只读 scope；生产已配置
+`LARK_OAUTH_SCOPES="wiki:wiki:readonly wiki:node:retrieve"` 并完成真实授权验收。
+
+节点详情已完成真实 Lark 消息验收：实测读取“QPC个人知识库”节点，返回 `bitable`、`origin`、无子节点及
+最近时间戳；OAuth 回调和 WebSocket 快捷命令日志均正常。
+
+已实现 `/lark wiki summary <Wiki 链接或节点 token>` 的第一版多维表格摘要：解析 Wiki 节点对应的
+Bitable app，只读取应用名称和前 10 张数据表名称，不读取记录、不返回 app/table ID。该能力额外支持
+`bitable:app:readonly`；已加入生产 scope 并完成真实授权验收。
+
+多维表格摘要已完成真实 Lark 消息验收：重新授权后成功读取“QPC个人知识库”，返回 1 张数据表
+“QPC个人知识库”；OAuth 回调和快捷命令日志正常。
+
+Docx 摘要已实现并纳入同一 `/lark wiki summary` 路由：根据节点类型调用 Docx `raw_content`，只返回最多
+3000 字符的归一化纯文本预览，不返回 document token，也不提供写操作。该能力使用已有只读 allowlist 中的
+`docx:document:readonly`；已加入生产 scope 并完成真实授权验收。
+
+Docx 摘要已完成真实 Lark 消息验收：重新授权后成功返回文档纯文本摘要，授权回调成功，服务端日志未发现
+scope 交换失败。阶段五的 Wiki/Docx/Bitable 第一批只读链路已闭环。
+
+已补充 Docx 文档结构摘要：调用文档块只读接口，按标题、正文、列表、表格等类型统计块数量，不返回块 ID；
+结构接口异常时自动降级为纯文本摘要。
+
+已实现 `/lark wiki records <Wiki 链接> [表名]` 的 Bitable 记录级摘要：单表自动选择，多表按人类可读表名选择，
+最多读取 5 条记录，字段值统一截断并对 token、密码、邮箱、手机号等字段脱敏，不返回 app/table/record ID。
+该能力复用已发布的 `bitable:app:readonly`，尚待真实 Lark 消息验收。
+
+阶段五后续不再按平台 API 列表线性扩展，而按真实意图交付场景闭环。六类首批样板的顺序为：
+
+1. P0：工作纪要和 Idea 快速捕获；支持消息输入、结构化提取、短摘要、下一步行动和确认保存；
+2. P1：日程/提醒和英语学习；先用 SQLite、Lark 卡片和现有记忆能力闭环，再接入日历/任务 API；
+3. P1：Agent 学习；支持资料摘要、概念问答、实验记录和可检索知识沉淀；
+4. P2：个人博客；支持草稿、结构化编辑和预览，外部发布必须独立确认；
+5. 按场景需要逐项接入 Docx、Bitable、Wiki、日历、任务等只读或低风险能力，最后再开放写操作；
+6. 根据真实使用反馈扩展其他个人工作、生活意图，复用统一入口、权限、记忆、确认和审计能力。
+
+每个场景都必须有：手机端最短输入路径、用户级/会话级隔离、失败降级、可观察日志和真实 Lark 验收。
 
 涉及个人邮件、日历、私信和个人任务时，单独设计 User OAuth，不直接扩大
 Bot 身份权限。
 
 ### 阶段六：架构和文档收敛
 
-- 更新 `README.md`、`docs/current-state.md` 和用户手册；
-- 清理仍描述 V1/Gemini/单 VPS 的历史说明；
+- 更新 `README.md`、`docs/current-state.md` 和当前开发边界文档；
+- 将仍描述 V1/Gemini/单 VPS 的材料明确标记为历史说明；
 - 评估未接入的重复运行时、队列和健康检查实现；
 - 保持一套正式 Goal Runtime 和一套任务执行路径。
+
+当前状态：主体完成，进入兼容观察期。生产正式自然语言入口使用 Goal Runtime + LangGraph，快捷命令作为独立无 LLM 控制面保留；本地 Web、legacy_inline skill 和旧 GoalManager 已登记为兼容边界，历史文档已明确不再作为当前事实来源。满足删除条件后再单独移除旧代码。
 
 ## 5. 明确不做
 
@@ -144,6 +300,18 @@ Bot 身份权限。
 - `docs/current-state.md`：事实状态、部署状态和已验证结果；
 - 本文件：阶段进度、阻塞项和验收标准；
 - 测试或部署记录：对应功能的可重复验证方式。
+
+本轮执行顺序固定为：
+
+1. 修订本文件和 `docs/current-state.md` 的状态描述；
+2. 双 Mem0 项目测试环境与真实 Lark scope 验收；
+3. 核验操作者 `open_id` 并评估生产用户白名单；
+4. 扩展一个固定入口、可回滚的低风险服务变更；
+5. 清理或隔离 legacy runtime 与历史文档；
+6. 补齐三台 VPS 只读服务资产目录和依赖关系；
+7. 实现 P0 工作纪要和 Idea 快速捕获闭环；
+8. 依次实现提醒/英语学习、Agent 学习和个人博客场景，再按场景补齐平台写入能力；
+9. 基于真实使用反馈持续扩展个人工作、生活意图，保持统一入口和一致的低复杂度交互。
 
 如果新需求与本基线冲突，先明确调整目标和优先级，再开始实现，避免在
 稳定性、权限和多云基础尚未完成前无序扩展平台功能。

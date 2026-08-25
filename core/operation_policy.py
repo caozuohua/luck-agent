@@ -23,6 +23,8 @@ _MUTATING_TOOL_NAMES = frozenset(
         "vps_sysops_write",
         "service_restart",
         "service_update",
+        "memory_write",
+        "memory_delete",
         "deploy",
         "delete",
         "restore",
@@ -46,6 +48,7 @@ _REQUEST_OPERATION_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"卸载|\buninstall\b", "uninstall"),
     (r"推送|\bpush\b", "push"),
     (r"写入|修改|\bwrite\b|\bupdate\b", "write"),
+    (r"保存|记住|\bsave\b|\bremember\b", "write"),
     (r"备份|\bbackup\b", "backup"),
     (r"恢复|\brestore\b", "restore"),
 )
@@ -53,8 +56,9 @@ _REQUEST_OPERATION_PATTERNS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True)
 class OperationPermissionPolicy:
-    """Optional target/service/operation allowlist for tool execution."""
+    """Optional user/target/service/operation allowlist for ops commands."""
 
+    allowed_user_ids: frozenset[str] = frozenset()
     allowed_targets: frozenset[str] = frozenset()
     allowed_services: frozenset[str] = frozenset()
     allowed_operations: frozenset[str] = frozenset()
@@ -63,32 +67,68 @@ class OperationPermissionPolicy:
     def from_csv(
         cls,
         *,
+        user_ids: str = "",
         targets: str = "",
         services: str = "",
         operations: str = "",
     ) -> "OperationPermissionPolicy":
         return cls(
+            allowed_user_ids=_parse_csv(user_ids),
             allowed_targets=_parse_csv(targets),
             allowed_services=_parse_csv(services),
             allowed_operations=_parse_csv(operations),
         )
 
-    def allows(self, tool_name: str, args: dict[str, Any]) -> bool:
+    def allows(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        user_id: str = "",
+    ) -> bool:
         if not operation_permission_applies(tool_name, args):
             return True
+        if not self.allows_user(user_id):
+            return False
         if self.allowed_targets:
             target = _operation_target(args)
-            if not target or target not in self.allowed_targets:
+            if not self.allows_target(target):
                 return False
         if self.allowed_services:
             service = _operation_service(tool_name, args)
-            if not service or service not in self.allowed_services:
+            if not self.allows_service(service):
                 return False
         if self.allowed_operations:
             operation = _operation_name(tool_name, args)
-            if not operation or operation not in self.allowed_operations:
+            if not self.allows_operation(operation):
                 return False
         return True
+
+    def allows_user(self, user_id: str) -> bool:
+        """Check the Lark operator for the VPS permission plane."""
+        normalized = str(user_id or "").strip().lower()
+        return not self.allowed_user_ids or bool(
+            normalized and normalized in self.allowed_user_ids
+        )
+
+    def allows_target(self, target: str) -> bool:
+        """Check a target ID for both read-only commands and tool execution."""
+        normalized = str(target or "").strip().lower()
+        return not self.allowed_targets or bool(normalized and normalized in self.allowed_targets)
+
+    def allows_service(self, service: str) -> bool:
+        """Check a service ID for both quick commands and tool execution."""
+        normalized = str(service or "").strip().lower()
+        return not self.allowed_services or bool(
+            normalized and normalized in self.allowed_services
+        )
+
+    def allows_operation(self, operation: str) -> bool:
+        """Check an operation for quick commands and tool execution."""
+        normalized = str(operation or "").strip().lower()
+        return not self.allowed_operations or bool(
+            normalized and normalized in self.allowed_operations
+        )
 
 
 @dataclass(frozen=True)
@@ -127,13 +167,29 @@ def scope_from_request(text: str) -> OperationScope:
         target = target_match.group(1).lower()
 
     service = ""
-    service_match = re.search(
-        r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+    command_service_match = re.search(
+        r"(?:^|/)vps\s+service\s+([A-Za-z0-9_@.:-]+)",
         normalized,
         re.IGNORECASE,
     )
-    if service_match:
-        service = (service_match.group(1) or service_match.group(2)).lower()
+    if command_service_match:
+        service = command_service_match.group(1).lower()
+    else:
+        mem0_command_match = re.search(
+            r"(?:^|/)mem0\s+(?:save|remember|delete)\b",
+            normalized,
+            re.IGNORECASE,
+        )
+        if mem0_command_match:
+            service = "mem0"
+        else:
+            service_match = re.search(
+                r"([A-Za-z0-9_@.:-]+)\s*(?:服务|service)\b|(?:服务|service)\s*(?:为|是|=|:)?\s*([A-Za-z0-9_@.:-]+)",
+                normalized,
+                re.IGNORECASE,
+            )
+            if service_match:
+                service = (service_match.group(1) or service_match.group(2)).lower()
     return OperationScope(operation=operation, target=target, service=service)
 
 

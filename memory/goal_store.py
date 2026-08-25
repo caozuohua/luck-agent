@@ -47,6 +47,7 @@ class Goal:
     id: str
     user_id: str
     status: GoalStatus
+    chat_id: str = ""
     intent_type: str = ""
     raw_input: str = ""
     plan: str = ""
@@ -64,19 +65,26 @@ class GoalStore:
         self._pending: list[asyncio.Task[None]] = []
         self._last_task: asyncio.Task[None] | None = None
 
-    async def create(self, user_id: str, raw_input: str) -> Goal:
+    async def create(
+        self,
+        user_id: str,
+        raw_input: str,
+        *,
+        chat_id: str = "",
+    ) -> Goal:
         now = int(time.time())
         goal_id = uuid.uuid4().hex
         await self.db.execute(
             """
             INSERT INTO goals (
-                id, user_id, status, intent_type, raw_input, plan, tool_calls,
+                id, user_id, chat_id, status, intent_type, raw_input, plan, tool_calls,
                 result, error, retry_count, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 goal_id,
                 user_id,
+                chat_id,
                 GoalStatus.IDLE.value,
                 "",
                 raw_input,
@@ -93,6 +101,7 @@ class GoalStore:
             id=goal_id,
             user_id=user_id,
             status=GoalStatus.IDLE,
+            chat_id=chat_id,
             raw_input=raw_input,
             created_at=now,
             updated_at=now,
@@ -187,13 +196,100 @@ class GoalStore:
             """,
             (user_id, *terminal),
         )
+        rows = sorted(rows, key=lambda row: int(row["updated_at"] or 0))
         return [self._row_to_goal(row) for row in rows]
+
+    async def get(self, goal_id: str) -> Goal | None:
+        """Load one Goal without changing its lifecycle state."""
+        row = await self.db.fetchone(
+            "SELECT * FROM goals WHERE id = ?",
+            (goal_id,),
+        )
+        return self._row_to_goal(row) if row is not None else None
+
+    async def get_in_progress_all(self) -> list[Goal]:
+        """Return recoverable Goals for every user.
+
+        The production runtime must not assume a single ``default`` user;
+        Lark supplies a real open_id for each conversation.
+        """
+        terminal = (GoalStatus.DONE.value, GoalStatus.FAILED.value)
+        rows = await self.db.fetchall(
+            """
+            SELECT * FROM goals
+            WHERE status NOT IN (?, ?)
+            ORDER BY updated_at ASC
+            """,
+            terminal,
+        )
+        return [self._row_to_goal(row) for row in rows]
+
+    async def reset_for_recovery(self, goal_id: str) -> Goal | None:
+        """Move a non-terminal Goal back to PLANNING for Worker recovery.
+
+        A process can stop while a Goal is in any execution state. The normal
+        transition table intentionally rejects those backwards transitions;
+        this explicit recovery operation is the only controlled exception.
+        """
+        await self.db.execute(
+            """
+            UPDATE goals
+            SET status = ?, error = '', updated_at = ?
+            WHERE id = ? AND status NOT IN (?, ?)
+            """,
+            (
+                GoalStatus.PLANNING.value,
+                int(time.time()),
+                goal_id,
+                GoalStatus.DONE.value,
+                GoalStatus.FAILED.value,
+            ),
+        )
+        return await self.get(goal_id)
 
     async def get_recent(self, user_id: str, limit: int = 10) -> list[Goal]:
         rows = await self.db.fetchall(
             "SELECT * FROM goals WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?",
             (user_id, limit),
         )
+        return [self._row_to_goal(row) for row in rows]
+
+    async def get_recent_for_chat(
+        self,
+        user_id: str,
+        chat_id: str,
+        limit: int = 8,
+    ) -> list[Goal]:
+        """Return completed conversation Goals for one Lark chat.
+
+        Older databases have no chat identity for historical Goals. When a
+        chat has no migrated records yet, fall back to those legacy records
+        for continuity; all newly-created records remain chat-scoped.
+        """
+        terminal = (GoalStatus.DONE.value, GoalStatus.FAILED.value)
+        rows = await self.db.fetchall(
+            """
+            SELECT * FROM goals
+            WHERE user_id = ? AND chat_id = ? AND status IN (?, ?)
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, chat_id, *terminal, limit),
+        )
+        if chat_id and len(rows) < limit:
+            legacy_rows = await self.db.fetchall(
+                """
+                SELECT * FROM goals
+                WHERE user_id = ? AND chat_id = '' AND status IN (?, ?)
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (user_id, *terminal, limit - len(rows)),
+            )
+            rows = sorted(
+                [*rows, *legacy_rows],
+                key=lambda row: int(row["updated_at"] or 0),
+            )
         return [self._row_to_goal(row) for row in rows]
 
     async def drain_pending(self) -> None:
@@ -211,6 +307,7 @@ class GoalStore:
             id=row["id"],
             user_id=row["user_id"],
             status=GoalStatus(row["status"]),
+            chat_id=row["chat_id"] if "chat_id" in row.keys() else "",
             intent_type=row["intent_type"] or "",
             raw_input=row["raw_input"] or "",
             plan=row["plan"] or "",

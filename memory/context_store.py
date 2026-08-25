@@ -16,18 +16,20 @@ class ContextStore:
         self,
         *,
         user_id: str,
+        chat_id: str = "",
         summary: str,
         turn_range: dict[str, int] | None = None,
     ) -> str:
         summary_id = uuid.uuid4().hex
         await self.db.execute(
             """
-            INSERT INTO context_summaries (id, user_id, summary, turn_range, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO context_summaries (id, user_id, chat_id, summary, turn_range, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 summary_id,
                 user_id,
+                chat_id,
                 summary,
                 json.dumps(turn_range or {}, ensure_ascii=False, sort_keys=True),
                 int(time.time()),
@@ -35,16 +37,26 @@ class ContextStore:
         )
         return summary_id
 
-    async def get_latest_summary(self, user_id: str) -> dict[str, Any] | None:
+    async def get_latest_summary(
+        self,
+        user_id: str,
+        chat_id: str = "",
+    ) -> dict[str, Any] | None:
+        if chat_id:
+            where = "user_id = ? AND chat_id = ?"
+            parameters = (user_id, chat_id)
+        else:
+            where = "user_id = ?"
+            parameters = (user_id,)
         row = await self.db.fetchone(
-            """
-            SELECT id, user_id, summary, turn_range, created_at
+            f"""
+            SELECT id, user_id, chat_id, summary, turn_range, created_at
             FROM context_summaries
-            WHERE user_id = ?
+            WHERE {where}
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
-            (user_id,),
+            parameters,
         )
         if row is None:
             return None

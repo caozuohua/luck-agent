@@ -93,7 +93,7 @@ Lark WebSocket
 
 ## 当前状态
 
-V2 是唯一正式架构，V1 已退出路线图。真实 Lark WebSocket 尚未完成验收，当前测试目标 Bot 为 `cli_aaba382935b8de18`。多云 VPS、卡片交互和 LLM 多 Provider 容错正在建设中，详细状态见 [`docs/current-state.md`](docs/current-state.md)。
+V2 是唯一正式架构，V1 已退出路线图。真实 Lark WebSocket、卡片交互和重启恢复已完成基础验收，当前测试目标 Bot 为 `cli_aaba382935b8de18`。详细状态见 [`docs/current-state.md`](docs/current-state.md)；兼容运行时边界见 [`docs/legacy-runtime.md`](docs/legacy-runtime.md)。
 
 ## 环境要求
 

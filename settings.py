@@ -23,6 +23,24 @@ def _load_dotenv(path: str = ".env") -> None:
 
 _load_dotenv()
 
+DEFAULT_DATA_DIR = "/opt/luck-agent/data"
+DEFAULT_WORKSPACE_DIR = "/opt/luck-agent/workspace"
+
+
+@dataclass(frozen=True)
+class LLMProviderSettings:
+    """Configuration for one OpenAI-compatible model provider."""
+
+    name: str
+    base_url: str
+    api_key: str
+    model: str
+    timeout_seconds: float
+    max_retries: int
+    failure_threshold: int
+    cooldown_seconds: float
+    quota_cooldown_seconds: float
+
 
 @dataclass(frozen=True)
 class AgentSettings:
@@ -40,6 +58,8 @@ class AgentSettings:
     llm_max_retries: int = 2
     llm_failure_threshold: int = 3
     llm_cooldown_seconds: float = 30.0
+    llm_quota_cooldown_seconds: float = 3600.0
+    llm_providers: tuple[LLMProviderSettings, ...] = ()
 
     lark_app_id: str = ""
     lark_app_secret: str = ""
@@ -48,26 +68,47 @@ class AgentSettings:
     lark_allowed_chat_ids: str = ""
     lark_allow_unconfigured: bool = False
     lark_approval_ttl_seconds: float = 300.0
+    # User OAuth is intentionally limited to read-only Wiki/Docs scopes.
+    # Tokens remain in memory and are dropped on restart in this rollout.
+    lark_oauth_redirect_uri: str = ""
+    lark_oauth_scopes: str = "wiki:wiki:readonly"
+    lark_oauth_state_ttl_seconds: float = 600.0
+    lark_oauth_token_skew_seconds: float = 60.0
+    lark_oauth_exchange_timeout_seconds: float = 15.0
+    lark_oauth_callback_port: int = 8090
+    ops_allowed_user_ids: str = ""
     ops_allowed_targets: str = ""
     ops_allowed_services: str = ""
     ops_allowed_operations: str = ""
     web_host: str = "127.0.0.1"
     web_port: int = 8000
     serper_api_key: str = ""
-    db_path: str = "/home/agent/data/agent.db"
-    agent_workdir: str = "/home/agent/workspace"
+    db_path: str = f"{DEFAULT_DATA_DIR}/agent.db"
+    agent_workdir: str = DEFAULT_WORKSPACE_DIR
     shell_timeout_seconds: int = 15
     shell_max_output_chars: int = 4000
     health_host: str = "0.0.0.0"
     health_port: int = 8080
     vps_name: str = ""
+    vps_provider: str = "aws"
+    vps_account: str = ""
+    vps_region: str = ""
+    vps_target_id: str = ""
+    vps_role: str = "personal"
+    vps_targets: str = ""
+    new_api_target_id: str = ""
     vps_sysops_root: str = "/opt/vps_sysops"
     vps_sysops_profile: str = "aws"
+    vps_sysops_ssh_config: str = ""
+    vps_sysops_ssh_identity_file: str = ""
     vps_sysops_timeout_seconds: float = 15.0
+    vps_sysops_max_output_chars: int = 5000
     mem0_base_url: str = ""
     mem0_api_key: str = ""
     mem0_user_id: str = "personal"
     mem0_agent_id: str = "luck-agent"
+    mem0_projects: str = ""
+    mem0_scope_mode: str = "configured"
     mem0_timeout_seconds: float = 10.0
     curator_trigger_interval: int = 50
     curator_periodic_interval_seconds: float = 24 * 60 * 60
@@ -76,11 +117,12 @@ class AgentSettings:
     execution_mode: str = "graph"  # "graph" (LangGraph ReAct) | "legacy"
     max_steps: int = 12  # hard cap on ReAct loop iterations per goal
     max_retry: int = 2  # per-step retry budget (Supervisor)
-    graph_db_path: str = "/home/agent/data/graph_state.db"  # checkpointer
+    graph_db_path: str = f"{DEFAULT_DATA_DIR}/graph_state.db"  # checkpointer
     graph_max_active: int = 1  # concurrent graphs per user (task queue)
 
 
 def load_settings() -> AgentSettings:
+    providers = _load_llm_providers()
     return AgentSettings(
         llm_base_url=os.environ.get("LLM_BASE_URL", ""),
         llm_api_key=os.environ.get("LLM_API_KEY", ""),
@@ -89,6 +131,10 @@ def load_settings() -> AgentSettings:
         llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "2")),
         llm_failure_threshold=int(os.environ.get("LLM_FAILURE_THRESHOLD", "3")),
         llm_cooldown_seconds=float(os.environ.get("LLM_COOLDOWN_SECONDS", "30")),
+        llm_quota_cooldown_seconds=float(
+            os.environ.get("LLM_QUOTA_COOLDOWN_SECONDS", "3600")
+        ),
+        llm_providers=providers,
         lark_app_id=os.environ.get("LARK_APP_ID", ""),
         lark_app_secret=os.environ.get("LARK_APP_SECRET", ""),
         lark_domain=os.environ.get(
@@ -100,28 +146,59 @@ def load_settings() -> AgentSettings:
         lark_allow_unconfigured=os.environ.get("LARK_ALLOW_UNCONFIGURED", "false").lower()
         in {"1", "true", "yes", "on"},
         lark_approval_ttl_seconds=float(os.environ.get("LARK_APPROVAL_TTL_SECONDS", "300")),
+        lark_oauth_redirect_uri=os.environ.get("LARK_OAUTH_REDIRECT_URI", ""),
+        lark_oauth_scopes=os.environ.get(
+            "LARK_OAUTH_SCOPES", "wiki:wiki:readonly"
+        ),
+        lark_oauth_state_ttl_seconds=float(
+            os.environ.get("LARK_OAUTH_STATE_TTL_SECONDS", "600")
+        ),
+        lark_oauth_token_skew_seconds=float(
+            os.environ.get("LARK_OAUTH_TOKEN_SKEW_SECONDS", "60")
+        ),
+        lark_oauth_exchange_timeout_seconds=float(
+            os.environ.get("LARK_OAUTH_EXCHANGE_TIMEOUT_SECONDS", "15")
+        ),
+        lark_oauth_callback_port=int(
+            os.environ.get("LARK_OAUTH_CALLBACK_PORT", "8090")
+        ),
+        ops_allowed_user_ids=os.environ.get("OPS_ALLOWED_USER_IDS", ""),
         ops_allowed_targets=os.environ.get("OPS_ALLOWED_TARGETS", ""),
         ops_allowed_services=os.environ.get("OPS_ALLOWED_SERVICES", ""),
         ops_allowed_operations=os.environ.get("OPS_ALLOWED_OPERATIONS", ""),
         web_host=os.environ.get("WEB_HOST", "127.0.0.1"),
         web_port=int(os.environ.get("WEB_PORT", "8000")),
         serper_api_key=os.environ.get("SERPER_API_KEY", ""),
-        db_path=os.environ.get("DB_PATH", "/home/agent/data/agent.db"),
-        agent_workdir=os.environ.get("AGENT_WORKDIR", "/home/agent/workspace"),
+        db_path=os.environ.get("DB_PATH", f"{DEFAULT_DATA_DIR}/agent.db"),
+        agent_workdir=os.environ.get("AGENT_WORKDIR", DEFAULT_WORKSPACE_DIR),
         shell_timeout_seconds=int(os.environ.get("SHELL_TIMEOUT_SECONDS", "15")),
         shell_max_output_chars=int(os.environ.get("SHELL_MAX_OUTPUT_CHARS", "4000")),
         health_host=os.environ.get("HEALTH_HOST", "0.0.0.0"),
         health_port=int(os.environ.get("HEALTH_PORT", "8080")),
         vps_name=os.environ.get("VPS_NAME", ""),
+        vps_provider=os.environ.get("VPS_PROVIDER", "aws"),
+        vps_account=os.environ.get("VPS_ACCOUNT", ""),
+        vps_region=os.environ.get("VPS_REGION", ""),
+        vps_target_id=os.environ.get("VPS_TARGET_ID", ""),
+        vps_role=os.environ.get("VPS_ROLE", "personal"),
+        vps_targets=os.environ.get("VPS_TARGETS", ""),
+        new_api_target_id=os.environ.get("NEW_API_TARGET_ID", ""),
         vps_sysops_root=os.environ.get("VPS_SYSOPS_ROOT", "/opt/vps_sysops"),
         vps_sysops_profile=os.environ.get("VPS_SYSOPS_PROFILE", "aws"),
+        vps_sysops_ssh_config=os.environ.get("VPS_SYSOPS_SSH_CONFIG", ""),
+        vps_sysops_ssh_identity_file=os.environ.get("VPS_SYSOPS_SSH_IDENTITY_FILE", ""),
         vps_sysops_timeout_seconds=float(
             os.environ.get("VPS_SYSOPS_TIMEOUT_SECONDS", "15")
+        ),
+        vps_sysops_max_output_chars=int(
+            os.environ.get("VPS_SYSOPS_MAX_OUTPUT_CHARS", "5000")
         ),
         mem0_base_url=os.environ.get("MEM0_BASE_URL", ""),
         mem0_api_key=os.environ.get("MEM0_API_KEY", ""),
         mem0_user_id=os.environ.get("MEM0_USER_ID", "personal"),
         mem0_agent_id=os.environ.get("MEM0_AGENT_ID", "luck-agent"),
+        mem0_projects=os.environ.get("MEM0_PROJECTS", ""),
+        mem0_scope_mode=os.environ.get("MEM0_SCOPE_MODE", "configured"),
         mem0_timeout_seconds=float(os.environ.get("MEM0_TIMEOUT_SECONDS", "10")),
         curator_trigger_interval=int(os.environ.get("CURATOR_TRIGGER_INTERVAL", "50")),
         curator_periodic_interval_seconds=float(
@@ -131,6 +208,81 @@ def load_settings() -> AgentSettings:
         execution_mode=os.environ.get("EXECUTION_MODE", "graph"),
         max_steps=int(os.environ.get("MAX_STEPS", "12")),
         max_retry=int(os.environ.get("MAX_RETRY", "2")),
-        graph_db_path=os.environ.get("GRAPH_DB_PATH", "/home/agent/data/graph_state.db"),
+        graph_db_path=os.environ.get(
+            "GRAPH_DB_PATH", f"{DEFAULT_DATA_DIR}/graph_state.db"
+        ),
         graph_max_active=int(os.environ.get("GRAPH_MAX_ACTIVE", "1")),
     )
+
+
+def _load_llm_providers() -> tuple[LLMProviderSettings, ...]:
+    """Load ordered providers while preserving the legacy primary env vars.
+
+    ``LLM_BASE_URL``/``LLM_API_KEY``/``LLM_MODEL`` remain the primary provider
+    contract. Additional providers use a normalized name, for example
+    ``LLM_PROVIDER_BACKUP_BASE_URL`` and ``LLM_PROVIDER_BACKUP_API_KEY``, and
+    are enabled by listing ``backup`` in ``LLM_PROVIDER_ORDER``.
+    """
+
+    order = _split_csv(os.environ.get("LLM_PROVIDER_ORDER", "primary"))
+    if not order:
+        order = ["primary"]
+
+    legacy = {
+        "base_url": os.environ.get("LLM_BASE_URL", ""),
+        "api_key": os.environ.get("LLM_API_KEY", ""),
+        "model": os.environ.get(
+            "LLM_MODEL", "nvidia/llama-3.1-nemotron-nano-8b-v1"
+        ),
+        "timeout_seconds": os.environ.get("LLM_TIMEOUT_SECONDS", "60"),
+        "max_retries": os.environ.get("LLM_MAX_RETRIES", "2"),
+        "failure_threshold": os.environ.get("LLM_FAILURE_THRESHOLD", "3"),
+        "cooldown_seconds": os.environ.get("LLM_COOLDOWN_SECONDS", "30"),
+        "quota_cooldown_seconds": os.environ.get(
+            "LLM_QUOTA_COOLDOWN_SECONDS", "3600"
+        ),
+    }
+    providers: list[LLMProviderSettings] = []
+    seen: set[str] = set()
+    for raw_name in order:
+        name = raw_name.strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        suffix = "".join(char if char.isalnum() else "_" for char in name).upper()
+        prefix = f"LLM_PROVIDER_{suffix}_"
+        is_primary = name in {"primary", "default"}
+
+        def value(field: str) -> str:
+            configured = os.environ.get(prefix + field.upper())
+            if configured:
+                return configured
+            if is_primary:
+                return legacy[field]
+            # Operational tuning and model name may inherit global defaults;
+            # credentials and endpoints must never silently cross providers.
+            if field in {"base_url", "api_key"}:
+                return ""
+            return legacy[field]
+
+        base_url = value("base_url").strip()
+        if not base_url:
+            continue
+        providers.append(
+            LLMProviderSettings(
+                name=name,
+                base_url=base_url,
+                api_key=value("api_key"),
+                model=value("model"),
+                timeout_seconds=float(value("timeout_seconds")),
+                max_retries=int(value("max_retries")),
+                failure_threshold=int(value("failure_threshold")),
+                cooldown_seconds=float(value("cooldown_seconds")),
+                quota_cooldown_seconds=float(value("quota_cooldown_seconds")),
+            )
+        )
+    return tuple(providers)
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]

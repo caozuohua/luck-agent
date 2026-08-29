@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.service_assets import ServiceAsset, format_assets
 from core.services import ServiceSpec, service_action_names, service_operation_constraints
 from core.targets import VpsTarget
 
@@ -192,6 +193,11 @@ def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
         sections.append("\n".join(detail))
     sections.append("用法：`/vps service SERVICE ACTION [关键词]`")
     return build_sections_card(sections, title="Luck Agent · 服务目录")
+
+
+def build_service_assets_card(assets: tuple[ServiceAsset, ...], *, target: str = "") -> dict[str, Any]:
+    sections = [f"目标：`{target or '当前目标'}`", format_assets(assets)]
+    return build_sections_card(sections, title="Luck Agent · VPS 资产")
 
 
 def build_goal_result_card(

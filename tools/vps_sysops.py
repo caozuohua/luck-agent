@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.operation_policy import OperationPermissionPolicy
+from core.service_assets import ServiceAsset, parse_assets
 from core.services import get_service, get_service_operation
 from core.targets import VpsTarget, VpsTargetRegistry
 
@@ -64,6 +65,7 @@ class VpsSysopsAdapter:
         "resources": "scripts/07_resources.sh",
         "services": "scripts/08_services.sh",
         "logs": "scripts/09_logs.sh",
+        "assets": "scripts/10_service_assets.sh",
     }
     SERVICE_PROBES: dict[str, str] = {
         "a2a": (
@@ -101,6 +103,12 @@ class VpsSysopsAdapter:
         self.ssh_identity_file = ssh_identity_file.strip()
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
+
+    async def list_assets(self, *, user_id: str = "default") -> tuple[ServiceAsset, ...]:
+        result = await self.run("assets", user_id=user_id)
+        if not result.ok and not result.output:
+            raise RuntimeError(result.error or "资产发现失败")
+        return parse_assets(result.output)
 
     async def run(self, operation: str, *, user_id: str = "default") -> VpsSysopsResult:
         target = self.target_registry.current(user_id) if self.target_registry else self.target
@@ -225,6 +233,12 @@ class VpsSysopsAdapter:
             output_pages=output_pages,
             pages_complete=pages_complete,
         )
+
+    async def list_assets(self, *, user_id: str = "default") -> tuple[ServiceAsset, ...]:
+        result = await self.run("assets", user_id=user_id)
+        if not result.ok and not result.output:
+            raise RuntimeError(result.error or "资产发现失败")
+        return parse_assets(result.output)
 
     async def probe_service(self, service: str, *, user_id: str = "default") -> VpsSysopsResult:
         """Run a fixed, read-only service probe on the selected target."""

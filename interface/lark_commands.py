@@ -19,6 +19,7 @@ from core.services import (
 from tools.mem0_client import Mem0Client, Mem0SmokeResult
 from tools.vps_status import VpsStatusService, format_host_status
 from tools.vps_sysops import format_vps_sysops_result
+from core.service_assets import format_assets
 from core.targets import VpsTargetRegistry
 from interface.lark_cards import (
     build_log_page_card,
@@ -54,6 +55,8 @@ class HealthProvider(Protocol):
 
 class VpsSysopsProvider(Protocol):
     async def run(self, operation: str, *, user_id: str = "default") -> Any: ...
+
+    async def list_assets(self, *, user_id: str = "default") -> Any: ...
 
     async def probe_service(self, service: str, *, user_id: str = "default") -> Any: ...
 
@@ -357,6 +360,8 @@ class QuickCommandRouter:
                 operation = command[len(prefix) :].strip()
                 if operation in {"status", "resources", "services", "logs"}:
                     return await self._sysops(operation, user_id)
+                if operation in {"assets", "inventory"}:
+                    return await self._sysops_assets(user_id)
                 return None
         if command in {"/mem0 status", "mem0 status"}:
             return await self._mem0_status(user_id=user_id, chat_id=chat_id)
@@ -563,6 +568,25 @@ class QuickCommandRouter:
         except Exception as exc:
             log.error("quick_vps_sysops_failed", operation=operation, error=str(exc))
             return "🖥️ vps_sysops：⚠️ 暂时无法执行检查"
+
+    async def _sysops_assets(self, user_id: str) -> str | QuickCommandResult:
+        if self.sysops is None:
+            return "vps_sysops：尚未部署"
+        denied = self._target_denial(user_id)
+        if denied:
+            return denied
+        try:
+            try:
+                assets = await self.sysops.list_assets(user_id=user_id)
+            except TypeError as exc:
+                if "user_id" not in str(exc):
+                    raise
+                assets = await self.sysops.list_assets()
+            text = format_assets(tuple(assets))
+            return QuickCommandResult(text)
+        except Exception as exc:
+            log.error("quick_vps_assets_failed", error=str(exc))
+            return "vps_sysops：资产发现暂时失败"
 
     def render_log_page(
         self,

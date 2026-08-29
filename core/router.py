@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from core.output_parser import IntentType
+from core.scenario_registry import ScenarioMatcher, ScenarioMatch
 from tools.base import Tool
 from tools.registry import ToolNotFoundError, ToolRegistry
 
@@ -32,8 +33,10 @@ class ToolRouter:
         rules_path: str | Path | None = None,
         fallback_tool_count: int = 5,
         watch_interval_seconds: float = 1.0,
+        scenario_matcher: ScenarioMatcher | None = None,
     ) -> None:
         self.registry = registry
+        self.scenario_matcher = scenario_matcher or ScenarioMatcher()
         self.rules_path = Path(rules_path) if rules_path else self._default_rules_path()
         self.fallback_tool_count = fallback_tool_count
         self.watch_interval_seconds = watch_interval_seconds
@@ -42,6 +45,10 @@ class ToolRouter:
         self._rules_mtime: float | None = None
         self._watchdog_task: asyncio.Task[None] | None = None
         self.reload_rules()
+
+    def match_scenario(self, user_input: str) -> ScenarioMatch:
+        """Return the product scenario without changing legacy tool routing."""
+        return self.scenario_matcher.match(user_input)
 
     def route(self, user_input: str, intent: IntentType) -> list[Tool]:
         # ACTION routes through rules; CHAT still gets the fallback tool set

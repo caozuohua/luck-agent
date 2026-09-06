@@ -41,3 +41,7 @@ graph_state.db-*
 t-*.db
 *.db-shm
 *.db-wal
+
+# ─── CodeGraph 守护进程 ───
+.codegraph/daemon.pid
+.codegraph/

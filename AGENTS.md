@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Release maintenance boundary (2026-09-24)
+
+The deployed release is in maintenance/closeout mode. Do not add more Lark
+API integrations, OAuth scopes, or new Lark capability surfaces. Earlier
+roadmap expansion items are deferred unless the user explicitly reopens them.
+Focus on existing behavior, reliability, evaluation, necessary fixes, and
+deployment reproducibility. See `docs/release-closeout-2026-09-24.md` and
+`docs/luck-agent-history-audit-2026-09-24.md` for evidence and known limitations.
+
 ## Project Structure & Module Organization
 This repo has one formal architecture:
 

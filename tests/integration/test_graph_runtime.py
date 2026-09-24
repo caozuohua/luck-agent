@@ -35,9 +35,11 @@ async def test_graph_runtime_accepts_executes_and_notifies_goal(memory_db) -> No
     store = GoalStore(memory_db)
     executor = FakeGraphExecutor()
     notifications: list[dict] = []
+    notified = asyncio.Event()
 
     async def notify(goal: dict) -> None:
         notifications.append(goal)
+        notified.set()
 
     runtime = GraphRuntime(
         goal_store=store,
@@ -55,6 +57,8 @@ async def test_graph_runtime_accepts_executes_and_notifies_goal(memory_db) -> No
             message_id="m1",
         )
         goal = await _wait_for_status(store, accepted.goal_id, GoalStatus.DONE)
+        # Goal persistence precedes notification; wait for the callback itself.
+        await asyncio.wait_for(notified.wait(), timeout=2)
 
         assert accepted.handled is True
         assert goal.result == "执行完成"

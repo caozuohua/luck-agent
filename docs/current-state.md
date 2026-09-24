@@ -1,6 +1,15 @@
 # Luck Agent 当前实现与路线
 
-更新时间：2026-08-24
+更新时间：2026-09-24
+
+## 收尾状态（优先于下文历史快照）
+
+停止新增 Lark API 接入，保留已上线功能进入维护阶段。2026-09-24 实测 AWS luck-agent
+active/running，`/health` HTTP 200，SQLite connected；provider ready 仅为路由器状态，未新增模型探测。
+38 个 Goal 中 25 个 DONE 是状态完成率，不能再作为真实任务成功率。
+生产 HEAD `73d94be` 有未提交改动，不能等同 GitHub main。完整边界见
+[收尾记录](release-closeout-2026-09-24.md) 和 [历史评估](luck-agent-history-audit-2026-09-24.md)。
+下文标注的 8 月服务验收和扩展路线属于历史快照，不代表本次重新验收或继续扩展授权。
 
 ## 产品定位
 

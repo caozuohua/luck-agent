@@ -8,6 +8,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from jsonschema.validators import validator_for
+
 from memory.pattern_store import pattern_outcome_from_data
 from core.output_parser import IntentType, OutputParser, ParseError
 from core.operation_policy import (
@@ -54,12 +56,53 @@ class ToolExecutor:
         approval_token: str | None = None,
     ) -> ToolResult:
         started_at = time.perf_counter()
-        args = args or {}
+        args = {} if args is None else args
+        if not isinstance(args, dict):
+            return ToolResult.fail(
+                error="INVALID_TOOL_ARGUMENTS",
+                tool_name=tool_name,
+                metadata={"error_class": "invalid_arguments", "validation_rules": ["type"], "executed": False},
+            ).with_timing(started_at)
+        try:
+            # Python's JSON encoder otherwise accepts NaN/Infinity, which do
+            # not belong to the wire contract and can evade numeric bounds.
+            json.dumps(args, allow_nan=False)
+            if any(not isinstance(key, str) for key in args):
+                raise ValueError("argument keys must be strings")
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return ToolResult.fail(
+                error="INVALID_TOOL_ARGUMENTS",
+                tool_name=tool_name,
+                metadata={"error_class": "invalid_arguments", "validation_rules": ["json"], "executed": False},
+            ).with_timing(started_at)
         # Small models sometimes emit a command name (ls, pwd, date, cat,
         # grep, find) as the tool name. Route those through the shell tool,
         # unless the name is an actually-registered tool.
         tool_name, args = self._normalize_tool_call(tool_name, args, self.registry)
         audited_operation: str | None = None
+        try:
+            tool = self.registry.get(tool_name)
+        except ToolNotFoundError:
+            return ToolResult.fail(
+                error=f"TOOL_NOT_FOUND: {tool_name}",
+                tool_name=tool_name,
+                metadata={"error_class": "unknown_tool", "executed": False},
+            ).with_timing(started_at)
+
+        # Validate before consuming a one-shot approval or invoking tool code.
+        # Return only schema rules, never rejected values or exception messages.
+        validator = validator_for(tool.args_schema)(tool.args_schema)
+        rules = sorted({str(error.validator) for error in validator.iter_errors(args)})
+        if rules:
+            self._schedule_audit(
+                user_id=user_id, tool_name=tool_name, operation="validate_arguments",
+                decision="arguments_invalid", details=",".join(rules),
+            )
+            return ToolResult.fail(
+                error="INVALID_TOOL_ARGUMENTS",
+                tool_name=tool_name,
+                metadata={"error_class": "invalid_arguments", "validation_rules": rules, "executed": False},
+            ).with_timing(started_at)
         if self.permission_checker is not None and operation_permission_applies(tool_name, args):
             permitted = False
             try:
@@ -109,17 +152,6 @@ class ToolExecutor:
                 self._schedule_pattern(tool_name, args, result, user_id=user_id)
                 return result
         try:
-            tool = self.registry.get(tool_name)
-        except ToolNotFoundError:
-            result = ToolResult.fail(
-                error=f"TOOL_NOT_FOUND: {tool_name}",
-                tool_name=tool_name,
-            ).with_timing(started_at)
-            self._schedule_result_audit(user_id, tool_name, audited_operation, result)
-            self._schedule_pattern(tool_name, args, result, user_id=user_id)
-            return result
-
-        try:
             result = await asyncio.wait_for(
                 self._run_tool(tool, args),
                 timeout=self.timeout_seconds,
@@ -159,9 +191,9 @@ class ToolExecutor:
             "env", "whoami", "uname", "wc", "head", "tail", "tree",
         }
         if name in command_aliases:
-            command = args.get("command") or args.get("cmd") or name
+            command = args["command"] if "command" in args else args.get("cmd", name)
             rest = {k: v for k, v in args.items() if k not in ("command", "cmd")}
-            return "shell", {"command": str(command), **rest}
+            return "shell", {"command": command, **rest}
         return name, args
 
     async def execute_model_output(

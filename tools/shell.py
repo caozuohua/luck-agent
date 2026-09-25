@@ -62,10 +62,11 @@ class ShellTool(Tool):
     args_schema = {
         "type": "object",
         "properties": {
-            "command": {"type": "string"},
-            "timeout": {"type": "number", "default": 15},
+            "command": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 15, "default": 15},
         },
         "required": ["command"],
+        "additionalProperties": False,
     }
 
     async def execute(self, command: str, timeout: float | None = None) -> ToolResult:

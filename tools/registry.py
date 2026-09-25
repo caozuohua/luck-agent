@@ -5,6 +5,9 @@ import inspect
 import pkgutil
 from collections.abc import Iterable
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import validator_for
+
 from tools.base import Tool
 
 
@@ -29,6 +32,12 @@ class ToolRegistry:
             raise ToolRegistrationError("tool name is required")
         if tool.name in self._tools:
             raise ToolRegistrationError(f"duplicate tool: {tool.name}")
+        if not isinstance(tool.args_schema, dict):
+            raise ToolRegistrationError("tool args_schema must be an object")
+        try:
+            validator_for(tool.args_schema).check_schema(tool.args_schema)
+        except SchemaError as exc:
+            raise ToolRegistrationError(f"invalid argument schema for tool: {tool.name}") from exc
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool:

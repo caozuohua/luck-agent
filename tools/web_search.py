@@ -18,10 +18,11 @@ class WebSearchTool(Tool):
     args_schema = {
         "type": "object",
         "properties": {
-            "query": {"type": "string"},
-            "num_results": {"type": "integer", "default": 5},
+            "query": {"type": "string", "minLength": 1, "pattern": "\\S"},
+            "num_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
         },
         "required": ["query"],
+        "additionalProperties": False,
     }
     endpoint = "https://google.serper.dev/search"
 

@@ -5,9 +5,16 @@ __pycache__/
 .pytest_cache/
 .coverage
 tests/
-runtime/
+.venv/
+venv/
+.worktrees/
 data/
 workspace/
 soul/MEMORY.md
 .env
+.env.*
+!.env.example
+*.db
+*.db-*
+backups/
 sa-key.json

@@ -41,8 +41,29 @@ if ($Path) {
 } else {
     $args = @("tests/unit", "tests/integration")
 }
-$args += @("-q", "-p", "no:cacheprovider")
+$resultDir = Join-Path $root "workspace/test-results"
+New-Item -ItemType Directory -Force -Path $resultDir | Out-Null
+$resultFile = Join-Path $resultDir ("pytest-" + [guid]::NewGuid().ToString("N") + ".xml")
+$args += @("-q", "-p", "no:cacheprovider", "--junitxml=$resultFile")
 
 Write-Host "Running: $python -m pytest $($args -join ' ')" -ForegroundColor Cyan
 & $python -m pytest @args
-exit $LASTEXITCODE
+$testExitCode = $LASTEXITCODE
+if ($testExitCode -ne 0) { exit $testExitCode }
+# An abrupt background os._exit(0) used to make the full suite look green.
+# Require a fresh, completed pytest report before accepting exit code zero.
+if (-not (Test-Path -LiteralPath $resultFile)) {
+    Write-Error "pytest exited without a completed test report: $resultFile"
+    exit 1
+}
+try {
+    [xml]$testReport = Get-Content -Raw -LiteralPath $resultFile
+    $suites = @($testReport.testsuites.testsuite)
+    $totalTests = ($suites | ForEach-Object { [int]$_.tests } | Measure-Object -Sum).Sum
+    $badTests = ($suites | ForEach-Object { [int]$_.failures + [int]$_.errors } | Measure-Object -Sum).Sum
+    if ($totalTests -le 0 -or $badTests -gt 0) { throw "empty or failed test report" }
+} catch {
+    Write-Error "Invalid pytest completion report: $_"
+    exit 1
+}
+exit 0

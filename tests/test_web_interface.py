@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import unittest
 from http.client import HTTPConnection
 from unittest.mock import AsyncMock
@@ -104,16 +105,21 @@ class WebInterfaceTests(unittest.TestCase):
 
 
     def test_shutdown_endpoint_returns_ok(self) -> None:
-        # Patch os._exit so the test process isn't killed; we only verify
-        # the route responds 200 and triggers server shutdown.
-        import os
+        # Replace only this server's shutdown target. Restoring a process-wide
+        # os._exit patch before the background thread finishes can kill pytest
+        # with exit code 0 and silently hide the rest of the suite.
         import interface.web as web_mod
 
         agent = _FakeAgent("x")
         iface = self._start(agent)
-        saved_exit = os._exit
+        shutdown_called = threading.Event()
+
+        def shutdown_server(handler) -> None:
+            handler.server.shutdown()
+            shutdown_called.set()
+
+        iface._server.RequestHandlerClass._shutdown_server = shutdown_server
         try:
-            os._exit = lambda code=0: None  # type: ignore[misc]
             conn = HTTPConnection("127.0.0.1", iface.port, timeout=5)
             conn.request("POST", web_mod.SHUTDOWN_ENDPOINT)
             resp = conn.getresponse()
@@ -121,8 +127,8 @@ class WebInterfaceTests(unittest.TestCase):
             conn.close()
             self.assertEqual(resp.status, 200)
             self.assertEqual(data.get("status"), "shutting down")
+            self.assertTrue(shutdown_called.wait(timeout=5))
         finally:
-            os._exit = saved_exit  # type: ignore[misc]
             # The _shutdown_server thread may have called server.shutdown();
             # ensure we don't leak a serving loop.
             try:

@@ -165,7 +165,6 @@ class LarkPlatformClient:
             .container_id(normalized)
             .page_size(page_size)
             .sort_type("ByCreateTimeDesc")
-            .with_sender_name(True)
             .build()
         )
         response = await asyncio.to_thread(self.client.im.v1.message.list, request)

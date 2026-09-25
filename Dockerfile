@@ -7,8 +7,8 @@ RUN useradd --create-home --shell /usr/sbin/nologin luck-agent
 
 WORKDIR /opt/luck-agent
 
-COPY requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY . .
 

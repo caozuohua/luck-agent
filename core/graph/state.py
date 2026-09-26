@@ -20,6 +20,7 @@ class AgentState(TypedDict, total=False):
     last_tool_result: dict[str, Any] | None
     last_parsed: dict[str, Any] | None
     decision: str | None  # pass | retry | block | fail | done
+    decision_reason: str
     final_answer: str
     is_goal_complete: bool
     max_steps: int

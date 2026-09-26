@@ -93,6 +93,22 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_operation_attempts_operation
                 ON operation_attempts(operation_id, created_at);
 
+            CREATE TABLE IF NOT EXISTS operation_decisions (
+                event_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL DEFAULT '',
+                run_id TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                step_id TEXT NOT NULL DEFAULT '',
+                operation_id TEXT NOT NULL DEFAULT '',
+                attempt_id TEXT NOT NULL DEFAULT '',
+                decision TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_operation_decisions_goal
+                ON operation_decisions(goal_id, created_at);
+
             CREATE TABLE IF NOT EXISTS context_summaries (
                 id          TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,

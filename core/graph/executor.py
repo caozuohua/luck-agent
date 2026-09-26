@@ -17,6 +17,7 @@ from core.operation_context import OperationContext, operation_context
 from core.graph.contract import DECISION_FAIL
 from core.graph.contract import DECISION_DONE
 from core.capabilities import local_inventory_answer
+from core.graph.nodes import persist_decision
 from tools.registry import ToolRegistry
 
 
@@ -90,8 +91,11 @@ class GraphGoalExecutor:
                     return {"decision": DECISION_FAIL, "is_goal_complete": False,
                             "final_answer": "操作记录不可用，已停止执行，请人工检查。"}
                 if unresolved:
-                    return {"decision": DECISION_FAIL, "is_goal_complete": False,
-                            "final_answer": "此前操作的副作用尚未确认，已停止自动执行，请人工核对目标状态。"}
+                    return await persist_decision({
+                        "decision": DECISION_FAIL, "is_goal_complete": False,
+                        "decision_reason": "unreconciled_write_on_restart",
+                        "final_answer": "此前操作的副作用尚未确认，已停止自动执行，请人工核对目标状态。",
+                    }, store)
             return await self._execute_graph(request, hitl=hitl)
 
     async def _execute_graph(
@@ -113,8 +117,10 @@ class GraphGoalExecutor:
         if isinstance(self.tool_registry, ToolRegistry):
             answer = local_inventory_answer(request.text, self.tool_registry)
             if answer is not None:
-                return {**seed, "decision": DECISION_DONE, "final_answer": answer,
-                        "is_goal_complete": True}
+                return await persist_decision({**seed, "decision": DECISION_DONE, "final_answer": answer,
+                                               "decision_reason": "local_capability_inventory",
+                                               "is_goal_complete": True},
+                                              getattr(self.tool_executor, "operation_store", None))
         config = {
             "configurable": {
                 "thread_id": f"{request.user_id}:{request.goal_id}"
@@ -128,6 +134,7 @@ class GraphGoalExecutor:
             llm=self.llm_client,
             tools=self.tool_registry,
             executor=self.tool_executor,
+            operation_store=getattr(self.tool_executor, "operation_store", None),
             supervisor=self.supervisor,
             history=request.history,
             prompt_builder=self.prompt_builder,

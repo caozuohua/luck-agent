@@ -149,6 +149,45 @@ def summarize_trace(checkpoints: list[dict]) -> dict[str, Any]:
     }
 
 
+def durable_evidence(db: sqlite3.Connection) -> dict[str, Any]:
+    """Prefer direct receipts where present; never add checkpoint copies.
+
+    The table coverage is explicit because historical rows and quick paths
+    may predate instrumentation. Receipt status is not outcome verification.
+    """
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    result: dict[str, Any] = {
+        "attempt_table_present": "operation_attempts" in tables,
+        "decision_table_present": "operation_decisions" in tables,
+        "attempts": 0, "linked_goals": 0, "without_goal": 0,
+        "attempt_states": {}, "policy_reasons": {},
+        "verified_success_rate": None,
+        "result_persisted_to_decision_ms": distribution([]),
+    }
+    if result["attempt_table_present"]:
+        result["attempt_states"] = dict(db.execute(
+            "SELECT state, COUNT(*) FROM operation_attempts GROUP BY state"))
+        result["attempts"] = sum(result["attempt_states"].values())
+        result["linked_goals"] = db.execute(
+            "SELECT COUNT(DISTINCT goal_id) FROM operation_attempts WHERE goal_id<>''").fetchone()[0]
+        result["without_goal"] = db.execute(
+            "SELECT COUNT(*) FROM operation_attempts WHERE goal_id=''").fetchone()[0]
+    if result["decision_table_present"]:
+        result["policy_reasons"] = dict(db.execute(
+            "SELECT reason_code, COUNT(*) FROM operation_decisions GROUP BY reason_code"))
+    if result["attempt_table_present"] and result["decision_table_present"]:
+        latencies = [row[0] * 1000 for row in db.execute("""
+            SELECT MIN(d.created_at)-a.finished_at
+            FROM operation_attempts a JOIN operation_decisions d ON d.attempt_id=a.attempt_id
+            WHERE a.finished_at IS NOT NULL AND d.created_at>=a.finished_at
+            GROUP BY a.attempt_id,a.finished_at
+        """)]
+        result["result_persisted_to_decision_ms"] = distribution(latencies)
+    result["preferred_call_evidence"] = "operation_attempts" if result["attempts"] else "legacy_checkpoints"
+    result["coverage_note"] = "Direct receipts cover only instrumented calls; legacy counts are separate, not additive."
+    return result
+
+
 def audit(db_path: str, graph_path: str) -> dict[str, Any]:
     db = read_snapshot(db_path)
     graph = read_snapshot(graph_path)
@@ -230,6 +269,7 @@ def audit(db_path: str, graph_path: str) -> dict[str, Any]:
                          "adjacent_identical_call_recoveries": sum(c['adjacent_identical_call_recoveries'] for c in cases),
                          "verified_recovery_retry_distribution": None},
             "operation_audit": audits,
+            "durable_evidence": durable_evidence(db),
             "memory": {"patterns": memory, "context_summaries": db.execute('SELECT COUNT(*) FROM context_summaries').fetchone()[0],
                        "retrieval_precision": None, "durable_recall_rate": None},
             "cases": cases,

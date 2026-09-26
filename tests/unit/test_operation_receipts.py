@@ -253,3 +253,89 @@ async def test_quick_audit_failure_does_not_consume_approval(store, monkeypatch)
     assert "未执行" in response
     write.assert_not_called()
     approval.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metadata,expected", [
+    ({"permission_denied": True}, "permission_denied"),
+    ({"requires_approval": True}, "approval_required"),
+    ({"error_class": "configuration", "blocking": True}, "configuration_blocked"),
+    ({"execution_uncertain": True}, "outcome_unknown"),
+    ({}, "retry_allowed"),
+])
+async def test_policy_decision_is_durable_and_linked_without_raw_reasoning(store, metadata, expected):
+    attempt = await store.prepare(context=OperationContext(goal_id="g"), user_id="u",
+                                  requested_tool="shell", tool_name="shell", arguments={})
+    metadata.update(attempt_id=attempt.attempt_id, operation_id=attempt.operation_id)
+    state = {"step_count": 0, "last_parsed": {"intent": "ACTION", "plan": "private-reasoning"},
+             "messages": [{"content": "private-message"}],
+             "last_tool_result": ToolResult.fail(error="private-exception", metadata=metadata).to_dict()}
+    with operation_context(OperationContext(goal_id="g", run_id="run", request_id="request")):
+        result = await supervisor_node(state, supervisor=Supervisor(), goal={}, max_retry=2,
+                                       operation_store=store)
+    await store.db.close()
+    row, = await store.decisions_for_goal("g")
+    assert row["reason_code"] == expected
+    assert row["decision"] == result["decision"]
+    assert row["attempt_id"] == attempt.attempt_id
+    assert row["operation_id"] == attempt.operation_id
+    assert row["request_id"] == "request" and row["run_id"] == "run"
+    assert "private-" not in str(row)
+    assert not json.loads(row["metadata"])["business_outcome_verified"]
+
+
+@pytest.mark.asyncio
+async def test_failed_decision_write_stops_real_graph_before_next_tool(store, tmp_path, monkeypatch):
+    from core.intent_classifier import IntentClassifier
+    from core.output_parser import OutputParser
+    from core.prompt_builder import PromptBuilder
+    from core.router import ToolRouter
+    from llm.fake import FakeLLMClient
+
+    action = json.dumps({"intent": "ACTION", "plan": "run", "fallback": "", "tool_call": {
+        "name": "shell", "args": {"command": "pwd"}}})
+    llm = FakeLLMClient(queue=[action, action])
+    run = AsyncMock(return_value=ToolResult.ok())
+    executor = make_executor(store, run)
+    monkeypatch.setattr(store, "record_decision", AsyncMock(side_effect=OSError("disk full")))
+    graph = GraphGoalExecutor(llm_client=llm, tool_registry=executor.registry,
+                              tool_executor=executor, supervisor=Supervisor(),
+                              prompt_builder=PromptBuilder(), output_parser=OutputParser(),
+                              intent_classifier=IntentClassifier(), router=ToolRouter(executor.registry),
+                              graph_db_path=str(tmp_path / "graph.db"))
+    result = await graph.execute(GraphExecutionRequest("g", "u", "check date"))
+    assert result["decision"] == "fail"
+    assert result["decision_reason"] == "decision_audit_unavailable"
+    run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_restart_block_is_itself_recorded(store, monkeypatch):
+    attempt = await store.prepare(context=OperationContext(goal_id="g"), user_id="u",
+                                  requested_tool="x", tool_name="x", arguments={})
+    await attempt.executing()
+    result = await graph_executor(SimpleNamespace(operation_store=store)).execute(
+        GraphExecutionRequest("g", "u", "restart", request_id="request"))
+    row, = await store.decisions_for_goal("g")
+    assert row["reason_code"] == "unreconciled_write_on_restart"
+    assert row["decision"] == result["decision"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_auditor_reads_receipts_without_claiming_verified_success(store):
+    import sqlite3
+    from runtime.history_audit import durable_evidence
+
+    result = await invoke(make_executor(store, AsyncMock(return_value=ToolResult.ok())))
+    with operation_context(OperationContext(goal_id="goal")):
+        await supervisor_node({"last_parsed": {"intent": "ACTION"}, "last_tool_result": result.to_dict()},
+                              supervisor=Supervisor(), goal={}, max_retry=2, operation_store=store)
+    with sqlite3.connect(store.db.path) as reader:
+        report = durable_evidence(reader)
+    assert report["preferred_call_evidence"] == "operation_attempts"
+    assert report["attempts"] == 1
+    assert report["linked_goals"] == 1
+    assert report["attempt_states"] == {"returned_ok": 1}
+    assert report["policy_reasons"] == {"tool_returned_ok": 1}
+    assert report["verified_success_rate"] is None
+    assert report["result_persisted_to_decision_ms"]["n"] == 1

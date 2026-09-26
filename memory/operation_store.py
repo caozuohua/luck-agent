@@ -13,7 +13,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from core.operation_context import OperationContext
+from core.operation_context import OperationContext, current_operation
 from core.redaction import redact_text
 from memory.db import Database
 
@@ -99,6 +99,44 @@ class OperationStore:
     async def list_for_goal(self, goal_id: str) -> list[dict]:
         return [dict(row) for row in await self.db.fetchall(
             "SELECT * FROM operation_attempts WHERE goal_id=? ORDER BY created_at,attempt_id",
+            (goal_id,),
+        )]
+
+    async def record_decision(self, state: dict) -> None:
+        """Persist a policy decision, never the model's raw plan or reasoning.
+
+        Callers must await this before allowing another step. Failure propagates
+        so execution cannot silently continue without its decision evidence.
+        """
+        context = current_operation.get()
+        metadata = (state.get("last_tool_result") or {}).get("metadata") or {}
+        decision = str(state.get("decision") or "fail")
+        reason = str(state.get("decision_reason") or "unspecified")
+        if decision not in {"done", "pass", "retry", "block", "fail"}:
+            raise ValueError("invalid decision")
+        # Deliberate allowlist: no state/messages/scratchpad, raw tool arguments,
+        # response text, free-form exception, approval token, or model plan.
+        details = {
+            "tool_name": redact_text(metadata.get("tool_name", ""))[:120],
+            "error_class": redact_text(metadata.get("error_class", ""))[:120],
+            "deploy_version": self.deploy_version,
+            "policy_version": "phase-one-m1-v1",
+            "business_outcome_verified": False,
+        }
+        await self.db.execute(
+            """INSERT INTO operation_decisions
+               (event_id, goal_id, run_id, request_id, step_id, operation_id,
+                attempt_id, decision, reason_code, metadata, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (uuid.uuid4().hex, context.goal_id, context.run_id, context.request_id,
+             str(state.get("step_count", 0)), metadata.get("operation_id", ""),
+             metadata.get("attempt_id", ""), decision, redact_text(reason)[:120],
+             json.dumps(details, ensure_ascii=False), time.time()),
+        )
+
+    async def decisions_for_goal(self, goal_id: str) -> list[dict]:
+        return [dict(row) for row in await self.db.fetchall(
+            "SELECT * FROM operation_decisions WHERE goal_id=? ORDER BY created_at,event_id",
             (goal_id,),
         )]
 

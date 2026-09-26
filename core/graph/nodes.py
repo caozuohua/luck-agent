@@ -122,6 +122,32 @@ async def supervisor_node(
     goal: dict[str, Any],
     max_retry: int,
     hitl: bool = False,
+    operation_store=None,
+) -> dict[str, Any]:
+    result = await _supervisor_decision(
+        state, supervisor=supervisor, goal=goal, max_retry=max_retry, hitl=hitl,
+    )
+    return await persist_decision(result, operation_store)
+
+
+async def persist_decision(state: dict[str, Any], operation_store) -> dict[str, Any]:
+    if operation_store is not None:
+        try:
+            await operation_store.record_decision(state)
+        except Exception:
+            return {**state, "decision": DECISION_FAIL, "decision_reason": "decision_audit_unavailable",
+                    "is_goal_complete": False,
+                    "final_answer": "决策记录不可用，已停止自动执行，请人工检查。"}
+    return state
+
+
+async def _supervisor_decision(
+    state: AgentState,
+    *,
+    supervisor: Supervisor,
+    goal: dict[str, Any],
+    max_retry: int,
+    hitl: bool = False,
 ) -> dict[str, Any]:
     """Supervise step: verify the step result and decide pass/retry/block/fail.
 
@@ -138,6 +164,7 @@ async def supervisor_node(
     result_metadata = (state.get("last_tool_result") or {}).get("metadata") or {}
     if result_metadata.get("execution_uncertain"):
         return {**state, "decision": DECISION_FAIL, "is_goal_complete": False,
+                "decision_reason": "outcome_unknown",
                 "final_answer": "操作结果尚未确认，已停止自动执行，请人工核对目标状态，避免重复操作。"}
 
     # Respect a terminal decision already set upstream (executor_node sets
@@ -147,12 +174,14 @@ async def supervisor_node(
         return {
             **state,
             "decision": upstream,
+            "decision_reason": "model_response" if upstream == DECISION_DONE else "no_executable_action",
             "final_answer": state.get("final_answer") or parsed.get("message", ""),
         }
 
     # A CHAT/DONE reply IS the answer — terminal regardless of the flag.
     if parsed.get("intent") in ("CHAT", "DONE"):
-        return {**state, "decision": DECISION_DONE, "final_answer": parsed.get("message", "")}
+        return {**state, "decision": DECISION_DONE, "decision_reason": "model_response",
+                "final_answer": parsed.get("message", "")}
 
     # Parse failed entirely (no usable model output) -> terminal failure
     # with a clear message rather than an empty reply.
@@ -160,12 +189,14 @@ async def supervisor_node(
         return {
             **state,
             "decision": DECISION_FAIL,
+            "decision_reason": "invalid_model_output",
             "final_answer": "（我没能理解或生成有效的执行指令，请换一种说法重试。）",
         }
 
     if state.get("last_tool_result") is None:
         # No action taken and no tool result -> nothing to supervise yet.
-        return {**state, "decision": DECISION_DONE, "final_answer": parsed.get("message", "")}
+        return {**state, "decision": DECISION_DONE, "decision_reason": "no_tool_result",
+                "final_answer": parsed.get("message", "")}
 
     # Wrap the tool result into the shape Supervisor expects.
     tr = state.get("last_tool_result") or {}
@@ -186,13 +217,23 @@ async def supervisor_node(
         max_retry=max_retry,
     )
     decision = dec.decision
+    reason_code = (
+        "permission_denied" if metadata.get("permission_denied") else
+        "approval_required" if metadata.get("requires_approval") else
+        "configuration_blocked" if metadata.get("error_class") == "configuration" else
+        "execution_blocked" if wrapped.blocking else
+        "tool_returned_ok" if wrapped.ok else
+        "retry_allowed" if decision == "retry" else "retry_budget_exhausted"
+    )
     if decision == DECISION_BLOCK:
         if hitl:
             # LangGraph HITL: pause for operator approval.
             approval = interrupt({"question": dec.reason, "decision": "block"})
             if not (isinstance(approval, dict) and approval.get("approve")):
-                return {**state, "decision": DECISION_FAIL, "final_answer": "Blocked by operator."}
+                return {**state, "decision": DECISION_FAIL, "decision_reason": "operator_denied",
+                        "final_answer": "Blocked by operator."}
             decision = DECISION_PASS
+            reason_code = "operator_approved"
         else:
             # No human-in-the-loop available: degrade to a clear failure so
             # the user gets a useful message instead of an empty reply.
@@ -200,9 +241,10 @@ async def supervisor_node(
             return {
                 **state,
                 "decision": DECISION_FAIL,
+                "decision_reason": reason_code,
                 "final_answer": f"（执行被阻断：{reason}。请调整请求或提供更多上下文后重试。）",
             }
-    return {**state, "decision": decision}
+    return {**state, "decision": decision, "decision_reason": reason_code}
 
 
 async def responder_node(state: AgentState) -> dict[str, Any]:

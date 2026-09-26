@@ -67,3 +67,17 @@ M5：固定任务集、故障注入、真实候选验收、48 小时灰度和回
 - 全量回归 472 passed / 71 subtests passed，2 条既有 SDK 弃用警告；比前一阶段新增 14 项用例。
   完成报告：`workspace/test-results/pytest-1cf99e8648ff4fe1bac13e9d8a2eabaf.xml`。
 - 尚未部署；M1 的完整能力清单、审批引用、快捷只读/记忆审计及决策事件仍未完成。
+
+## 2026-09-26：M1 持久决策与审查统计（部分完成）
+
+- 新增 operation_decisions，在生产图监督节点返回下一步之前提交决策及原因码；关联
+  goal/run/request/step/operation/attempt，保留策略与部署版本。重启写入阻断及本地能力清单也写入记录。
+- 只持久化允许的结构化字段，不复制模型 plan、scratchpad、用户原文、工具输出或原始异常。
+  记录失败时终止本轮图执行并给出明确提示；真实 LangGraph 故障注入验证下一次工具调用不会发生。
+- 历史审查器读取新操作/决策表，报告覆盖量、状态、原因码和结果落盘至决策落盘的延迟。
+  旧库没有新表仍可审查；新旧来源独立展示，不将 checkpoint 副本加入直接调用分母。
+  returned_ok 和模型 DONE 仍不当作独立业务验证成功。
+- 完整回归 480 passed / 71 subtests passed，2 条既有 SDK 弃用警告；新增 8 项用例。
+  报告：`workspace/test-results/pytest-271dffe54c8b433f9933cc80bce0eaaf.xml`。
+- 尚未部署。此阶段记录现行决策，没有修正全部决策语义：每操作重试计数/预算、独立业务验收与人工状态仍属 M2。
+  生产 HITL=false 路径已覆盖；legacy HITL 暂停前事件、完整生命周期事件及快捷只读/记忆路径尚待补齐。

@@ -75,6 +75,7 @@ def _bind_deps(**deps: Any) -> dict[str, dict[str, Any]]:
             "goal": deps.get("goal", {}),
             "max_retry": deps.get("max_retry", 2),
             "hitl": deps.get("hitl", False),
+            "operation_store": deps.get("operation_store"),
         },
     }
 

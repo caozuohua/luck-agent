@@ -52,6 +52,18 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def capability_snapshot(self) -> list[dict]:
+        """Live local registry/config snapshot, never a remote health claim."""
+        snapshot = []
+        for tool in self.list():
+            availability = tool.checked_availability()
+            snapshot.append({
+                "name": tool.name, "schema_version": tool.schema_version,
+                "effect": tool.effect, "locally_ready": availability.ready,
+                "reason": availability.reason,
+            })
+        return snapshot
+
     def register_builtin_tools(self) -> None:
         from tools.shell import ShellTool
         from tools.web_search import WebSearchTool

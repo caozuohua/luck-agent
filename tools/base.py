@@ -6,6 +6,14 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 
+@dataclass(frozen=True)
+class ToolAvailability:
+    """Local prerequisites only; ready never proves remote health or authority."""
+
+    ready: bool = True
+    reason: str = "local_prerequisites_satisfied"
+
+
 @dataclass
 class ToolResult:
     status: Literal["ok", "error"]
@@ -54,6 +62,21 @@ class Tool(ABC):
     args_schema: dict[str, Any] = {}
     # Unknown effects are treated conservatively during crash recovery.
     effect: Literal["read", "write", "unknown"] = "unknown"
+    schema_version: str = "1"
+
+    def availability(self) -> ToolAvailability:
+        """Check deterministic local configuration without external calls."""
+        return ToolAvailability()
+
+    def checked_availability(self) -> ToolAvailability:
+        try:
+            result = self.availability()
+            if not isinstance(result, ToolAvailability):
+                raise TypeError("invalid availability result")
+            return result
+        except Exception:
+            # Never expose an exception containing configuration values.
+            return ToolAvailability(False, "availability_check_failed")
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult:
@@ -64,6 +87,8 @@ class Tool(ABC):
             f"Tool: {self.name}",
             f"Description: {self.description or 'No description provided.'}",
             f"Args schema: {self.args_schema or {}}",
+            f"Local availability: {self.checked_availability()}",
+            "Local availability does not establish permissions or remote health.",
         ]
         if task_context:
             lines.append(f"Task hint: Use this tool only if it helps with: {task_context}")

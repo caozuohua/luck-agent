@@ -174,6 +174,13 @@ class ToolExecutor:
                 tool_name=tool_name,
                 metadata={"error_class": "invalid_arguments", "validation_rules": rules, "executed": False},
             ).with_timing(started_at)
+        availability = tool.checked_availability()
+        if not availability.ready:
+            return ToolResult.fail(
+                error="TOOL_UNAVAILABLE", tool_name=tool_name,
+                metadata={"blocking": True, "executed": False, "error_class": "configuration",
+                          "availability_reason": availability.reason},
+            ).with_timing(started_at)
         if self.permission_checker is not None and operation_permission_applies(tool_name, args):
             permitted = False
             try:

@@ -207,7 +207,8 @@ class QuickCommandRouter:
         approval_token: str | None = None,
     ) -> str | QuickCommandResult | None:
         with operation_context(OperationContext(
-            request_id=uuid.uuid4().hex, run_id=uuid.uuid4().hex, chat_id=chat_id,
+            request_id=current_operation.get().request_id or uuid.uuid4().hex,
+            run_id=uuid.uuid4().hex, chat_id=chat_id,
         )):
             return await self._handle(text, user_id=user_id, chat_id=chat_id, approval_token=approval_token)
 

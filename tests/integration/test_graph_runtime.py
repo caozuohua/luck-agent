@@ -6,6 +6,7 @@ import pytest
 
 from memory.goal_store import GoalStatus, GoalStore
 from runtime.graph_runtime import GraphRuntime
+from core.operation_context import request_reference
 
 
 class FakeGraphExecutor:
@@ -64,10 +65,30 @@ async def test_graph_runtime_accepts_executes_and_notifies_goal(memory_db) -> No
         assert goal.result == "执行完成"
         assert goal.chat_id == "c1"
         assert len(executor.requests) == 1
+        assert executor.requests[0][0].request_id == request_reference("m1")
         assert notifications[0]["chat_id"] == "c1"
         assert notifications[0]["status"] == "DONE"
     finally:
         await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_request_reference_survives_restart_without_card_token(memory_db):
+    store = GoalStore(memory_db)
+    executor = FakeGraphExecutor()
+    runtime = GraphRuntime(goal_store=store, graph_executor=executor)
+    source = "card-confirm-private-approval-token"
+    accepted = await runtime.handle_message(user_id="u", chat_id="c", text="test", message_id=source)
+    goal = await store.get(accepted.goal_id)
+    assert "private-approval-token" not in goal.plan
+    # Replace the whole runtime/queue, then recover from persisted Goal data.
+    recovered = GraphRuntime(goal_store=store, graph_executor=executor)
+    await recovered.start()
+    try:
+        await _wait_for_status(store, goal.id, GoalStatus.DONE)
+        assert executor.requests[0][0].request_id == request_reference(source)
+    finally:
+        await recovered.stop()
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from typing import Any
 from core.graph.contract import DECISION_DONE
 from core.graph.executor import GraphExecutionRequest, GraphGoalExecutor
 from core.log import get_logger
+from core.operation_context import request_reference
 from memory.context_store import ContextStore
 from memory.goal_store import Goal, GoalStatus, GoalStore
 from runtime.contracts import RuntimeHandleResult
@@ -85,6 +86,7 @@ class GraphRuntime:
     ) -> RuntimeHandleResult:
         """Persist and enqueue one natural-language Goal."""
         goal = await self.goal_store.create(user_id, text, chat_id=chat_id)
+        request_id = request_reference(message_id) or goal.id
         event_fields = {
             "goal_id": goal.id,
             "user_id": user_id,
@@ -103,7 +105,7 @@ class GraphRuntime:
                     {
                         "executor": "langgraph",
                         "version": "1",
-                        "source_message_id": message_id,
+                        "request_id": request_id,
                     },
                     ensure_ascii=False,
                 ),
@@ -115,6 +117,7 @@ class GraphRuntime:
                 meta={
                     "executor": "langgraph",
                     "approval_token": approval_token or "",
+                    "request_id": request_id,
                 },
             )
         except Exception as error:
@@ -203,7 +206,7 @@ class GraphRuntime:
                         approval_token=token,
                         history=history,
                         chat_id=goal.chat_id,
-                        request_id=str(item.meta.get("source_message_id") or goal.id),
+                        request_id=self._request_id(goal),
                     ),
                     hitl=False,
                 )
@@ -276,6 +279,21 @@ class GraphRuntime:
                 f"assistant: {answer}"
             )
         return "\n\n".join(parts)[-12_000:]
+
+    @staticmethod
+    def _request_id(goal: Goal) -> str:
+        try:
+            plan = json.loads(goal.plan or "{}")
+            if isinstance(plan, dict):
+                request_id = plan.get("request_id")
+                if isinstance(request_id, str) and request_id:
+                    return request_id
+                source = plan.get("source_message_id")
+                if isinstance(source, str) and source:
+                    return request_reference(source)
+        except (ValueError, TypeError):
+            pass
+        return goal.id
 
     async def _fail_goal(self, goal_id: str, error: str) -> None:
         goal = await self.goal_store.get(goal_id)

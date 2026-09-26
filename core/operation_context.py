@@ -4,7 +4,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import hashlib
 from typing import Iterator
+
+
+def request_reference(source: str) -> str:
+    """Stable correlation without persisting card confirmation tokens in IDs."""
+    return hashlib.sha256(source.encode("utf-8")).hexdigest() if source else ""
 
 
 @dataclass(frozen=True)

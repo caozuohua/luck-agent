@@ -15,6 +15,9 @@ from core.graph.state import AgentState
 from core.supervisor import Supervisor
 from core.operation_context import OperationContext, operation_context
 from core.graph.contract import DECISION_FAIL
+from core.graph.contract import DECISION_DONE
+from core.capabilities import local_inventory_answer
+from tools.registry import ToolRegistry
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,11 @@ class GraphGoalExecutor:
             "final_answer": "",
             "is_goal_complete": False,
         }
+        if isinstance(self.tool_registry, ToolRegistry):
+            answer = local_inventory_answer(request.text, self.tool_registry)
+            if answer is not None:
+                return {**seed, "decision": DECISION_DONE, "final_answer": answer,
+                        "is_goal_complete": True}
         config = {
             "configurable": {
                 "thread_id": f"{request.user_id}:{request.goal_id}"

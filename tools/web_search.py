@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from tools.base import Tool, ToolResult
+from tools.base import Tool, ToolAvailability, ToolResult
 
 
 class WebSearchTool(Tool):
@@ -26,6 +26,11 @@ class WebSearchTool(Tool):
         "additionalProperties": False,
     }
     endpoint = "https://google.serper.dev/search"
+
+    def availability(self) -> ToolAvailability:
+        if not os.environ.get("SERPER_API_KEY", "").strip():
+            return ToolAvailability(False, "missing_SERPER_API_KEY")
+        return ToolAvailability()
 
     async def run(self, **kwargs: Any) -> ToolResult:
         return await self.search(

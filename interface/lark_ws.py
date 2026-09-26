@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.operation_context import OperationContext, operation_context, request_reference
+
 import asyncio
 import time
 from collections import OrderedDict
@@ -204,12 +206,13 @@ class LarkWebSocketInterface:
         response = None
         response_card: dict[str, Any] | None = None
         if self.quick_commands is not None:
-            response = await self.quick_commands.handle(
-                text,
-                user_id=user_id,
-                chat_id=chat_id,
-                approval_token=approval_token,
-            )
+            with operation_context(OperationContext(request_id=request_reference(message_id), chat_id=chat_id)):
+                response = await self.quick_commands.handle(
+                    text,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    approval_token=approval_token,
+                )
             if response is not None:
                 if isinstance(response, QuickCommandResult):
                     response_card = response.card

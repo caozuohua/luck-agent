@@ -10,6 +10,7 @@ from tools.base import Tool, ToolResult
 
 class WebSearchTool(Tool):
     name = "web_search"
+    effect = "read"
     description = (
         "Search the web using Serper.dev. Parameters: query (string), "
         "num_results (integer, default 5). Returns data as a list of "

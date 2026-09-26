@@ -28,6 +28,7 @@ class VpsSysopsResult:
     partial: bool = False
     output_pages: tuple[str, ...] = ()
     pages_complete: bool = True
+    execution_uncertain: bool = False
 
     @property
     def status(self) -> str:
@@ -46,6 +47,7 @@ class VpsSysopsResult:
             "output": self.output,
             "error": self.error,
             "returncode": self.returncode,
+            "execution_uncertain": self.execution_uncertain,
             "truncated": self.truncated,
             "target": self.target.as_dict() if self.target is not None else None,
         }
@@ -429,6 +431,7 @@ class VpsSysopsAdapter:
                 ok=False,
                 error=f"服务操作超时（>{self.timeout_seconds:g}s）",
                 target=target,
+                execution_uncertain=True,
             )
         except OSError as exc:
             return VpsSysopsResult(
@@ -450,6 +453,7 @@ class VpsSysopsAdapter:
             ok=returncode == 0,
             output=output,
             error="" if returncode == 0 else f"服务操作退出码 {returncode}",
+            execution_uncertain=returncode != 0,
             returncode=returncode,
             target=target,
             truncated=truncated,

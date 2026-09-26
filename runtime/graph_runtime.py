@@ -202,6 +202,8 @@ class GraphRuntime:
                         text=goal.raw_input,
                         approval_token=token,
                         history=history,
+                        chat_id=goal.chat_id,
+                        request_id=str(item.meta.get("source_message_id") or goal.id),
                     ),
                     hitl=False,
                 )

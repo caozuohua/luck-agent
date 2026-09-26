@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 
 from core.graph.contract import (
@@ -13,6 +14,7 @@ from core.graph.contract import (
 from core.output_parser import OutputParser, ParseError
 from core.supervisor import Supervisor
 from core.tool_executor import ToolExecutor
+from core.operation_context import current_operation, operation_context
 from langgraph.types import interrupt
 
 
@@ -96,12 +98,13 @@ async def executor_node(state: AgentState, *, tools: ToolExecutor) -> dict[str, 
             **state,
             "decision": DECISION_DONE if intent in ("CHAT", "DONE") else DECISION_FAIL,
         }
-    result = await tools.execute(
-        str(tc["name"]),
-        dict(tc.get("args", {})),
-        user_id=state.get("user_id", "default"),
-        approval_token=state.get("approval_token"),
-    )
+    with operation_context(replace(current_operation.get(), step_id=str(state.get("step_count", 0)))):
+        result = await tools.execute(
+            str(tc["name"]),
+            tc.get("args", {}),
+            user_id=state.get("user_id", "default"),
+            approval_token=state.get("approval_token"),
+        )
     rd = result.to_dict()
     scratchpad = list(state.get("scratchpad", []))
     scratchpad.append({"role": "observation", "content": json.dumps(rd, ensure_ascii=False)})
@@ -129,6 +132,13 @@ async def supervisor_node(
     `block` degrades to a clear FAIL answer instead of an empty reply.
     """
     parsed = state.get("last_parsed") or {}
+
+    # An approval or a model DONE must never turn an uncertain external write
+    # into a successful result. Reconciliation is a separate operation.
+    result_metadata = (state.get("last_tool_result") or {}).get("metadata") or {}
+    if result_metadata.get("execution_uncertain"):
+        return {**state, "decision": DECISION_FAIL, "is_goal_complete": False,
+                "final_answer": "操作结果尚未确认，已停止自动执行，请人工核对目标状态，避免重复操作。"}
 
     # Respect a terminal decision already set upstream (executor_node sets
     # DONE/FAIL when there was no tool_call to run).
@@ -163,7 +173,9 @@ async def supervisor_node(
     wrapped.ok = tr.get("status") == "ok"
     wrapped.error = tr.get("error")
     wrapped.hint = ""
-    wrapped.blocking = False
+    metadata = tr.get("metadata") or {}
+    wrapped.blocking = bool(metadata.get("blocking") or metadata.get("execution_uncertain")
+                            or metadata.get("permission_denied") or metadata.get("requires_approval"))
     wrapped.action = (parsed.get("tool_call") or {}).get("name", "")
 
     dec = supervisor.review_step_result(

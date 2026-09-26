@@ -329,6 +329,7 @@ def test_result_exposes_stable_status_and_secret_free_dict() -> None:
         "output": "readable logs",
         "error": "部分读取受限",
         "returncode": 123,
+        "execution_uncertain": False,
         "truncated": True,
         "target": None,
     }

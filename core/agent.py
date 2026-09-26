@@ -57,6 +57,7 @@ class MinimalAgent:
         approval_checker: Any | None = None,
         permission_checker: Any | None = None,
         audit_writer: Any | None = None,
+        operation_store: Any | None = None,
         result_summarizer: ResultSummarizer | None = None,
         history_summary: str = "",
         experience_patterns: list[Any] | None = None,
@@ -93,6 +94,7 @@ class MinimalAgent:
             approval_checker=approval_checker,
             permission_checker=permission_checker,
             audit_writer=audit_writer,
+            operation_store=operation_store,
         )
         self.result_summarizer = result_summarizer or ResultSummarizer()
         self.history_summary = history_summary

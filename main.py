@@ -25,6 +25,7 @@ from memory.context_store import ContextStore
 from memory.curator import Curator
 from memory.db import Database
 from memory.goal_store import GoalStore
+from memory.operation_store import OperationStore
 from memory.pattern_store import PatternStore
 from memory.proposal import MemoryProposalDetector
 from memory.scope_store import MemoryScopeStore
@@ -59,6 +60,7 @@ class Runtime:
         os.environ.setdefault("SHELL_MAX_OUTPUT_CHARS", str(settings.shell_max_output_chars))
         self.db = Database(settings.db_path)
         self.goal_store = GoalStore(self.db)
+        self.operation_store = OperationStore(self.db)
         self.pattern_store = PatternStore(self.db)
         self.context_store = ContextStore(self.db)
         # No provider endpoint configured -> offline fake client (local dev / CI).
@@ -109,6 +111,7 @@ class Runtime:
                 tool_name, args, user_id=user_id
             ),
             audit_writer=self.db.insert_operation_audit,
+            operation_store=self.operation_store,
         )
         self.health = HealthService(
             db=self.db,
@@ -165,6 +168,7 @@ class Runtime:
             timeout_seconds=settings.llm_timeout_seconds,
         )
         self.quick_commands = QuickCommandRouter(
+            operation_store=self.operation_store,
             health=self.health,
             vps=self.vps_status,
             sysops=self.vps_sysops,

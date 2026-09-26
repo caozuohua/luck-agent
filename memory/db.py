@@ -70,6 +70,29 @@ class Database:
                 created_at  INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS operation_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                goal_id TEXT NOT NULL DEFAULT '',
+                run_id TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL DEFAULT '',
+                tool_name TEXT NOT NULL,
+                argument_fingerprint TEXT NOT NULL,
+                may_have_effect INTEGER NOT NULL DEFAULT 1,
+                approved INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL,
+                error_class TEXT NOT NULL DEFAULT '',
+                metadata TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                started_at REAL,
+                finished_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_operation_attempts_goal
+                ON operation_attempts(goal_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_operation_attempts_operation
+                ON operation_attempts(operation_id, created_at);
+
             CREATE TABLE IF NOT EXISTS context_summaries (
                 id          TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,
@@ -127,10 +150,14 @@ class Database:
         )
         await conn.commit()
 
-    async def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> None:
+    async def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> int:
         conn = await self.connect()
-        await conn.execute(sql, parameters)
-        await conn.commit()
+        cursor = await conn.execute(sql, parameters)
+        try:
+            await conn.commit()
+            return cursor.rowcount
+        finally:
+            await cursor.close()
 
     async def fetchone(self, sql: str, parameters: tuple[Any, ...] = ()) -> aiosqlite.Row | None:
         conn = await self.connect()

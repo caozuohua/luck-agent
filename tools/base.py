@@ -52,6 +52,8 @@ class Tool(ABC):
     name: str = ""
     description: str = ""
     args_schema: dict[str, Any] = {}
+    # Unknown effects are treated conservatively during crash recovery.
+    effect: Literal["read", "write", "unknown"] = "unknown"
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult:

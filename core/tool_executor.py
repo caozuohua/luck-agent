@@ -11,6 +11,8 @@ from typing import Any
 from jsonschema.validators import validator_for
 
 from memory.pattern_store import pattern_outcome_from_data
+from memory.operation_store import OperationAttempt, OperationStore
+from core.operation_context import current_operation
 from core.output_parser import IntentType, OutputParser, ParseError
 from core.operation_policy import (
     operation_description,
@@ -37,6 +39,7 @@ class ToolExecutor:
         approval_checker: ApprovalChecker | None = None,
         permission_checker: PermissionChecker | None = None,
         audit_writer: AuditWriter | None = None,
+        operation_store: OperationStore | None = None,
     ) -> None:
         self.registry = registry
         self.timeout_seconds = timeout_seconds
@@ -44,6 +47,7 @@ class ToolExecutor:
         self.approval_checker = approval_checker
         self.permission_checker = permission_checker
         self.audit_writer = audit_writer
+        self.operation_store = operation_store
         self._pending_patterns: list[asyncio.Task[None]] = []
         self._pending_audits: list[asyncio.Task[None]] = []
 
@@ -54,6 +58,73 @@ class ToolExecutor:
         *,
         user_id: str = "",
         approval_token: str | None = None,
+    ) -> ToolResult:
+        if self.operation_store is None:
+            return await self._execute(tool_name, args, user_id=user_id, approval_token=approval_token)
+
+        normalized, normalized_args = tool_name, args
+        if isinstance(args, dict) or args is None:
+            normalized, normalized_args = self._normalize_tool_call(tool_name, args or {}, self.registry)
+        try:
+            tool = self.registry.get(normalized)
+        except ToolNotFoundError:
+            tool = None
+        try:
+            attempt = await self.operation_store.prepare(
+                context=current_operation.get(), user_id=user_id,
+                requested_tool=tool_name, tool_name=normalized,
+                arguments=normalized_args, schema=getattr(tool, "args_schema", {}),
+                may_have_effect=getattr(tool, "effect", "unknown") != "read",
+            )
+        except Exception:
+            return ToolResult.fail(
+                error="OPERATION_AUDIT_UNAVAILABLE", tool_name=normalized,
+                metadata={"blocking": True, "executed": False, "error_class": "audit_unavailable"},
+            )
+        try:
+            result = await self._execute(
+                tool_name, args, user_id=user_id, approval_token=approval_token, attempt=attempt,
+            )
+        except asyncio.CancelledError:
+            try:
+                await asyncio.wait_for(asyncio.shield(attempt.finish(
+                    state="unknown" if attempt.started else "cancelled", error_class="cancelled",
+                )), timeout=2)
+            except (Exception, asyncio.CancelledError):
+                pass  # The durable executing record remains unresolved.
+            raise
+        except Exception:
+            result = ToolResult.fail(
+                error="EXECUTION_OUTCOME_UNKNOWN" if attempt.started else "EXECUTION_REJECTED",
+                metadata={"blocking": True, "error_class": "internal"},
+            )
+        result.metadata.update({"attempt_id": attempt.attempt_id, "operation_id": attempt.operation_id})
+        uncertain = attempt.started and (
+            result.error in {"TIMEOUT_ERROR", "EXECUTION_OUTCOME_UNKNOWN"}
+            or result.metadata.get("execution_uncertain", False)
+        )
+        if uncertain:
+            result.metadata.update({"execution_uncertain": True, "blocking": True})
+        state = ("unknown" if uncertain else "returned_ok" if result.status == "ok"
+                 else "returned_error" if attempt.started else "rejected")
+        try:
+            await attempt.finish(state=state, error_class=str(result.metadata.get("error_class") or ""))
+        except Exception:
+            return ToolResult.fail(
+                error="OPERATION_RESULT_NOT_PERSISTED", tool_name=normalized,
+                metadata={"blocking": True, "execution_uncertain": attempt.started,
+                          "attempt_id": attempt.attempt_id, "operation_id": attempt.operation_id},
+            )
+        return result
+
+    async def _execute(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        user_id: str = "",
+        approval_token: str | None = None,
+        attempt: OperationAttempt | None = None,
     ) -> ToolResult:
         started_at = time.perf_counter()
         args = {} if args is None else args
@@ -151,6 +222,14 @@ class ToolExecutor:
                 ).with_timing(started_at)
                 self._schedule_pattern(tool_name, args, result, user_id=user_id)
                 return result
+        if attempt is not None:
+            try:
+                await attempt.executing(approved=audited_operation is not None)
+            except Exception:
+                return ToolResult.fail(
+                    error="OPERATION_AUDIT_UNAVAILABLE", tool_name=tool_name,
+                    metadata={"blocking": True, "executed": False, "execution_uncertain": True},
+                )
         try:
             result = await asyncio.wait_for(
                 self._run_tool(tool, args),
@@ -168,6 +247,7 @@ class ToolExecutor:
             result = ToolResult.fail(
                 error=str(exc) or exc.__class__.__name__,
                 tool_name=tool_name,
+                metadata={"execution_uncertain": True, "error_class": type(exc).__name__},
             ).with_timing(started_at)
             self._schedule_result_audit(user_id, tool_name, audited_operation, result)
             self._schedule_pattern(tool_name, args, result, user_id=user_id)

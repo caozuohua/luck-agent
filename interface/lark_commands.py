@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import inspect
+import uuid
 import re
 import secrets
 import time
@@ -9,6 +12,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from core.log import get_logger
+from core.operation_context import OperationContext, current_operation, operation_context
+from memory.operation_store import OperationStore
 from core.operation_policy import OperationPermissionPolicy
 from core.services import (
     SERVICE_CATALOG,
@@ -167,6 +172,7 @@ class QuickCommandRouter:
         new_api_target_id: str = "",
         approval_checker: ApprovalChecker | None = None,
         audit_writer: AuditWriter | None = None,
+        operation_store: OperationStore | None = None,
         lark_platform: LarkPlatformProvider | None = None,
         lark_oauth: LarkOAuthProvider | None = None,
     ) -> None:
@@ -184,6 +190,7 @@ class QuickCommandRouter:
         self.new_api_target_id = new_api_target_id.strip().lower()
         self.approval_checker = approval_checker
         self.audit_writer = audit_writer
+        self.operation_store = operation_store
         self.lark_platform = lark_platform
         self.lark_oauth = lark_oauth
         self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
@@ -198,6 +205,14 @@ class QuickCommandRouter:
         user_id: str = "default",
         chat_id: str = "",
         approval_token: str | None = None,
+    ) -> str | QuickCommandResult | None:
+        with operation_context(OperationContext(
+            request_id=uuid.uuid4().hex, run_id=uuid.uuid4().hex, chat_id=chat_id,
+        )):
+            return await self._handle(text, user_id=user_id, chat_id=chat_id, approval_token=approval_token)
+
+    async def _handle(
+        self, text: str, *, user_id: str, chat_id: str, approval_token: str | None,
     ) -> str | QuickCommandResult | None:
         raw_command = " ".join(text.strip().split())
         command = raw_command.lower()
@@ -1213,6 +1228,16 @@ class QuickCommandRouter:
                 f"当前选择为 `{target_id}`，请先切换目标"
             )
         args = {"target": target_id, "service": service, "operation": operation}
+        attempt = None
+        if self.operation_store is not None:
+            try:
+                attempt = await self.operation_store.prepare(
+                    context=current_operation.get(), user_id=user_id,
+                    requested_tool=f"service_{operation}", tool_name=f"service_{operation}",
+                    arguments=args, may_have_effect=True,
+                )
+            except Exception:
+                return "⚠️ 操作记录不可用，未执行操作"
         try:
             approved = self.approval_checker(
                 user_id,
@@ -1231,15 +1256,41 @@ class QuickCommandRouter:
             details="approval_token_present=true",
         )
         if not approved:
+            if attempt is not None:
+                try:
+                    await attempt.finish(state="rejected", error_class="approval_required")
+                except Exception:
+                    return "⚠️ 操作记录不可用，未执行操作"
             return f"⛔ {operation_label}确认码无效、过期或与目标/服务不匹配"
-        try:
+        if attempt is not None:
             try:
-                result = await execute(service, user_id=user_id)
-            except TypeError as exc:
-                if "user_id" not in str(exc):
-                    raise
-                result = await execute(service)
+                await attempt.executing(approved=True)
+            except Exception:
+                return "⚠️ 操作记录不可用，未执行操作"
+        try:
+            # Select the compatibility signature before invocation. Retrying a
+            # TypeError after invoking a write may repeat an external effect.
+            try:
+                inspect.signature(execute).bind(service, user_id=user_id)
+                supports_user = True
+            except TypeError:
+                supports_user = False
+            result = await execute(service, **({"user_id": user_id} if supports_user else {}))
+        except asyncio.CancelledError:
+            if attempt is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(attempt.finish(
+                        state="unknown", error_class="cancelled",
+                    )), timeout=2)
+                except (Exception, asyncio.CancelledError):
+                    pass
+            raise
         except Exception as exc:
+            if attempt is not None:
+                try:
+                    await attempt.finish(state="unknown", error_class=type(exc).__name__)
+                except Exception:
+                    pass
             await self._audit_service_operation(
                 user_id=user_id,
                 service=service,
@@ -1248,7 +1299,16 @@ class QuickCommandRouter:
                 decision="executed",
                 details=f"status=error error={str(exc)[:240]}",
             )
-            return f"⚠️ 服务{operation_label}执行失败"
+            return f"⚠️ 服务{operation_label}执行失败，结果尚未确认，请人工核对，勿直接重复操作"
+        if attempt is not None:
+            try:
+                await attempt.finish(state=("unknown" if getattr(result, "execution_uncertain", False)
+                                            else "returned_ok" if getattr(result, "ok", False)
+                                            else "returned_error"))
+            except Exception:
+                return "⚠️ 操作结果未能持久化，结果尚未确认，请人工核对，勿直接重复操作"
+        if getattr(result, "execution_uncertain", False):
+            return f"⚠️ 服务{operation_label}结果尚未确认，请人工核对，勿直接重复操作"
         await self._audit_service_operation(
             user_id=user_id,
             service=service,

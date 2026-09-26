@@ -7,11 +7,14 @@ running the graph, and returning its state to the caller.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import uuid
 from typing import Any
 
 from core.graph.engine import run_graph
 from core.graph.state import AgentState
 from core.supervisor import Supervisor
+from core.operation_context import OperationContext, operation_context
+from core.graph.contract import DECISION_FAIL
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,8 @@ class GraphExecutionRequest:
     text: str
     approval_token: str | None = None
     history: str = ""
+    chat_id: str = ""
+    request_id: str = ""
 
 
 class GraphGoalExecutor:
@@ -69,6 +74,26 @@ class GraphGoalExecutor:
         hitl: bool = False,
     ) -> AgentState:
         """Run one graph invocation and return the final graph state."""
+        context = OperationContext(
+            goal_id=request.goal_id, request_id=request.request_id or request.goal_id,
+            run_id=uuid.uuid4().hex, chat_id=request.chat_id,
+        )
+        with operation_context(context):
+            store = getattr(self.tool_executor, "operation_store", None)
+            if store is not None:
+                try:
+                    unresolved = await store.unresolved_writes(request.goal_id)
+                except Exception:
+                    return {"decision": DECISION_FAIL, "is_goal_complete": False,
+                            "final_answer": "操作记录不可用，已停止执行，请人工检查。"}
+                if unresolved:
+                    return {"decision": DECISION_FAIL, "is_goal_complete": False,
+                            "final_answer": "此前操作的副作用尚未确认，已停止自动执行，请人工核对目标状态。"}
+            return await self._execute_graph(request, hitl=hitl)
+
+    async def _execute_graph(
+        self, request: GraphExecutionRequest, *, hitl: bool,
+    ) -> AgentState:
         seed: AgentState = {
             "goal": request.text,
             "user_id": request.user_id,

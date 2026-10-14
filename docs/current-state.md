@@ -64,10 +64,9 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维与手机端个人工作/
 进程。Azure 上的 `transparent-agent`、多个工作目录和 GCP/Azure 上的代码仓库属于项目资产，当前没有发现
 对应的 active 业务 systemd 服务，不能仅凭目录把它们列为在线服务。
 
-目前 Luck Agent 的 `/vps service list` 仍是“受控操作目录”，不是三台 VPS 的完整资产目录：已覆盖 Luck Agent、
-new-api、A2A、Hermes Gateway、Mem0 等关键入口，但尚未完整呈现 GCP 的 Nginx/Xray/x-ui、三台的监控/备份
-timer、Docker/Compose 组件和服务依赖关系。后续应先补齐只读资产发现，再逐项决定是否开放操作，不应直接为
-每个发现的服务增加 restart 权限。
+Luck Agent 已将 `/vps service list|assets` 从受控操作目录扩展为三台 VPS 的只读资产目录：除 Luck Agent、
+new-api、A2A、Hermes Gateway、Mem0 等关键入口外，也呈现 GCP 的 Nginx/Xray/x-ui、监控/备份 timer、
+Docker/Compose 组件和服务依赖关系。资产发现与操作 allowlist 保持分离；新增资产不会自动获得 restart/backup 权限。
 
 当前测试目标 Bot：`cli_aaba382935b8de18`。
 
@@ -225,19 +224,40 @@ Lark 卡片 → 选择云厂商/账号/实例 → 权限与参数校验 → 直�
 
 Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历、私信和个人任务时，应单独设计 User OAuth 与权限范围。平台 API 只围绕真实使用场景按需接入，lark-cli 作为候选平台工具层，暂不进入核心运维控制面。
 
+## 三台 VPS 只读服务资产目录
+
+已接入 `core.services.SERVICE_ASSET_CATALOG` 和 `/vps service list|assets`。目录按目标分组，覆盖已核验的业务服务、
+systemd/用户级 systemd、Docker/Compose 组件、监听端口与访问边界、健康检查、依赖、日志入口、备份关系和变更边界。
+目录基线日期为 2026-08-24；`/vps services` 继续用于当前选中目标的实时服务检查。
+
+资产目录与变更契约分离：资产发现不会登记新的 restart/backup。当前仍只保留既有的 Luck Agent、new-api、A2A
+和 Azure-only Hermes Gateway restart，以及 GCP new-api scoped backup；其他资产明确标注为只读或暂无受控变更入口。
+
+## P0 工作纪要与 Idea 捕获
+
+已开始按路线实现第一切片：`controllers/capture.py` 提供确定性工作纪要/Idea 初筛、摘要、决定、行动项和待跟进
+字段；Lark 收到匹配消息后展示未保存草稿卡，用户可点击“确认保存”或回复 `确认保存 TOKEN`，确认后按
+`user_id + chat_id` 写入 SQLite `captures` 表。放弃、过期、错误会降级处理；未确认不会调用 Agent、Mem0、Bitable、
+Docx、日历或 VPS 工具。
+
+已增加 `/capture list [all|work|idea]` 与 `/capture get CAPTURE_ID`：只读取当前 `user_id + chat_id` 最近捕获，
+最多 10 条，使用短 ID 前缀定位详情，不接受用户或会话参数，也不提供 edit/delete。
+
+当前剩余验收：真实 Lark 草稿卡、确认保存、回顾/详情链路，以及对确定性初筛误判的线上观察。P0 当前阶段完成前
+不扩展外部写入和新的运维变更权限。
+
 ## 当前待办与阻塞项
 
-1. 三台 VPS 的只读服务资产目录尚未完整接入 `/vps service list`；优先补齐服务、运行方式、端口、健康检查、依赖和备份信息，再决定变更入口。
-2. P0 场景工作纪要和 Idea 快速捕获尚未实现为一等意图；需要先定义消息输入、结构化结果、确认保存和回顾体验，同时抽象可复用的统一入口路由。
-3. P1 场景日程/提醒、英语学习和 Agent 学习尚未形成完整闭环；优先复用 SQLite、现有记忆和 Lark 卡片，避免过早扩大平台权限。
-4. P2 个人博客草稿/预览/发布链路尚未实现；外部发布必须保持独立确认和可追踪结果。
-5. `/lark wiki records` 已完成代码和脱敏边界，但尚待用户方便操作浏览器时完成真实 Lark 消息验收。
-6. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前已开放 `luck-agent`、
+1. 完成 P0 草稿、确认保存、回顾/详情的真实 Lark 验收；当前不扩大外部写入权限。
+2. P1 场景日程/提醒、英语学习和 Agent 学习尚未形成完整闭环；优先复用 SQLite、现有记忆和 Lark 卡片，避免过早扩大平台权限。
+3. P2 个人博客草稿/预览/发布链路尚未实现；外部发布必须保持独立确认和可追踪结果。
+4. `/lark wiki records` 已完成代码和脱敏边界，但尚待用户方便操作浏览器时完成真实 Lark 消息验收。
+5. 其他服务的变更入口仍需逐项定义固定入口、回滚策略和验收测试；当前已开放 `luck-agent`、
    `new-api` restart/backup、`a2a` 和 Azure-only `hermes-gateway`；new-api restore/upgrade 仍未开放。
-7. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
+6. 目标选择、确认卡目标展示和 `new-api` 的 GCP 目标绑定已完成；后续可将卡片选择改为选择
    后立即落库，消除“选择后尚未发送下一条消息时进程重启”的极小窗口。
-8. 统一入口的意图注册、场景路由和可扩展能力边界尚未固化；需要避免每增加一个场景就新增一套交互协议。
-9. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
+7. 统一入口的意图注册、场景路由和可扩展能力边界尚未固化；需要避免每增加一个场景就新增一套交互协议。
+8. 旧 SPEC、DOCX 手册和 `docs/superpowers/` 仍保留历史设计，但已不作为当前事实来源；兼容代码进入观察期，满足条件后再删除。
 
 ## 实施顺序
 
@@ -248,7 +268,7 @@ Bot 身份用于公共团队资源和消息卡片；涉及个人邮件、日历�
 3. 核验并启用生产用户级运维白名单（已完成）；
 4. 增加并验收一个固定入口、可回滚的低风险服务变更（已完成）；
 5. 清理或隔离 legacy runtime 与历史文档（已完成隔离，进入观察期）；
-6. 补齐三台 VPS 只读服务资产目录和依赖关系；
-7. 实现 P0 工作纪要和 Idea 快速捕获闭环；
+6. 完成 P0 草稿、确认保存、回顾/详情的真实 Lark 验收，并观察初筛误判；
+7. 观察只读资产目录的真实运行态漂移，并按需补充固定只读探针；
 8. 依次实现提醒/英语学习、Agent 学习和个人博客场景，再按场景补齐平台写入能力；
 9. 基于真实使用反馈持续扩展个人工作、生活意图，保持统一入口和一致的低复杂度交互。

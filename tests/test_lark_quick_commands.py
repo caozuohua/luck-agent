@@ -4,6 +4,7 @@ import asyncio
 
 from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
+from controllers.capture import CaptureService
 from interface.lark_approval import LarkApprovalManager
 from interface.lark_commands import QuickCommandResult, QuickCommandRouter
 from interface.lark_platform import (
@@ -534,6 +535,25 @@ async def test_service_catalog_routes_mem0_and_host_services() -> None:
     assert "gcp-free-vps-oregon" in _text(catalog)
     assert "延迟：4 ms" in _text(await router.handle("/vps service mem0 status"))
     assert "checked services" in _text(await router.handle("/vps service a2a status"))
+
+
+async def test_service_assets_alias_exposes_three_vps_read_only_inventory() -> None:
+    router = QuickCommandRouter(
+        health=FakeHealth(),
+        vps=FakeVps(),
+        sysops=FakeSysops(),
+        mem0=FakeMem0(),
+    )
+
+    result = await router.handle("/vps service assets")
+
+    text = _text(result)
+    assert "gcp-free-vps-oregon" in text
+    assert "az-free-vm" in text
+    assert "aws-codex-vps" in text
+    assert "x-ui" in text
+    assert "Mem0 PostgreSQL 每日备份" in text
+    assert "目录发现不会新增 restart/backup 权限" in text
 
 
 async def test_lark_chat_is_a_read_only_platform_command() -> None:
@@ -1093,6 +1113,77 @@ async def test_lark_memory_proposal_never_calls_agent_or_mem0() -> None:
     button = sender.cards[-1]["body"]["elements"][-1]["columns"][0]["elements"][0]
     assert button["text"]["content"] == "发起保存确认"
     assert button["behaviors"][0]["value"]["action"] == "memory_save_proposal"
+
+
+async def test_lark_capture_draft_never_calls_agent_before_confirmation(tmp_path) -> None:
+    db = Database(tmp_path / "capture.db")
+    await db.initialize()
+    try:
+        agent = FakeAgent()
+        sender = FakeSender()
+        interface = LarkWebSocketInterface(
+            agent=agent,
+            sender=sender,
+            capture_service=CaptureService(db),
+        )
+
+        processed = await interface.handle_message(
+            {
+                "message_id": "capture-1",
+                "chat_id": "chat-1",
+                "user_id": "alice",
+                "text": "Idea：把想法做成一键保存",
+            }
+        )
+
+        assert processed is True
+        assert agent.calls == []
+        assert (
+            sender.cards[-1]["body"]["elements"][-1]["columns"][0]
+            ["elements"][0]["text"]["content"]
+            == "确认保存"
+        )
+        assert await db.fetchall("SELECT id FROM captures") == []
+    finally:
+        await db.close()
+
+
+async def test_capture_list_and_get_are_scoped_read_only_commands(tmp_path) -> None:
+    db = Database(tmp_path / "capture-list.db")
+    await db.initialize()
+    try:
+        service = CaptureService(db)
+        draft = service.detect("Idea：增加当前会话回顾")
+        assert draft is not None
+        pending = service.issue(user_id="alice", chat_id="chat-1", draft=draft)
+        saved = await service.save(pending)
+        router = QuickCommandRouter(
+            health=FakeHealth(),
+            vps=FakeVps(),
+            capture_service=service,
+        )
+
+        listed = await router.handle(
+            "/capture list idea",
+            user_id="alice",
+            chat_id="chat-1",
+        )
+        detail = await router.handle(
+            f"/capture get {saved.capture_id[:8]}",
+            user_id="alice",
+            chat_id="chat-1",
+        )
+        other_chat = await router.handle(
+            "/capture list",
+            user_id="alice",
+            chat_id="chat-2",
+        )
+
+        assert saved.capture_id[:8] in _text(listed)
+        assert "增加当前会话回顾" in _text(detail)
+        assert "还没有已保存" in _text(other_chat)
+    finally:
+        await db.close()
 
 
 async def test_memory_proposal_button_starts_confirmation_without_typing_save_command() -> None:

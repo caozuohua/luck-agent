@@ -45,7 +45,7 @@ class FakeAsyncClient:
 async def test_mem0_health_and_search(monkeypatch: Any) -> None:
     FakeAsyncClient.requests = []
     FakeAsyncClient.responses = [
-        FakeResponse({"openapi": "3.1.0"}),
+        FakeResponse({"status": "ok"}),
         FakeResponse({"results": [{"id": "m1", "memory": "AWS"}]}),
     ]
     monkeypatch.setattr("tools.mem0_client.httpx.AsyncClient", FakeAsyncClient)
@@ -60,6 +60,7 @@ async def test_mem0_health_and_search(monkeypatch: Any) -> None:
     results = await client.search("AWS")
 
     assert health.ok is True
+    assert FakeAsyncClient.requests[0]["url"].endswith("/health")
     assert results[0]["memory"] == "AWS"
     assert FakeAsyncClient.requests[1]["headers"] == {"X-API-Key": "secret"}
     assert FakeAsyncClient.requests[1]["json"]["filters"] == {
@@ -177,6 +178,25 @@ async def test_mem0_smoke_deletes_only_added_ids(monkeypatch: Any) -> None:
 
     assert result.added == 1
     assert result.found == 1
+    assert result.deleted == 1
+    assert result.cleanup_confirmed is True
+    assert FakeAsyncClient.requests[0]["json"]["infer"] is True
+    assert FakeAsyncClient.requests[-1]["url"].endswith("/memories/m1")
+
+
+async def test_mem0_smoke_cleans_up_when_search_fails(monkeypatch: Any) -> None:
+    FakeAsyncClient.requests = []
+    FakeAsyncClient.responses = [
+        FakeResponse({"results": [{"id": "m1", "memory": "marker"}]}),
+        FakeResponse({}, status_code=500),
+        FakeResponse({}),
+    ]
+    monkeypatch.setattr("tools.mem0_client.httpx.AsyncClient", FakeAsyncClient)
+    client = Mem0Client(base_url="http://mem0:8888", api_key="secret")
+
+    result = await client.smoke()
+
+    assert result.ok is False
     assert result.deleted == 1
     assert result.cleanup_confirmed is True
     assert FakeAsyncClient.requests[-1]["url"].endswith("/memories/m1")

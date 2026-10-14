@@ -2,7 +2,44 @@ from __future__ import annotations
 
 import pytest
 
-from core.services import SERVICE_OPERATIONS, get_service_operation
+from core.services import (
+    SERVICE_ASSET_CATALOG,
+    SERVICE_OPERATIONS,
+    format_service_asset_catalog,
+    get_service_assets,
+    get_service_operation,
+)
+
+
+def test_read_only_asset_catalog_covers_all_three_targets() -> None:
+    assert {asset.target_id for asset in SERVICE_ASSET_CATALOG} == {
+        "gcp-free-vps-oregon",
+        "az-free-vm",
+        "aws-codex-vps",
+    }
+    rendered = format_service_asset_catalog()
+    for marker in (
+        "x-ui",
+        "Nginx",
+        "Docker Compose",
+        "Mem0 PostgreSQL 每日备份",
+        "暂无受控 restart/backup",
+    ):
+        assert marker in rendered
+
+
+def test_asset_allowlist_reuses_existing_service_identity() -> None:
+    assets = get_service_assets(allowed={"mem0"})
+
+    assert assets
+    assert {asset.target_id for asset in assets} == {"aws-codex-vps"}
+    assert {asset.access_service_id for asset in assets} == {"mem0"}
+
+
+def test_inventory_does_not_register_new_mutations() -> None:
+    assert get_service_operation("x-ui", "restart") is None
+    assert get_service_operation("nginx", "backup") is None
+    assert get_service_operation("mem0-postgres", "restart") is None
 
 
 def test_registered_mutations_have_fixed_entrypoint_rollback_and_verification() -> None:

@@ -86,12 +86,12 @@ class Mem0Client:
     async def health(self) -> Mem0Health:
         started = time.perf_counter()
         try:
-            response = await self._request("GET", "/openapi.json", authenticated=False)
+            response = await self._request("GET", "/health", authenticated=False)
             response.raise_for_status()
             return Mem0Health(
                 ok=True,
                 latency_ms=_elapsed_ms(started),
-                detail="openapi reachable",
+                detail="service and storage ready",
             )
         except (httpx.HTTPError, Mem0ClientError) as exc:
             return Mem0Health(
@@ -208,12 +208,15 @@ class Mem0Client:
                 detail="MEM0_API_KEY 未配置",
             )
 
+        added_items: list[dict[str, Any]] = []
+        added_ids: list[str] = []
+        found: list[dict[str, Any]] = []
         try:
             added_payload = await self.add(
-                f"Temporary connectivity marker: {marker}",
+                f"My preferred project codename is {marker}; use it in all future reports.",
                 run_id=marker,
                 metadata={"source": "luck-agent-smoke", "ephemeral": True},
-                infer=False,
+                infer=True,
                 actor_id=actor_id,
                 project_id=project_id,
             )
@@ -225,26 +228,66 @@ class Mem0Client:
                 actor_id=actor_id,
                 project_id=project_id,
             )
-            deleted = 0
-            for memory_id in added_ids:
+            deleted, cleanup_errors = await self._cleanup_smoke_ids(
+                added_ids,
+                actor_id=actor_id,
+                project_id=project_id,
+            )
+            cleanup_confirmed = bool(added_ids) and deleted == len(added_ids)
+            return Mem0SmokeResult(
+                ok=(
+                    cleanup_confirmed
+                    and bool(added_items)
+                    and any(marker in _item_text(item) for item in found)
+                ),
+                marker=marker,
+                added=len(added_items),
+                found=len(found),
+                deleted=deleted,
+                cleanup_confirmed=cleanup_confirmed,
+                detail=(
+                    "; ".join(cleanup_errors)
+                    if cleanup_errors
+                    else "" if cleanup_confirmed else "未能确认临时记录已清理"
+                ),
+            )
+        except (httpx.HTTPError, Mem0ClientError, KeyError, TypeError, ValueError) as exc:
+            deleted, cleanup_errors = await self._cleanup_smoke_ids(
+                added_ids,
+                actor_id=actor_id,
+                project_id=project_id,
+            )
+            details = [str(exc) or type(exc).__name__, *cleanup_errors]
+            return Mem0SmokeResult(
+                ok=False,
+                marker=marker,
+                added=len(added_items),
+                found=len(found),
+                deleted=deleted,
+                cleanup_confirmed=bool(added_ids) and deleted == len(added_ids),
+                detail="; ".join(details),
+            )
+
+    async def _cleanup_smoke_ids(
+        self,
+        memory_ids: list[str],
+        *,
+        actor_id: str,
+        project_id: str | None,
+    ) -> tuple[int, list[str]]:
+        deleted = 0
+        errors: list[str] = []
+        for memory_id in memory_ids:
+            try:
                 await self.delete(
                     memory_id,
                     actor_id=actor_id,
                     project_id=project_id,
                 )
                 deleted += 1
-            cleanup_confirmed = bool(added_ids) and deleted == len(added_ids)
-            return Mem0SmokeResult(
-                ok=bool(added_items) and any(marker in _item_text(item) for item in found),
-                marker=marker,
-                added=len(added_items),
-                found=len(found),
-                deleted=deleted,
-                cleanup_confirmed=cleanup_confirmed,
-                detail="" if cleanup_confirmed else "未能确认临时记录已清理",
-            )
-        except (httpx.HTTPError, Mem0ClientError, KeyError, TypeError, ValueError) as exc:
-            return Mem0SmokeResult(ok=False, marker=marker, detail=str(exc))
+            except (httpx.HTTPError, Mem0ClientError) as exc:
+                errors.append(f"清理 {memory_id} 失败: {str(exc) or type(exc).__name__}")
+        return deleted, errors
 
     def _remember_visible_ids(
         self,

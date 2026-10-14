@@ -11,11 +11,14 @@ from interface.lark_approval import LarkApprovalManager, PendingApproval
 from interface.lark_cards import (
     build_assistant_result_card,
     build_approval_card,
+    build_capture_draft_card,
+    build_capture_saved_card,
     build_goal_result_card,
     build_memory_proposal_card,
 )
 from interface.lark_commands import QuickCommandResult
 from memory.proposal import MemoryProposalDetector
+from controllers.capture import CaptureService, PendingCapture
 from runtime.contracts import RuntimeHandleResult
 
 log = get_logger("interface.lark_ws")
@@ -112,6 +115,7 @@ class LarkWebSocketInterface:
         access_policy: LarkAccessPolicy | None = None,
         approval_manager: LarkApprovalManager | None = None,
         memory_proposer: MemoryProposalDetector | None = None,
+        capture_service: CaptureService | None = None,
         deduper: LarkMessageDeduper | None = None,
         reconnect_delay_seconds: float = 3.0,
         heartbeat_timeout_seconds: float = 60.0,
@@ -123,6 +127,7 @@ class LarkWebSocketInterface:
         self.access_policy = access_policy
         self.approval_manager = approval_manager
         self.memory_proposer = memory_proposer
+        self.capture_service = capture_service
         self.deduper = deduper or LarkMessageDeduper(ttl_seconds=60)
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
@@ -200,6 +205,33 @@ class LarkWebSocketInterface:
                     build_memory_proposal_card(proposal.content, reason=proposal.reason),
                 )
                 log.info("lark_memory_proposal_presented", user_id=user_id, chat_id=chat_id)
+                return True
+        if approved is None and self.capture_service is not None:
+            capture_command = await self._handle_capture_command(
+                text,
+                user_id=user_id,
+                chat_id=chat_id,
+            )
+            if capture_command is not None:
+                await self.sender.send_card(chat_id, capture_command)
+                return True
+            draft = self.capture_service.detect(text)
+            if draft is not None:
+                pending = self.capture_service.issue(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    draft=draft,
+                )
+                await self.sender.send_card(
+                    chat_id,
+                    build_capture_draft_card(draft, token=pending.token),
+                )
+                log.info(
+                    "lark_capture_draft_presented",
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    kind=draft.kind,
+                )
                 return True
         response = None
         response_card: dict[str, Any] | None = None
@@ -283,6 +315,37 @@ class LarkWebSocketInterface:
         action_tag = str(action.get("tag") or "")
         if action_tag == "button":
             raw_value = action.get("value")
+            if isinstance(raw_value, dict) and raw_value.get("action") in {
+                "capture_save",
+                "capture_discard",
+            }:
+                if self.capture_service is None:
+                    return {"toast": {"type": "error", "content": "当前未启用捕获保存"}}
+                token = str(raw_value.get("token") or "").strip()
+                if raw_value.get("action") == "capture_discard":
+                    discarded = self.capture_service.discard(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        token=token,
+                    )
+                    return {
+                        "toast": {
+                            "type": "success" if discarded else "warning",
+                            "content": "已放弃草稿" if discarded else "草稿已失效",
+                        }
+                    }
+                loop = self._application_loop
+                if loop is None or loop.is_closed():
+                    return {"toast": {"type": "error", "content": "保存通道未就绪，请回复确认码"}}
+                pending = self.capture_service.take(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    token=token,
+                )
+                if pending is None:
+                    return {"toast": {"type": "error", "content": "草稿已失效或不属于当前会话"}}
+                loop.call_soon_threadsafe(self._schedule_capture_save, pending)
+                return {"toast": {"type": "success", "content": "已确认，正在保存"}}
             if isinstance(raw_value, dict) and raw_value.get("action") in {
                 "approval_confirm",
                 "approval_cancel",
@@ -410,6 +473,78 @@ class LarkWebSocketInterface:
         if self.approval_manager.has_pending(user_id=user_id, token=normalized):
             return self.approval_manager.confirm(user_id=user_id, token=normalized)
         return None
+
+    async def _handle_capture_command(
+        self,
+        text: str,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> dict[str, Any] | None:
+        normalized = " ".join(str(text or "").strip().split())
+        lowered = normalized.lower()
+        prefixes = ("确认保存 ", "/capture save ", "capture save ")
+        discard_prefixes = ("放弃保存 ", "/capture discard ", "capture discard ")
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                token = normalized[len(prefix) :].strip().strip("`")
+                pending = self.capture_service.take(  # type: ignore[union-attr]
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    token=token,
+                )
+                if pending is None:
+                    return self.build_card("⚠️ 草稿已失效或不属于当前会话")
+                try:
+                    saved = await self.capture_service.save(pending)  # type: ignore[union-attr]
+                except Exception:
+                    log.exception("lark_capture_save_failed", user_id=user_id, chat_id=chat_id)
+                    return self.build_card("❌ 草稿保存失败，请稍后重试")
+                return build_capture_saved_card(saved)
+        for prefix in discard_prefixes:
+            if lowered.startswith(prefix):
+                token = normalized[len(prefix) :].strip().strip("`")
+                discarded = self.capture_service.discard(  # type: ignore[union-attr]
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    token=token,
+                )
+                return self.build_card("✅ 已放弃草稿" if discarded else "⚠️ 草稿已失效")
+        return None
+
+    def _schedule_capture_save(self, pending: PendingCapture) -> None:
+        if self.capture_service is None:
+            return
+        try:
+            loop = self._application_loop or asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("lark_capture_save_skipped", reason="event_loop_unavailable")
+            return
+        if loop.is_closed():
+            log.warning("lark_capture_save_skipped", reason="event_loop_closed")
+            return
+
+        async def save_and_notify() -> None:
+            try:
+                saved = await self.capture_service.save(pending)
+                await self.sender.send_card(
+                    pending.chat_id,
+                    build_capture_saved_card(saved),
+                )
+            except Exception:
+                log.exception(
+                    "lark_capture_save_failed",
+                    user_id=pending.user_id,
+                    chat_id=pending.chat_id,
+                )
+                await self.sender.send_card(
+                    pending.chat_id,
+                    self.build_card("❌ 草稿保存失败，请稍后重试"),
+                )
+
+        task = asyncio.create_task(save_and_notify(), name="lark-capture-save")
+        self._active_handlers.add(task)
+        task.add_done_callback(self._active_handlers.discard)
 
     def build_card(self, text: str) -> dict[str, Any]:
         return build_assistant_result_card(text)

@@ -79,8 +79,7 @@ Luck Agent 是基于 Lark 国际版的多云 VPS 运维助手和 Lark 平台助�
 三台 VPS 的服务资产必须以实际运行态为准进行盘点，至少覆盖 systemd/用户级 systemd、Docker Compose、
 监听端口、健康检查、依赖、日志和备份关系。当前已确认 GCP 包含 Hermes Gateway、Hermes A2A Bridge、
 new-api、x-ui、Xray、Nginx；Azure 主要包含用户级 Hermes Gateway/A2A；AWS 包含 Luck Agent 和 Mem0
-API、Dashboard、PostgreSQL 三容器栈。该清单仍需在只读资产发现能力中固化，不能把当前几个可变更服务误认为
-完整服务目录。
+API、Dashboard、PostgreSQL 三容器栈。该清单已固化为只读资产目录，后续仅观察运行态漂移和补充固定只读探针。
 
 ## 3. 已完成基线
 
@@ -272,6 +271,27 @@ scope 交换失败。阶段五的 Wiki/Docx/Bitable 第一批只读链路已闭�
 
 每个场景都必须有：手机端最短输入路径、用户级/会话级隔离、失败降级、可观察日志和真实 Lark 验收。
 
+三台 VPS 只读服务资产目录已接入 `/vps service list|assets`：按 GCP、Azure、AWS 分组展示已核验的业务服务、
+systemd/用户级 systemd、Docker/Compose、端口边界、健康检查、依赖、日志、备份关系和现有变更边界。资产目录
+与 `SERVICE_OPERATIONS` 分离，不因发现新服务而增加 restart/backup 权限；实时状态仍使用 `/vps services` 和固定探针。
+
+### 当前路线决策（2026-08-24）
+
+资产目录阶段视为完成，进入线上漂移观察，不再把“发现更多服务”作为扩大运维权限的理由。当前主线切换到
+P0「工作纪要 + Idea 快速捕获」：先交付低复杂度、可确认、可回顾的手机端捕获闭环，再按真实使用反馈扩展
+日程、英语学习、Agent 学习和博客。
+
+P0 第一切片目标是：
+
+```text
+一条 Lark 消息 → 识别工作纪要/Idea → 生成结构化草稿卡 → 用户确认 → 按 user_id + chat_id 保存 SQLite
+```
+
+当前切片只允许确定性初筛、草稿展示和显式确认保存；不自动写入 Mem0、Bitable、Docx、日历，不调用 VPS
+工具，也不新增任何 restart/backup 权限。完成标准为：离线测试、用户/会话隔离、确认/放弃/过期路径、失败降级和
+真实 Lark 卡片验收全部通过。当前已补齐 `/capture list [all|work|idea]` 与 `/capture get CAPTURE_ID` 两个当前会话
+只读回顾入口，不提供 edit/delete；下一步完成真实 Lark 验收和误判观察，最后才评估外部资料沉淀。
+
 涉及个人邮件、日历、私信和个人任务时，单独设计 User OAuth，不直接扩大
 Bot 身份权限。
 
@@ -308,8 +328,8 @@ Bot 身份权限。
 3. 核验操作者 `open_id` 并评估生产用户白名单；
 4. 扩展一个固定入口、可回滚的低风险服务变更；
 5. 清理或隔离 legacy runtime 与历史文档；
-6. 补齐三台 VPS 只读服务资产目录和依赖关系；
-7. 实现 P0 工作纪要和 Idea 快速捕获闭环；
+6. 完成 P0 草稿、确认保存、回顾/详情的真实 Lark 验收，并观察确定性初筛误判；
+7. 观察只读资产目录的真实运行态漂移，并按需补充固定只读探针；
 8. 依次实现提醒/英语学习、Agent 学习和个人博客场景，再按场景补齐平台写入能力；
 9. 基于真实使用反馈持续扩展个人工作、生活意图，保持统一入口和一致的低复杂度交互。
 

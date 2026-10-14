@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.services import ServiceSpec, service_action_names, service_operation_constraints
+from controllers.capture import CaptureDraft, SavedCapture
+from core.services import (
+    ServiceAssetSpec,
+    ServiceSpec,
+    service_action_names,
+    service_operation_constraints,
+)
 from core.targets import VpsTarget
 
 
@@ -99,6 +105,113 @@ def build_memory_proposal_card(content: str, *, reason: str = "") -> dict[str, A
     return card
 
 
+def build_capture_draft_card(draft: CaptureDraft, *, token: str) -> dict[str, Any]:
+    """Build a confirmation card for a work-note/idea draft."""
+    def values(items: tuple[str, ...]) -> str:
+        return "\n".join(f"• {item}" for item in items) if items else "• （未提取）"
+
+    sections = [
+        f"📝 **{draft.kind_label}草稿**\n当前只生成草稿，尚未保存。",
+        f"**标题**：{draft.title}\n**摘要**：{draft.summary}",
+        f"**决定/结论**\n{values(draft.decisions)}",
+        f"**行动项**\n{values(draft.actions)}",
+        f"**待跟进**\n{values(draft.follow_ups)}",
+        f"**原始内容**\n{draft.raw_input[:600]}",
+        f"确认码：`{token}`。也可回复 `确认保存 {token}`。",
+    ]
+    card = build_sections_card(sections, title=f"Luck Agent · {draft.kind_label}草稿")
+    card["body"]["elements"].append(
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "type": "primary",
+                            "text": {"tag": "plain_text", "content": "确认保存"},
+                            "behaviors": [
+                                {
+                                    "type": "callback",
+                                    "value": {"action": "capture_save", "token": token},
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "type": "default",
+                            "text": {"tag": "plain_text", "content": "放弃"},
+                            "behaviors": [
+                                {
+                                    "type": "callback",
+                                    "value": {"action": "capture_discard", "token": token},
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    return card
+
+
+def build_capture_saved_card(saved: SavedCapture) -> dict[str, Any]:
+    return build_sections_card(
+        [
+            f"✅ {saved.draft.kind_label}已保存",
+            f"• 标题：{saved.draft.title}",
+            f"• Capture：`{saved.capture_id[:8]}`",
+            "当前保存到 Luck Agent SQLite；后续再接入 Mem0、Bitable 或文档沉淀。",
+        ],
+        title=f"Luck Agent · {saved.draft.kind_label}",
+    )
+
+
+def build_capture_list_card(captures: list[SavedCapture]) -> dict[str, Any]:
+    if not captures:
+        return build_sections_card(
+            ["🗂️ 当前会话还没有已保存的工作纪要或 Idea。"],
+            title="Luck Agent · 捕获回顾",
+        )
+    sections = [f"🗂️ **当前会话最近 {len(captures)} 条捕获**"]
+    for item in captures:
+        sections.append(
+            f"**`{item.capture_id[:8]}` · {item.draft.kind_label}**\n"
+            f"{item.draft.title}\n"
+            f"查看：`/capture get {item.capture_id[:8]}`"
+        )
+    return build_sections_card(sections, title="Luck Agent · 捕获回顾")
+
+
+def build_capture_detail_card(saved: SavedCapture) -> dict[str, Any]:
+    def values(items: tuple[str, ...]) -> str:
+        return "\n".join(f"• {item}" for item in items) if items else "• （无）"
+
+    return build_sections_card(
+        [
+            f"📌 **{saved.draft.kind_label}详情**\nCapture：`{saved.capture_id[:8]}`",
+            f"**标题**：{saved.draft.title}\n**摘要**：{saved.draft.summary}",
+            f"**决定/结论**\n{values(saved.draft.decisions)}",
+            f"**行动项**\n{values(saved.draft.actions)}",
+            f"**待跟进**\n{values(saved.draft.follow_ups)}",
+            f"**原始内容**\n{saved.draft.raw_input[:1200]}",
+        ],
+        title=f"Luck Agent · {saved.draft.kind_label}",
+    )
+
+
 def build_approval_card(
     request: str,
     *,
@@ -192,6 +305,52 @@ def build_service_catalog_card(specs: list[ServiceSpec]) -> dict[str, Any]:
         sections.append("\n".join(detail))
     sections.append("用法：`/vps service SERVICE ACTION [关键词]`")
     return build_sections_card(sections, title="Luck Agent · 服务目录")
+
+
+def build_service_asset_catalog_card(
+    assets: list[ServiceAssetSpec],
+) -> dict[str, Any]:
+    """Build the read-only three-VPS inventory card."""
+    if not assets:
+        return build_sections_card(
+            ["🧩 当前没有已授权的服务资产"],
+            title="Luck Agent · 资产目录",
+        )
+    sections = [
+        "🧩 **三台 VPS 只读服务资产目录**",
+        "运行态核验基线：2026-08-24。实时状态请使用 `/vps services`。",
+        "资产发现不会新增 restart/backup 权限。",
+    ]
+    current_target = ""
+    current_lines: list[str] = []
+    for asset in assets:
+        if asset.target_id != current_target:
+            if current_lines:
+                sections.append("\n".join(current_lines))
+            current_target = asset.target_id
+            current_lines = [f"**`{current_target}`**"]
+        details = [f"**`{asset.service_id}` · {asset.label}** · {asset.runtime}"]
+        if asset.scope:
+            details.append(f"范围：{asset.scope}")
+        if asset.units:
+            details.append(f"unit：`{'、'.join(asset.units)}`")
+        if asset.compose_project:
+            details.append(f"Compose：`{asset.compose_project}`")
+        details.extend(
+            [
+                f"状态基线：`{asset.observed_state}`（{asset.last_verified}）",
+                f"端口/边界：{'、'.join(asset.ports) if asset.ports else '未登记'}",
+                f"健康：{'、'.join(asset.health_checks) if asset.health_checks else '未登记'}",
+                f"依赖：{'、'.join(asset.dependencies) if asset.dependencies else '未登记'}",
+                f"日志：{asset.logs or '未登记'}",
+                f"备份：{asset.backups or '未登记'}",
+                f"变更边界：{asset.change_boundary}",
+            ]
+        )
+        current_lines.append("\n".join(details))
+    if current_lines:
+        sections.append("\n".join(current_lines))
+    return build_sections_card(sections, title="Luck Agent · 资产目录")
 
 
 def build_goal_result_card(

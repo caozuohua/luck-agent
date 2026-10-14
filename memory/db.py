@@ -98,6 +98,23 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_target_selections_updated
                 ON target_selections(updated_at);
+
+            CREATE TABLE IF NOT EXISTS captures (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                chat_id     TEXT NOT NULL DEFAULT '',
+                kind        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                summary     TEXT NOT NULL,
+                decisions   TEXT NOT NULL DEFAULT '[]',
+                actions     TEXT NOT NULL DEFAULT '[]',
+                follow_ups  TEXT NOT NULL DEFAULT '[]',
+                tags        TEXT NOT NULL DEFAULT '[]',
+                raw_input   TEXT NOT NULL,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_captures_scope
+                ON captures(user_id, chat_id, created_at);
             """
         )
         # Existing V2 databases predate chat_id. Keep the migration local and

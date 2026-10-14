@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from core.targets import VpsTarget
+from controllers.capture import CaptureDraft
 from interface.lark_cards import (
     build_assistant_result_card,
     build_approval_card,
+    build_capture_draft_card,
+    build_capture_detail_card,
+    build_capture_list_card,
     build_goal_result_card,
     build_log_page_card,
     build_memory_proposal_card,
@@ -93,6 +97,48 @@ def test_memory_proposal_card_has_approval_callback_button() -> None:
         "action": "memory_save_proposal",
         "content": "我偏好简洁回答",
     }
+
+
+def test_capture_draft_card_has_explicit_save_and_discard_actions() -> None:
+    card = build_capture_draft_card(
+        CaptureDraft(
+            kind="work_note",
+            title="会议纪要",
+            summary="决定下周发布",
+            decisions=("决定下周发布",),
+        ),
+        token="capture-token",
+    )
+
+    buttons = card["body"]["elements"][-1]["columns"]
+    assert buttons[0]["elements"][0]["text"]["content"] == "确认保存"
+    assert buttons[0]["elements"][0]["behaviors"][0]["value"] == {
+        "action": "capture_save",
+        "token": "capture-token",
+    }
+    assert buttons[1]["elements"][0]["behaviors"][0]["value"] == {
+        "action": "capture_discard",
+        "token": "capture-token",
+    }
+
+
+def test_capture_review_cards_expose_only_short_lookup_id() -> None:
+    from controllers.capture import SavedCapture
+
+    saved = SavedCapture(
+        capture_id="abcdef1234567890",
+        user_id="u1",
+        chat_id="c1",
+        draft=CaptureDraft(kind="idea", title="回顾入口", summary="增加捕获回顾入口"),
+    )
+
+    list_card = build_capture_list_card([saved])
+    detail_card = build_capture_detail_card(saved)
+    list_text = "\n".join(item.get("content", "") for item in list_card["body"]["elements"])
+    detail_text = "\n".join(item.get("content", "") for item in detail_card["body"]["elements"])
+    assert "abcdef12" in list_text
+    assert "abcdef1234567890" not in list_text
+    assert "增加捕获回顾入口" in detail_text
 
 
 def test_service_catalog_card_contains_one_section_per_service() -> None:

@@ -79,9 +79,9 @@ Luck Agent 的产品定位已经从“Lark API/运维命令集合”收敛为：
 
 ## 五、当前最大 GAP
 
-### 1. 三台 VPS 服务资产目录尚不完整
+### 1. 三台 VPS 服务资产目录已接入，后续观察漂移
 
-`/vps service list` 目前是“受控操作目录”，不是完整资产目录。尚未统一呈现：
+`/vps service list|assets` 现在是按三台目标分组的只读资产目录，统一呈现：
 
 - systemd/用户级 systemd 服务
 - Docker Compose 与容器
@@ -92,24 +92,25 @@ Luck Agent 的产品定位已经从“Lark API/运维命令集合”收敛为：
 - 备份与恢复对象
 - 哪些服务只读、哪些允许变更
 
-下一步应先实现只读资产发现/服务目录，再决定是否开放新的 restart/backup 操作。不要因为发现服务就自动增加变更权限。
+目录与 `SERVICE_OPERATIONS` 分离；实时状态仍通过 `/vps services` 和固定探针获取。后续只观察运行态漂移、补充固定只读探针，
+不要因为发现服务就自动增加新的 restart/backup 权限。
 
 ### 2. 统一意图入口尚未落地
 
-工作纪要、Idea、日程、QPC、英语学习、Agent 学习、博客和 GitHub 还没有统一的意图注册与场景路由层。
-需要避免每增加一个场景就新增一套复杂命令和确认交互。
+工作纪要和 Idea 捕获已接入消息初筛、结构化草稿卡、按用户/会话确认保存和 `/capture list|get` 当前会话只读回顾；
+尚未完成真实 Lark 验收和可复用的统一意图注册层。日程、QPC、英语学习、Agent 学习、博客和 GitHub 仍未形成闭环。
 
-### 3. 真实场景闭环尚未开始
+### 3. 真实场景闭环正在开始
 
-首个建议闭环：工作纪要 + Idea 快速捕获。输入应尽量是一条手机消息，结构化处理异步完成，仅在持久化、
-外部写入、日历写入或发布时确认。
+首个闭环正在实现：输入应尽量是一条手机消息，先生成结构化草稿，仅在 SQLite 持久化时确认；Mem0、外部文档、
+日历写入或发布暂不纳入第一切片。
 
 ## 六、建议新会话执行顺序
 
 1. 先阅读本文件、`docs/roadmap.md`、`docs/current-state.md` 和 `docs/legacy-runtime.md`。
-2. 只读实现三台 VPS 服务资产发现，输出统一服务模型和 `/vps service list` 展示；不要先开放更多变更操作。
+2. 完成 P0 草稿、确认保存、回顾/详情的真实 Lark 验收；不要先开放更多运维变更操作。
 3. 在浏览器方便时完成 `/lark wiki records` 的真实验收。
-4. 设计统一意图注册/路由层，优先实现工作纪要和 Idea 快速捕获。
+4. 抽象轻量统一意图注册/路由层，再推进工作纪要和 Idea 的第二切片。
 5. 接入 Lark 日程与 QPC，形成个人知识和提醒闭环。
 6. 再按优先级推进英语学习、Agent 学习、GitHub/blog/portal、个人博客等场景。
 
@@ -118,7 +119,7 @@ Luck Agent 的产品定位已经从“Lark API/运维命令集合”收敛为：
 - Luck Agent 工作目录：`/opt/luck-agent`
 - 当前分支：`feat/goal-runtime-langgraph`
 - 远程已同步到：`bf2fcbb docs: inventory services across all vps`
-- Luck Agent 当前唯一未提交文件：`soul/MEMORY.md`，属于用户已有变更，不能覆盖、回滚或混入提交。
+- `soul/MEMORY.md` 是用户已有变更，不能覆盖、回滚或混入提交；本轮 P0/资产目录代码和文档改动应单独整理提交。
 - `/opt/vps_sysops` 当前存在大量用户未提交变更；本轮没有修改或整理它，接手时必须先查看其 `git status`，不要 reset/checkout/clean。
 - 文档和代码文件可能由 `luck-agent` 用户持有；编辑前按现有权限流程临时授权，完成后恢复权限。
 - 只读调研不要输出 `.env`、API key、OAuth token、数据库内容、x-ui 隐藏路径或个人知识正文。

@@ -8,11 +8,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
+from controllers.capture import CaptureService
 from core.log import get_logger
 from core.operation_policy import OperationPermissionPolicy
 from core.services import (
-    SERVICE_CATALOG,
     format_service_catalog,
+    get_service_assets,
     get_service,
     get_service_operation,
 )
@@ -23,8 +24,10 @@ from core.targets import VpsTargetRegistry
 from interface.lark_cards import (
     build_log_page_card,
     build_output_page_card,
+    build_capture_detail_card,
+    build_capture_list_card,
     build_sections_card,
-    build_service_catalog_card,
+    build_service_asset_catalog_card,
     build_target_selection_card,
 )
 from interface.lark_platform import (
@@ -169,6 +172,7 @@ class QuickCommandRouter:
         audit_writer: AuditWriter | None = None,
         lark_platform: LarkPlatformProvider | None = None,
         lark_oauth: LarkOAuthProvider | None = None,
+        capture_service: CaptureService | None = None,
     ) -> None:
         self.health = health
         self.vps = vps
@@ -186,6 +190,7 @@ class QuickCommandRouter:
         self.audit_writer = audit_writer
         self.lark_platform = lark_platform
         self.lark_oauth = lark_oauth
+        self.capture_service = capture_service
         self._log_page_sessions: dict[tuple[str, str], _LogPageSession] = {}
         self._pending_target_selections: dict[tuple[str, str], str] = {}
         self._log_page_ttl_seconds = 10 * 60
@@ -211,7 +216,7 @@ class QuickCommandRouter:
                 "• `/health` Bot 与数据库健康状态\n"
                 "• `/vps` 当前 VPS 资源状态\n"
                 "• `/vps status|resources|services|logs` 运维检查（日志支持卡片翻页）\n"
-                "• `/vps service list` 服务目录\n"
+                "• `/vps service list|assets` 三台 VPS 只读服务资产目录\n"
                 "• `/vps service mem0 status|list|smoke|search 关键词` Mem0 服务操作\n"
                 "• `/vps service luck-agent restart` 重启 Agent（需确认）\n"
                 "• `/targets` 选择 VPS 目标\n"
@@ -226,6 +231,8 @@ class QuickCommandRouter:
                 "• `/lark wiki get <链接或 token>` 查看 Wiki 节点详情（只读）\n"
                 "• `/lark wiki summary <链接或 token>` 查看文档/多维表格摘要（只读）\n"
                 "• `/lark wiki records <链接> [表名]` 查看少量记录摘要（只读）\n"
+                "• `/capture list [all|work|idea]` 回顾当前会话捕获（只读）\n"
+                "• `/capture get CAPTURE_ID` 查看捕获详情（只读）\n"
                 "• `/mem0 status` Mem0 API 状态\n"
                 "• `/mem0 scope [PROJECT_ID]` 查看或切换当前项目 scope\n"
                 "• `/mem0 list` 浏览当前 scope 的记忆\n"
@@ -340,6 +347,26 @@ class QuickCommandRouter:
                     raw_command[len(prefix) :].strip(),
                     user_id=user_id,
                 )
+        if command in {"/capture", "capture", "/capture list", "capture list"}:
+            return await self._capture_list(user_id=user_id, chat_id=chat_id)
+        for prefix in ("/capture list ", "capture list "):
+            if command.startswith(prefix):
+                kind = raw_command[len(prefix) :].strip()
+                return await self._capture_list(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    kind=kind,
+                )
+        if command in {"/capture get", "capture get"}:
+            return "用法：`/capture get CAPTURE_ID`"
+        for prefix in ("/capture get ", "capture get "):
+            if command.startswith(prefix):
+                capture_id = raw_command[len(prefix) :].strip().strip("`")
+                return await self._capture_get(
+                    capture_id,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                )
         if command in {"/vps", "vps", "/status", "status"}:
             return await self._vps(user_id)
         for prefix in ("/vps service ", "vps service ", "/service ", "service "):
@@ -402,6 +429,68 @@ class QuickCommandRouter:
                     approval_token=approval_token,
                 )
         return None
+
+    async def _capture_list(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        kind: str = "",
+    ) -> str | QuickCommandResult:
+        if self.capture_service is None:
+            return "🗂️ 捕获回顾：⚠️ 当前未启用"
+        try:
+            captures = await self.capture_service.list_recent(
+                user_id=user_id,
+                chat_id=chat_id,
+                kind=kind,
+                limit=10,
+            )
+        except ValueError:
+            return "用法：`/capture list [all|work|idea]`"
+        except Exception:
+            log.exception("quick_capture_list_failed", user_id=user_id, chat_id=chat_id)
+            return "🗂️ 捕获回顾：⚠️ 查询失败"
+        if not captures:
+            text = "🗂️ 当前会话还没有已保存的工作纪要或 Idea。"
+        else:
+            lines = [f"🗂️ 当前会话最近 {len(captures)} 条捕获："]
+            lines.extend(
+                f"• `{item.capture_id[:8]}` · {item.draft.kind_label} · {item.draft.title}"
+                for item in captures
+            )
+            text = "\n".join(lines)
+        return QuickCommandResult(text, build_capture_list_card(list(captures)))
+
+    async def _capture_get(
+        self,
+        capture_id: str,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> str | QuickCommandResult:
+        if self.capture_service is None:
+            return "📌 捕获详情：⚠️ 当前未启用"
+        if len(capture_id) < 4:
+            return "用法：`/capture get CAPTURE_ID`"
+        try:
+            saved = await self.capture_service.get(
+                user_id=user_id,
+                chat_id=chat_id,
+                capture_id=capture_id,
+            )
+        except Exception:
+            log.exception("quick_capture_get_failed", user_id=user_id, chat_id=chat_id)
+            return "📌 捕获详情：⚠️ 查询失败"
+        if saved is None:
+            return "📌 当前会话未找到该捕获，或 ID 前缀不唯一"
+        text = (
+            f"📌 {saved.draft.kind_label}详情\n"
+            f"• Capture：`{saved.capture_id[:8]}`\n"
+            f"• 标题：{saved.draft.title}\n"
+            f"• 摘要：{saved.draft.summary}"
+        )
+        return QuickCommandResult(text, build_capture_detail_card(saved))
 
     async def _health(self) -> str:
         try:
@@ -660,14 +749,9 @@ class QuickCommandRouter:
         allowed = None
         if self.permission_policy is not None and self.permission_policy.allowed_services:
             allowed = self.permission_policy.allowed_services
-        specs = [
-            spec
-            for spec in SERVICE_CATALOG
-            if allowed is None or spec.service_id in allowed
-        ]
         return QuickCommandResult(
             format_service_catalog(allowed=allowed),
-            build_service_catalog_card(specs),
+            build_service_asset_catalog_card(list(get_service_assets(allowed=allowed))),
         )
 
     async def _service(
@@ -682,7 +766,7 @@ class QuickCommandRouter:
         service_id = parts[0].lower() if parts else ""
         if self.permission_policy is not None and not self.permission_policy.allows_user(user_id):
             return "⛔ 当前用户无权执行 VPS 运维操作"
-        if service_id in {"list", "catalog", "help"}:
+        if service_id in {"list", "catalog", "assets", "inventory", "help"}:
             return self._service_catalog()
         spec = get_service(service_id)
         if spec is None:

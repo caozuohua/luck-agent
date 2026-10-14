@@ -10,6 +10,7 @@ from core.log import get_logger
 from core.router import ToolRouter
 from core.operation_policy import OperationPermissionPolicy
 from core.targets import VpsTarget, VpsTargetRegistry
+from controllers.capture import CaptureService
 from interface.health import HealthService
 from interface.lark_access import LarkAccessPolicy
 from interface.lark_approval import LarkApprovalManager
@@ -61,6 +62,7 @@ class Runtime:
         self.goal_store = GoalStore(self.db)
         self.pattern_store = PatternStore(self.db)
         self.context_store = ContextStore(self.db)
+        self.capture_service = CaptureService(self.db)
         # No provider endpoint configured -> offline fake client (local dev / CI).
         if settings.llm_providers:
             self.llm_client: Any = LLMProviderRouter.from_settings(
@@ -180,6 +182,7 @@ class Runtime:
             approval_checker=self.lark_approval_manager.consume_grant,
             audit_writer=self.db.insert_operation_audit,
             lark_oauth=None,
+            capture_service=self.capture_service,
         )
         self.graph_runtime = GraphRuntime(
             goal_store=self.goal_store,
@@ -224,6 +227,7 @@ class Runtime:
                 access_policy=self.lark_access_policy,
                 approval_manager=self.lark_approval_manager,
                 memory_proposer=MemoryProposalDetector(),
+                capture_service=self.capture_service,
             )
             self.lark_runner: LarkSdkRunner | None = None
         else:

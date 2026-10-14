@@ -14,6 +14,33 @@ class ServiceSpec:
 
 
 @dataclass(frozen=True)
+class ServiceAssetSpec:
+    """Read-only inventory metadata for one service on one VPS."""
+
+    target_id: str
+    service_id: str
+    label: str
+    runtime: str
+    scope: str = ""
+    units: tuple[str, ...] = ()
+    compose_project: str = ""
+    ports: tuple[str, ...] = ()
+    health_checks: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
+    logs: str = ""
+    backups: str = ""
+    change_boundary: str = "只读目录；暂无受控变更入口"
+    observed_state: str = "已发现"
+    last_verified: str = "2026-08-24"
+    managed_service_id: str = ""
+
+    @property
+    def access_service_id(self) -> str:
+        """Use the existing permission identity without creating an action."""
+        return self.managed_service_id or self.service_id
+
+
+@dataclass(frozen=True)
 class ServiceOperationSpec:
     """Fixed contract for one mutating service operation."""
 
@@ -100,6 +127,209 @@ SERVICE_CATALOG: tuple[ServiceSpec, ...] = (
         restartable=True,
     ),
     ServiceSpec("luck-agent", "Luck Agent", "sysops", "宿主机服务状态", restartable=True),
+)
+
+
+# Inventory only.  Adding an asset here must never add a restart/backup
+# operation; those remain exclusively defined in SERVICE_OPERATIONS below.
+SERVICE_ASSET_CATALOG: tuple[ServiceAssetSpec, ...] = (
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "hermes-gateway", "Hermes Gateway", "systemd",
+        units=("hermes-gateway.service",), health_checks=("systemd active",),
+        dependencies=("a2a-mcp-companion（由本服务拉起）",),
+        logs="journald: hermes-gateway.service", backups="未登记服务级备份对象",
+        change_boundary="受控：restart（现有契约）；暂无新增 backup/upgrade",
+        observed_state="active", managed_service_id="hermes-gateway",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "a2a", "Hermes A2A Bridge", "systemd",
+        units=("hermes-a2a-bridge.service",), ports=("Tailscale :8765",),
+        health_checks=("/healthz", "Agent Card probe"),
+        logs="journald: hermes-a2a-bridge.service", backups="未登记服务级备份对象",
+        change_boundary="受控：restart（现有契约）；暂无新增 backup/upgrade",
+        observed_state="active / healthz 200", managed_service_id="a2a",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "a2a-mcp-companion", "A2A MCP companion", "子进程",
+        scope="随 hermes-gateway.service", dependencies=("hermes-gateway.service",),
+        logs="journald: hermes-gateway.service", backups="未登记独立备份对象",
+        change_boundary="只读目录；随父服务受控 restart，不提供独立操作",
+        observed_state="随父服务运行", managed_service_id="hermes-gateway",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "new-api", "new-api",
+        "Docker container（固定 systemd 入口）", units=("new-api.service",),
+        ports=("127.0.0.1:3000",), health_checks=("/v1/models（需认证）",),
+        logs="journald: new-api.service；Docker logs（由固定入口管理）",
+        backups="scoped new-api backup（现有 GCP 契约）",
+        change_boundary="受控：restart + backup（现有契约）；暂无 restore/upgrade",
+        observed_state="active / 未认证请求 401", managed_service_id="new-api",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "x-ui", "x-ui", "systemd",
+        units=("x-ui.service",), ports=(":50404（管理面）",),
+        health_checks=("进程/监听状态；无独立公开健康契约",),
+        logs="journald: x-ui.service", backups="未登记服务级备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="active",
+        managed_service_id="x-ui",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "xray", "Xray", "systemd",
+        units=("xray.service",), ports=("127.0.0.1:44301",),
+        health_checks=("进程/监听状态；经 Nginx 分流",), dependencies=("nginx.service",),
+        logs="journald: xray.service", backups="未登记服务级备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="active",
+        managed_service_id="xray",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "nginx", "Nginx", "systemd",
+        units=("nginx.service",), ports=(":80", ":443"),
+        health_checks=("监听状态；反向代理边界",),
+        dependencies=("x-ui / Xray / Hermes 路由目标",),
+        logs="journald: nginx.service；系统访问/错误日志",
+        backups="未登记服务级备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="active",
+        managed_service_id="nginx",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "docker", "Docker Engine", "systemd",
+        units=("docker.service",), health_checks=("systemd active",),
+        logs="journald: docker.service", backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="active",
+        managed_service_id="docker",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "tailscale", "Tailscale", "systemd",
+        units=("tailscaled.service",), ports=("Tailscale overlay",),
+        health_checks=("systemd/节点连通性",), logs="journald: tailscaled.service",
+        backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="运行中",
+        managed_service_id="tailscale",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "fail2ban", "fail2ban / 系统安全组件", "systemd",
+        units=("fail2ban.service",), health_checks=("systemd active",),
+        logs="journald: fail2ban.service", backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="运行中",
+        managed_service_id="fail2ban",
+    ),
+    ServiceAssetSpec(
+        "gcp-free-vps-oregon", "vps-sysops-monitor", "vps_sysops 监控", "systemd timer",
+        health_checks=("timer 上次/下次运行状态",), logs="journald: monitor timer/job",
+        backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="已配置",
+        managed_service_id="vps-sysops-monitor",
+    ),
+    ServiceAssetSpec(
+        "az-free-vm", "hermes-gateway", "Hermes Gateway", "user systemd",
+        scope="用户级", units=("hermes-gateway.service",),
+        health_checks=("systemctl --user active",),
+        dependencies=("a2a-mcp-companion（由本服务拉起）",),
+        logs="用户级 journald: hermes-gateway.service", backups="未登记服务级备份对象",
+        change_boundary="受控：restart（现有 Azure 契约）；暂无新增 backup/upgrade",
+        observed_state="active", managed_service_id="hermes-gateway",
+    ),
+    ServiceAssetSpec(
+        "az-free-vm", "a2a", "Hermes A2A Bridge", "user systemd",
+        scope="用户级", units=("hermes-a2a-bridge.service",),
+        ports=("Tailscale :8765（无公网入站）",),
+        health_checks=("/healthz", "Agent Card probe"),
+        logs="用户级 journald: hermes-a2a-bridge.service", backups="未登记服务级备份对象",
+        change_boundary="受控：restart（现有契约）；暂无新增 backup/upgrade",
+        observed_state="active / healthz 200", managed_service_id="a2a",
+    ),
+    ServiceAssetSpec(
+        "az-free-vm", "tailscale", "Tailscale", "systemd",
+        units=("tailscaled.service",), ports=("Tailscale overlay",),
+        health_checks=("systemd/节点连通性",), logs="journald: tailscaled.service",
+        backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="运行中",
+        managed_service_id="tailscale",
+    ),
+    ServiceAssetSpec(
+        "az-free-vm", "fail2ban", "fail2ban / 系统安全组件", "systemd",
+        units=("fail2ban.service",), health_checks=("systemd active",),
+        logs="journald: fail2ban.service", backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="运行中",
+        managed_service_id="fail2ban",
+    ),
+    ServiceAssetSpec(
+        "az-free-vm", "vps-sysops-monitor", "vps_sysops 监控", "systemd timer",
+        health_checks=("timer 上次/下次运行状态",), logs="journald: monitor timer/job",
+        backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="已配置",
+        managed_service_id="vps-sysops-monitor",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "luck-agent", "Luck Agent", "systemd",
+        units=("luck-agent.service",), ports=("Lark WebSocket；health port",),
+        health_checks=("/health",), logs="journald: luck-agent.service",
+        backups="未登记服务级备份对象",
+        change_boundary="受控：restart（现有契约）；暂无新增 backup/upgrade",
+        observed_state="active / /health 200", managed_service_id="luck-agent",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "mem0-api", "Mem0 API", "Docker Compose",
+        compose_project="/opt/mem0/server", ports=("Tailscale :8888",),
+        health_checks=("/docs + 认证 smoke（不以 /health 判断）",),
+        dependencies=("mem0-postgres",), logs="Docker Compose logs: API container",
+        backups="随 Mem0 PostgreSQL 每日备份 timer 观察；无 Agent backup 入口",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="container running",
+        managed_service_id="mem0",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "mem0-dashboard", "Mem0 Dashboard", "Docker Compose",
+        compose_project="/opt/mem0/server", ports=("Tailscale :3000",),
+        health_checks=("container healthy",), dependencies=("mem0-api",),
+        logs="Docker Compose logs: dashboard container",
+        backups="不单独备份；依赖 Mem0 数据库备份",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="healthy",
+        managed_service_id="mem0",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "mem0-postgres", "Mem0 PostgreSQL/pgvector", "Docker Compose",
+        compose_project="/opt/mem0/server", health_checks=("container healthy",),
+        logs="Docker Compose logs: postgres container",
+        backups="每日备份 timer（现有主机侧对象）",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="healthy",
+        managed_service_id="mem0",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "mem0-postgres-backup", "Mem0 PostgreSQL 每日备份", "systemd timer",
+        health_checks=("timer 上次/下次运行状态",), dependencies=("mem0-postgres",),
+        logs="journald: backup timer/job", backups="Mem0 PostgreSQL（只读展示备份关系）",
+        change_boundary="只读目录；不新增 backup/restore 操作", observed_state="已配置",
+        managed_service_id="mem0",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "docker", "Docker Engine", "systemd",
+        units=("docker.service",), health_checks=("systemd active",),
+        logs="journald: docker.service", backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="active",
+        managed_service_id="docker",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "tailscale", "Tailscale", "systemd",
+        units=("tailscaled.service",), ports=("Tailscale overlay",),
+        health_checks=("systemd/节点连通性",), logs="journald: tailscaled.service",
+        backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="运行中",
+        managed_service_id="tailscale",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "fail2ban", "fail2ban / 系统安全组件", "systemd",
+        units=("fail2ban.service",), health_checks=("systemd active",),
+        logs="journald: fail2ban.service", backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="运行中",
+        managed_service_id="fail2ban",
+    ),
+    ServiceAssetSpec(
+        "aws-codex-vps", "vps-sysops-monitor", "vps_sysops 监控", "systemd timer",
+        health_checks=("timer 上次/下次运行状态",), logs="journald: monitor timer/job",
+        backups="不作为业务备份对象",
+        change_boundary="只读目录；暂无受控 restart/backup", observed_state="已配置",
+        managed_service_id="vps-sysops-monitor",
+    ),
 )
 
 
@@ -241,6 +471,63 @@ def service_operation_constraints(spec: ServiceSpec) -> tuple[str, ...]:
     return tuple(constraints)
 
 
+def get_service_assets(
+    *,
+    allowed: set[str] | frozenset[str] | None = None,
+) -> tuple[ServiceAssetSpec, ...]:
+    """Return inventory rows filtered by the existing service allowlist."""
+    if allowed is None:
+        return SERVICE_ASSET_CATALOG
+    return tuple(
+        asset for asset in SERVICE_ASSET_CATALOG
+        if asset.access_service_id in allowed or asset.service_id in allowed
+    )
+
+
+def _asset_lines(asset: ServiceAssetSpec) -> list[str]:
+    def joined(values: tuple[str, ...], fallback: str = "未登记") -> str:
+        return "、".join(values) if values else fallback
+
+    lines = [
+        f"• `{asset.service_id}` · {asset.label}｜{asset.runtime}{(' / ' + asset.scope) if asset.scope else ''}",
+        f"  状态基线：`{asset.observed_state}`（核验 {asset.last_verified}）",
+    ]
+    if asset.units:
+        lines.append(f"  unit：`{joined(asset.units)}`")
+    if asset.compose_project:
+        lines.append(f"  Compose：`{asset.compose_project}`")
+    lines.append(f"  端口/边界：{joined(asset.ports)}")
+    lines.append(f"  健康：{joined(asset.health_checks)}")
+    lines.append(f"  依赖：{joined(asset.dependencies)}")
+    lines.append(f"  日志：{asset.logs or '未登记'}")
+    lines.append(f"  备份：{asset.backups or '未登记'}")
+    lines.append(f"  变更边界：{asset.change_boundary}")
+    return lines
+
+
+def format_service_asset_catalog(
+    *,
+    allowed: set[str] | frozenset[str] | None = None,
+) -> str:
+    """Format the three-VPS read-only service asset inventory."""
+    assets = get_service_assets(allowed=allowed)
+    if not assets:
+        return "🧩 当前没有已授权的服务资产"
+    lines = [
+        "🧩 三台 VPS 只读服务资产目录：",
+        "以下是 2026-08-24 运行态核验基线；实时状态请用 `/vps services`。",
+        "目录发现不会新增 restart/backup 权限；变更边界仅引用现有固定契约。",
+    ]
+    current_target = ""
+    for asset in assets:
+        if asset.target_id != current_target:
+            current_target = asset.target_id
+            lines.append("")
+            lines.append(f"### `{current_target}`")
+        lines.extend(_asset_lines(asset))
+    return "\n".join(lines)
+
+
 def format_service_catalog(*, allowed: set[str] | frozenset[str] | None = None) -> str:
     specs = [
         item
@@ -249,11 +536,13 @@ def format_service_catalog(*, allowed: set[str] | frozenset[str] | None = None) 
     ]
     if not specs:
         return "🧩 当前没有已授权的服务"
-    lines = ["🧩 可用服务："]
+    lines = ["🧩 已登记控制服务："]
     for item in specs:
         lines.append(f"• `{item.service_id}`：{item.description}")
         lines.append(f"  操作：`{'|'.join(service_action_names(item))}`")
         for constraint in service_operation_constraints(item):
             lines.append(f"  限制：`{constraint}`")
     lines.append("用法：`/vps service SERVICE ACTION [关键词]`")
+    lines.append("")
+    lines.append(format_service_asset_catalog(allowed=allowed))
     return "\n".join(lines)
